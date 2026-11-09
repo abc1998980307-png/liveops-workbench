@@ -148,8 +148,13 @@ class HotProcessTests(unittest.TestCase):
         self.addCleanup(self.installed.stop)
         self.addCleanup(self.service.stop)
         self.service.node.write_text('#!' + sys.executable + '\n' + """
-import json,os,sys
+import json,os,sys,socketserver
 from http.server import HTTPServer,BaseHTTPRequestHandler
+class LocalHTTPServer(HTTPServer):
+ def server_bind(self):
+  socketserver.TCPServer.server_bind(self)
+  self.server_name='localhost'
+  self.server_port=self.server_address[1]
 class Handler(BaseHTTPRequestHandler):
  def log_message(self,*args):pass
  def do_GET(self):
@@ -157,7 +162,9 @@ class Handler(BaseHTTPRequestHandler):
    'settings':{'cacheTTL':int(os.environ['CACHE_TTL']), 'requestTimeout':int(os.environ['REQUEST_TIMEOUT']),
    'filterWeiboAds':os.environ['FILTER_WEIBO_ADVERTISEMENT']=='true'}}).encode()
   self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
-HTTPServer(('127.0.0.1',int(sys.argv[3])),Handler).serve_forever()
+server=LocalHTTPServer(('127.0.0.1',int(sys.argv[3])),Handler)
+print('Synthetic loopback service ready',flush=True)
+server.serve_forever()
 """)
         self.service.node.chmod(0o755)
 
