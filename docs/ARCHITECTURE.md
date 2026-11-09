@@ -34,6 +34,7 @@ flowchart TD
 
 | 文件 / 目录 | 职责 |
 |---|---|
+| `service_status.py` | 无副作用地汇总罗盘与飞书本机状态；按采集时间和间隔判断新鲜度，不用保存的身份代替登录检查 |
 | `直播操盘台.html` | 主布局、直播监控、热点、录屏列表、数据源说明、运行设置及共享 UI 方法 |
 | `rpa-ui.js`、`rpa-ui.css` | 罗盘账号、场次、指标、趋势、导出及 Ego 核验记录卡片 |
 | `feishu-ui.js`、`feishu-ui.css` | 飞书目标表、应用配置、同步开关、检查及错误展示 |
@@ -65,7 +66,7 @@ flowchart TD
 | 字幕检索 | `/api/session-search?q=...&limit=50` | 本机 SRT 检索；返回片段内时间、命中文本、字幕链接及相对录屏路径；无经营场次 ID 或网页视频播放 |
 | 录屏定位 | `/api/recordings/reveal`、`/api/recordings/open-directory` | 本机可信请求调用 Finder；检查路径在保存目录内且文件存在 |
 | 场次复盘 | `/api/sessions`、`/api/recording-sessions`、`/api/recording-sessions/archive`、`/api/media/jobs`、`/api/media/retry`、录屏 / 文本文件服务 | 结束事件确认后可合并已校验片段；未知间断写入归档清单 |
-| 数据源接入 | `/api/status` | 真实服务状态和说明卡混合，未接入项必须保持明确标识 |
+| 数据源接入 | `/api/status` | 本机 Host / Origin 保护；只调用 `state` 与 `feishu.state`，区分组件可用、采集暂停、检查失败、等待数据和同步成功；未支持项明确未接入 |
 | 运行设置 | `/api/settings`、`/api/choose-recording-directory`、`/api/recorder/*` | 本机目录和进程操作；目录选择使用 macOS 系统能力 |
 
 默认工作台入口是 `http://127.0.0.1:8765`；录制器和热点服务也使用回环地址。静态资源采用白名单，运行数据不是静态网站资源。录屏服务支持 HTTP Range，限制在配置的录屏根目录内；转写文件由独立目录提供。

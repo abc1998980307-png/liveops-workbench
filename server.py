@@ -28,6 +28,7 @@ from recording_sessions import RecordingSessions
 from recording_archives import RecordingArchiveManager
 from keyword_service import KeywordService
 from hot_service import HotService, HotServiceError
+from service_status import compass_status, feishu_status
 
 
 ROOT = Path(__file__).resolve().parent
@@ -851,11 +852,24 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         if path == "/api/status":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台检查数据源状态"}, 403)
+                return
             try:
                 rpa = COLLECTOR.call("state", timeout=5)
-                rpa_service = {"connected": True, "accounts": len(rpa["accounts"]), "authenticated": sum(bool(a.get("uid")) and a.get("state") in ("ready", "partial") for a in rpa["accounts"])}
+                compass = compass_status(rpa)
+                rpa_service = {"connected": True, "state": "ready", "label": "本机服务可用",
+                               "accounts": len(rpa["accounts"]), "note": "采集进程可用；罗盘登录、暂停及数据状态单独显示。"}
             except (OSError, RuntimeError, ValueError) as error:
-                rpa_service = {"connected": False, "error": str(error)}
+                rpa_service = {"connected": False, "state": "unavailable", "label": "采集器不可用",
+                               "error": str(error), "note": str(error)}
+                compass = {"connected": False, "state": "unknown", "label": "状态待确认",
+                           "note": "无法读取本机采集器状态，请先检查组件。", "error": str(error)}
+            try:
+                feishu = feishu_status(COLLECTOR.call("feishu.state", timeout=5)) if rpa_service["connected"] else {
+                    "connected": False, "state": "unknown", "label": "状态待确认", "note": "本机采集器不可用，无法读取飞书同步状态。"}
+            except (OSError, RuntimeError, ValueError) as error:
+                feishu = {"connected": False, "state": "unknown", "label": "状态待确认", "note": str(error)}
             try:
                 bgo, bgo_error = service_request(BGO, path="/api/info", timeout=3), None
             except (OSError, ValueError, urllib.error.URLError) as error:
@@ -868,7 +882,8 @@ class Handler(BaseHTTPRequestHandler):
                     "buzz": {"connected": bool(MEDIA_PIPELINE and MEDIA_PIPELINE.job_snapshot().get("transcriptionReady")), "engine": "whisper.cpp", "note": "本地中文离线转写"},
                     "keybert": {"connected": KEYWORDS.state()["installed"], "engine": "KeyBERT", "note": "本机中文语料分析；热词洞察可安装、分析及导出"},
                     "playwright": rpa_service,
-                    "compass": {"connected": bool(rpa_service.get("authenticated")), "note": "本机罗盘登录会话"},
+                    "compass": compass,
+                    "feishu": feishu,
                 },
                 "recordingsDirectory": str(recording_directory()),
                 "lastChecked": datetime.now().astimezone().isoformat(),

@@ -76,7 +76,7 @@ python3 scripts/install_keywords.py --apply --data-root /tmp/liveops-keyword-che
 
 ## 热点榜安装与运行
 
-“数据源接入 → DailyHotApi → 查看接入方式”进入运行设置的热点服务卡片，也可直接在运行设置中操作。依次点击“安装热点组件”“启动”“读取榜单”；“检查状态”只访问本机健康接口，不请求抖音。支持停止及重启并应用设置，安装失败可看日志后重试。
+“数据源接入 → DailyHotApi → 管理热点服务”进入运行设置的热点服务卡片，也可直接在运行设置中操作。依次点击“安装热点组件”“启动”“读取榜单”；“检查状态”只访问本机健康接口，不请求抖音。支持停止及重启并应用设置，安装失败可看日志后重试。
 
 命令行可使用 `python3 scripts/install.py --components dailyhot --apply`，自动包含专用 Node.js。源码包固定提交和 SHA-256，npm 依赖按 `scripts/dailyhot-package-lock.json` 安装并检查完整性，不运行依赖安装脚本；TypeScript 构建后才发布安装目录。
 
