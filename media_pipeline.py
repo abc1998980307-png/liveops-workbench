@@ -120,6 +120,18 @@ def run_command(command):
     _run(command)
 
 
+def media_duration_ms(path):
+    """Read the container duration without trusting a recorder progress counter."""
+    result = subprocess.run([str(FFMPEG), "-hide_banner", "-nostdin", "-v", "info", "-i", str(path),
+                             "-t", "0", "-f", "null", "-"], capture_output=True, text=True, timeout=120)
+    diagnostics = (result.stderr or "") + "\n" + (result.stdout or "")
+    match = re.search(r"Duration:\s*(\d{2,}):(\d{2}):(\d{2})(?:[.,](\d{1,6}))?", diagnostics)
+    if result.returncode or not match:
+        raise RuntimeError("无法读取压缩视频的实际时长")
+    fraction = (match.group(4) or "0")[:3].ljust(3, "0")
+    return ((int(match.group(1)) * 60 + int(match.group(2))) * 60 + int(match.group(3))) * 1000 + int(fraction)
+
+
 def _relative_file(value, root):
     if not value:
         return None

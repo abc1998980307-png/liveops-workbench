@@ -1,6 +1,7 @@
 import os
 import json
 import sys
+import subprocess
 import tempfile
 import unittest
 import threading
@@ -171,6 +172,12 @@ class MediaPipelineTests(unittest.TestCase):
         archive.write_bytes(b"already merged")
         os.utime(archive, (1, 1))
         self.assertEqual(list(pipeline._candidate_files(self.recordings)), [])
+
+    def test_media_duration_reads_container_duration_not_recorder_counter(self):
+        completed = subprocess.CompletedProcess([], 0, stdout="", stderr="Duration: 01:02:03.456, start: 0.000000")
+        with mock.patch.object(pipeline.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(pipeline.media_duration_ms(self.source), 3723456)
+        self.assertIn("-t", run.call_args.args[0])
 
     def test_setting_changed_during_compression_can_prevent_deletion(self):
         started_config = dict(self.config)

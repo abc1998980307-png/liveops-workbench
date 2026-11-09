@@ -40,7 +40,7 @@ flowchart TD
 | `server.py` | 静态资源、同机服务适配、设置、媒体文件服务和 API 路由 |
 | `start_dashboard.py`、`启动直播操盘台.command` | 检查端口和健康状态，启动工作台并打开网页 |
 | `recorder_service.py` | 录制器进程归属、并发启动去重、配置生成、停止 / 重启保护 |
-| `recording_sessions.py`、`recording-sessions-ui.js`、`recording_archives.py` | 只读轮询录制器场次历史及当前文件；结束事件确认后，按已校验压缩片段生成长录制归档、偏移 TXT/SRT，并记录未知间断；不控制录制 |
+| `recording_sessions.py`、`recording-sessions-ui.js`、`recording_archives.py` | 只读轮询录制器场次历史及当前文件；结束事件确认后，按已校验压缩片段生成长录制归档、按成品时长偏移 TXT/SRT，并记录未知间断；不控制录制 |
 | `media_pipeline.py` | 文件稳定性检测、压缩、解码校验、按设置删除原件、转写及任务记录 |
 | `flv_recovery.py` | 只读检查 FLV 标签及 AVC 长度，仅隔离一个损坏的末尾视频包 |
 | `rpa_bridge.py` | Python 与 Node 采集器的私有 JSON stdio 通道、请求关联和超时 |

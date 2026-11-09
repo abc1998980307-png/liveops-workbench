@@ -32,6 +32,9 @@ class FakePipeline:
     def validate_video(self, path):
         self.validated.append(Path(path).name)
 
+    def media_duration_ms(self, path):
+        return 2000
+
     def run_command(self, command):
         self.merges += 1
         if self.merges <= self.fail_calls or self.fail_next:
@@ -133,7 +136,7 @@ class RecordingArchiveTests(unittest.TestCase):
 
     def test_failed_merge_leaves_retryable_state_and_reencode_fallback(self):
         self.pipeline.fail_calls = 3
-        with self.assertRaisesRegex(RuntimeError, "stream layout differs"):
+        with self.assertRaisesRegex(RuntimeError, "音频布局不兼容"):
             self.manager.create(self.session["id"])
         pending = self.manager.snapshot()["archives"][0]
         self.assertEqual(pending["status"], "processing")
@@ -141,7 +144,7 @@ class RecordingArchiveTests(unittest.TestCase):
         result = self.manager.create(self.session["id"])
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["merge"]["mode"], "stream_copy")
-        self.assertEqual(self.pipeline.merges, 4)
+        self.assertEqual(self.pipeline.merges, 3)
 
         second = copy.deepcopy(self.session)
         second["id"] = "d" * 32

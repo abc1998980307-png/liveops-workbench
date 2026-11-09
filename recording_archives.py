@@ -170,6 +170,28 @@ class RecordingArchiveManager:
             raise RuntimeError("后处理组件不支持视频校验")
         validator(path)
 
+    def _duration(self, path, fallback=None):
+        probe = getattr(self.pipeline, "media_duration_ms", None)
+        if probe is not None:
+            return int(probe(path))
+        if isinstance(fallback, int) and fallback >= 0:
+            return fallback
+        raise RuntimeError("无法读取压缩片段的实际时长")
+
+    @staticmethod
+    def _atomic_text(path, value):
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+            temp = Path(handle.name)
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            temp.replace(path)
+        finally:
+            temp.unlink(missing_ok=True)
+
     def _merge_video(self, inputs, output):
         ffmpeg = getattr(self.pipeline, "ffmpeg_path", None)
         if ffmpeg is None:
@@ -213,19 +235,7 @@ class RecordingArchiveManager:
                     return {"mode": "reencode", "audioPreserved": True}
                 except Exception:
                     output.unlink(missing_ok=True)
-                    video_only_filters = [f"[{index}:v:0]setpts=PTS-STARTPTS[v{index}]" for index in range(len(inputs))]
-                    video_only_filters.append("".join(f"[v{index}]" for index in range(len(inputs)))
-                                                   + f"concat=n={len(inputs)}:v=1:a=0[v]")
-                    video_only = [str(ffmpeg), "-hide_banner", "-nostdin", "-v", "error", "-xerror", "-y",
-                                  *inputs_args, "-filter_complex", ";".join(video_only_filters), "-map", "[v]",
-                                  "-c:v", "libx264", "-preset", "medium", "-crf", "23", "-movflags", "+faststart",
-                                  str(output)]
-                    try:
-                        run(video_only)
-                    except Exception:
-                        output.unlink(missing_ok=True)
-                        raise first_error
-                    return {"mode": "reencode_video_only", "audioPreserved": False}
+                    raise RuntimeError("片段音频布局不兼容，未生成丢失音频的归档") from first_error
         finally:
             list_path.unlink(missing_ok=True)
 
@@ -298,9 +308,7 @@ class RecordingArchiveManager:
             for segment, (job, _path) in zip(segments, resolved):
                 offsets.append(offset)
                 bounds = job.get("subtitleBounds") or {}
-                duration = segment.get("mediaDurationMs")
-                if not isinstance(duration, int) or duration < 0:
-                    duration = bounds.get("audioDurationMs")
+                duration = self._duration(_path, segment.get("mediaDurationMs"))
                 if not isinstance(duration, int) or duration < 0:
                     can_publish_subtitles = False
                     duration = 0
@@ -320,10 +328,10 @@ class RecordingArchiveManager:
             subtitles_path = None
             if can_publish_text and len(transcript_contents) == len(resolved):
                 transcript_path = output.with_suffix(".txt")
-                transcript_path.write_text(merge_text(transcript_contents), encoding="utf-8")
+                self._atomic_text(transcript_path, merge_text(transcript_contents))
             if can_publish_subtitles and len(subtitle_contents) == len(resolved) and len(offsets) == len(subtitle_contents):
                 subtitles_path = output.with_suffix(".srt")
-                subtitles_path.write_text(merge_srt(subtitle_contents, offsets), encoding="utf-8")
+                self._atomic_text(subtitles_path, merge_srt(subtitle_contents, offsets))
 
             gaps = []
             for before, after in zip(segments, segments[1:]):
@@ -344,7 +352,7 @@ class RecordingArchiveManager:
                 "createdAt": datetime.fromtimestamp(self.now(), timezone.utc).isoformat(),
                 "endedAt": session.get("endedAt"), "endReason": session.get("endReason"),
                 "segments": [{"path": segment.get("path"), "compressed": str(path),
-                              "durationMs": segment.get("mediaDurationMs") or (job.get("subtitleBounds") or {}).get("audioDurationMs"),
+                              "durationMs": self._duration(path, segment.get("mediaDurationMs")),
                               "compressedSignature": job.get("compressedSignature")} for segment, (job, path) in zip(segments, resolved)],
                 "gaps": gaps, "partialObservation": bool(session.get("partialObservation", True)),
                 "unknownGaps": bool(gaps) or bool(session.get("partialObservation", True)),
@@ -354,7 +362,7 @@ class RecordingArchiveManager:
                 "note": "归档只合并已收到且已校验的片段；未知间断中的画面没有被补回。",
             }
             manifest_path = output.with_suffix(".manifest.json")
-            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._atomic_text(manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2))
             archive_store = self._read()
             archive_store["archives"] = [item for item in archive_store["archives"] if item.get("id") != archive_id]
             archive_store["archives"].append(manifest)
