@@ -46,6 +46,7 @@ class MediaPipelineTests(unittest.TestCase):
         self.stack.enter_context(mock.patch.object(pipeline, "read_config", return_value=self.config))
         self.is_open = self.stack.enter_context(mock.patch.object(pipeline, "_is_open", return_value=False))
         self.run = self.stack.enter_context(mock.patch.object(pipeline, "_run", side_effect=self.successful_command))
+        self.stack.enter_context(mock.patch.object(pipeline, "_audio_duration_ms", return_value=3000))
         self.job = pipeline._create_job(self.source)
         self.addCleanup(pipeline.stop_worker)
 
@@ -347,6 +348,33 @@ class MediaPipelineTests(unittest.TestCase):
         self.assertTrue(job["transcriptUrl"].startswith("/transcripts/"))
         self.assertTrue(job["subtitlesUrl"].startswith("/transcripts/"))
         self.assertFalse(job["canRetry"])
+
+
+class SubtitleBoundsTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.path = Path(self.directory.name) / "test.srt"
+
+    def test_clips_whisper_padded_tail_and_drops_cues_after_audio(self):
+        self.path.write_text("1\n00:00:25,000 --> 00:00:30,000\nfinal words\n\n2\n00:00:30,000 --> 00:00:31,000\npadding\n")
+        result = pipeline._clip_subtitles(self.path, 28800)
+        self.assertEqual(result, {"audioDurationMs": 28800, "clippedCues": 1, "droppedCues": 1})
+        self.assertEqual(self.path.read_text(), "1\n00:00:25,000 --> 00:00:28,800\nfinal words\n")
+
+    def test_keeps_hour_long_offsets_and_empty_silence_output(self):
+        self.path.write_text("1\n01:00:00,000 --> 01:00:01,000\nwords\n")
+        pipeline._clip_subtitles(self.path, 3600500)
+        self.assertIn("01:00:00,500", self.path.read_text())
+        self.path.write_text("")
+        self.assertEqual(pipeline._clip_subtitles(self.path, 3000)["clippedCues"], 0)
+
+    def test_malformed_subtitles_fail_without_modifying_input(self):
+        for data in ("not SRT", "1\n00:70:00,000 --> 00:71:00,000\nwords", "1\n00:00:05,000 --> 00:00:04,000\nwords"):
+            self.path.write_text(data)
+            with self.assertRaises(ValueError):
+                pipeline._clip_subtitles(self.path, 10000)
+            self.assertEqual(self.path.read_text(), data)
 
 
 if __name__ == "__main__":

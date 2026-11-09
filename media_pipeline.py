@@ -11,6 +11,7 @@ import threading
 import time
 import uuid
 import urllib.parse
+import wave
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -298,6 +299,45 @@ def _validate_video(path):
           "-i", str(path), "-map", "0:v:0", "-map", "0:a?", "-f", "null", "-"])
 
 
+def _audio_duration_ms(path):
+    with wave.open(str(path), "rb") as audio:
+        return audio.getnframes() * 1000 // audio.getframerate()
+
+
+def _clip_subtitles(path, duration_ms):
+    """Whisper pads its last window; keep SRT cues inside actual audio time."""
+    def milliseconds(value):
+        hours, minutes, seconds, millis = (int(part) for part in re.split(r"[:,.]", value))
+        if minutes >= 60 or seconds >= 60:
+            raise ValueError("字幕时间格式异常")
+        return ((hours * 60 + minutes) * 60 + seconds) * 1000 + millis
+    def stamp(value):
+        seconds, millis = divmod(value, 1000)
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours:02}:{minutes:02}:{seconds:02},{millis:03}"
+    pattern = re.compile(r"^(\d{2,}:\d{2}:\d{2}[,.]\d{3})\s+-->\s+(\d{2,}:\d{2}:\d{2}[,.]\d{3})$")
+    output, clipped, dropped = [], 0, 0
+    raw = Path(path).read_text(encoding="utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
+    for block in re.split(r"\n\s*\n", raw.strip()) if raw.strip() else []:
+        lines = block.splitlines()
+        match = pattern.fullmatch(lines[1].strip()) if len(lines) >= 3 and lines[0].strip().isdigit() else None
+        if not match:
+            raise ValueError("字幕内容格式异常，未发布转写结果")
+        start, end = map(milliseconds, match.groups())
+        if end <= start:
+            raise ValueError("字幕结束时间不晚于开始时间")
+        if start >= duration_ms:
+            dropped += 1
+            continue
+        if end > duration_ms:
+            end = duration_ms
+            clipped += 1
+        output.append(str(len(output) + 1) + "\n" + stamp(start) + " --> " + stamp(end) + "\n" + "\n".join(lines[2:]))
+    Path(path).write_text("\n\n".join(output) + ("\n" if output else ""), encoding="utf-8")
+    return {"audioDurationMs": duration_ms, "clippedCues": clipped, "droppedCues": dropped}
+
+
 def _finish_cleanup(job, config):
     source = _checked_path(job["source"], config["recordingDirectory"])
     if not source.exists():
@@ -435,6 +475,7 @@ def _process(job, config):
             _update_job(job["id"], status="processing", stage="提取压缩视频音轨")
             _run([str(FFMPEG), "-hide_banner", "-nostdin", "-v", "error", "-xerror", "-y", "-i", str(compressed),
                   "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav)])
+            duration_ms = _audio_duration_ms(wav)
             _update_job(job["id"], status="processing", stage="中文语音转写")
             _run([str(WHISPER), "-m", str(config_model), "-f", str(wav), "-l", str(config.get("language", "zh")),
                   "-otxt", "-osrt", "-of", str(prefix)])
@@ -443,12 +484,15 @@ def _process(job, config):
                 if not artifact.is_file() or artifact.is_symlink():
                     raise RuntimeError("转写结束但文本或字幕不完整，已保留压缩视频")
                 artifact.read_text(encoding="utf-8")  # Empty files are valid for silence.
+            bounds = _clip_subtitles(Path(str(prefix) + ".srt"), duration_ms)
             if list(_signature(compressed)) != signature:
                 raise RuntimeError("转写期间压缩视频发生变化")
-            (content / "manifest.json").write_text(json.dumps({"jobId": job["id"], "compressedSignature": signature}))
+            (content / "manifest.json").write_text(json.dumps({"jobId": job["id"], "compressedSignature": signature, "subtitleBounds": bounds}))
             content.rename(target)
+        metadata = {"subtitleBounds": bounds}
     _update_job(job["id"], status="completed", stage="恢复完成（原件保留）" if job.get("tailRecovery") else "完成",
-                transcript=str(transcript), subtitles=str(subtitles), transcriptionCompleted=True, error=None)
+                transcript=str(transcript), subtitles=str(subtitles), transcriptionCompleted=True,
+                subtitleBounds=metadata.get("subtitleBounds"), error=None)
 
 
 def _next_job():
