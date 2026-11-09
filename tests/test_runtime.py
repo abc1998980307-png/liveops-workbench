@@ -18,6 +18,8 @@ class RuntimeDiscoveryTests(unittest.TestCase):
         self.runtime = self.root / "runtime"
         self.stack.enter_context(mock.patch.object(bridge, "ROOT", self.root))
         self.stack.enter_context(mock.patch.object(bridge, "RUNTIME", self.runtime))
+        self.stack.enter_context(mock.patch.object(bridge, "MANAGED_NODE", self.root / "managed/bin/node"))
+        self.stack.enter_context(mock.patch.object(bridge, "MANAGED_PLAYWRIGHT", self.root / "managed/index.mjs"))
         self.stack.enter_context(mock.patch.dict(bridge.os.environ, {}, clear=True))
         self.which = self.stack.enter_context(mock.patch.object(bridge.shutil, "which", return_value=None))
         self.run = self.stack.enter_context(mock.patch.object(bridge.subprocess, "run"))
@@ -57,6 +59,14 @@ class RuntimeDiscoveryTests(unittest.TestCase):
                       subprocess.TimeoutExpired("node", 5)):
             self.run.side_effect = [first, subprocess.CompletedProcess([], 0, stdout="v24.2.0", stderr="")]
             self.assertEqual(bridge.discover_node(), str(fallback))
+
+    def test_managed_install_precedes_codex_fallback(self):
+        managed = self.file("managed/bin/node", True)
+        self.file("runtime/bin/node", True)
+        self.assertEqual(bridge.discover_node(), str(managed))
+        self.file("runtime/node_modules/playwright-core/index.mjs")
+        module = self.file("managed/index.mjs")
+        self.assertEqual(bridge.discover_playwright(), str(module))
 
     def test_node_missing_and_nonexecutable_fail_without_launch(self):
         self.which.return_value = str(self.file("path/node"))

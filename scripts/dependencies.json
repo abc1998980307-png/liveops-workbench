@@ -1,0 +1,58 @@
+{
+  "platform": "darwin-arm64",
+  "node": {
+    "version": "24.22.2",
+    "url": "https://nodejs.org/dist/v24.22.2/node-v24.22.2-darwin-arm64.tar.gz",
+    "sha256": "aa9549349e47dffaa42dcf95d6e06ade8c4bdafc980979883b88767670df385a",
+    "format": "tar",
+    "prefix": "node-v24.22.2-darwin-arm64",
+    "target": "tools/node",
+    "binary": "bin/node",
+    "args": ["--version"]
+  },
+  "ffmpeg": {
+    "version": "7.1 (imageio-ffmpeg 0.6.0)",
+    "url": "https://files.pythonhosted.org/packages/40/5c/f3d8a657d362cc93b81aab8feda487317da5b5d31c0e1fdfd5e986e55d17/imageio_ffmpeg-0.6.0-py3-none-macosx_11_0_arm64.whl",
+    "sha256": "b1ae3173414b5fc5f538a726c4e48ea97edc0d2cdc11f103afee655c463fa742",
+    "format": "zip",
+    "target": "tools/imageio-ffmpeg",
+    "binary": "imageio_ffmpeg/binaries/ffmpeg-macos-aarch64-v7.1",
+    "args": ["-version"]
+  },
+  "recorder": {
+    "version": "0.8.3",
+    "url": "https://github.com/bililive-go/bililive-go/releases/download/v0.8.3/bililive-darwin-arm64.tar.gz",
+    "sha256": "8273a6e3a81d8526704c107ba01d52337091c34c94c2e231280854ae5a5254cf",
+    "format": "tar",
+    "target": "plugins/bililive-go",
+    "binary": "bililive-darwin-arm64",
+    "args": ["--version"]
+  },
+  "cmake": {
+    "version": "3.31.6",
+    "url": "https://files.pythonhosted.org/packages/7f/09/516b0d709672bc430eb13278f0316acd34869269447744f5d136daeef689/cmake-3.31.6-py3-none-macosx_10_10_universal2.whl",
+    "sha256": "da9d4fd9abd571fd016ddb27da0428b10277010b23bb21e3678f8b9e96e1686e",
+    "format": "zip",
+    "target": "tools/cmake",
+    "binary": "cmake/data/bin/cmake",
+    "args": ["--version"]
+  },
+  "whisper": {
+    "version": "1.9.5",
+    "commit": "d1be6fde11ac6e0407606b4e42fe72d34add8037",
+    "url": "https://codeload.github.com/ggml-org/whisper.cpp/tar.gz/d1be6fde11ac6e0407606b4e42fe72d34add8037",
+    "sha256": "645445da884df6dbd52b30f82d7be7c01d1767c938714e477e786b88d529e9f4",
+    "format": "tar",
+    "prefix": "whisper.cpp-d1be6fde11ac6e0407606b4e42fe72d34add8037",
+    "target": "plugins/buzz/whisper.cpp",
+    "binary": "build/bin/whisper-cli",
+    "args": ["--help"]
+  },
+  "model": {
+    "version": "small-q5_1",
+    "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small-q5_1.bin",
+    "sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+    "format": "file",
+    "target": "plugins/buzz/whisper.cpp/models/ggml-small-q5_1.bin"
+  }
+}

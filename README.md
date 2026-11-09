@@ -24,16 +24,16 @@
 ```sh
 git clone https://github.com/abc1998980307-png/liveops-workbench.git
 cd liveops-workbench
-npm ci
-python3 scripts/doctor.py
+python3 scripts/install.py --apply
+python3 scripts/doctor.py --full
 python3 server.py
 ```
 
-在浏览器访问 <http://127.0.0.1:8765/#business>。Python 需要 3.9+。`npm ci` 仅安装采集代码依赖，不安装浏览器或 Whisper 模型。环境检查会列出缺少的组件；只有核心网页启动并不代表录制与转写已就绪。
+在浏览器访问 <http://127.0.0.1:8765/#business>。Python 需要 3.9+，Whisper 源码构建需要 Apple 命令行工具；Google Chrome 需从官网安装。也可以先启动网页，再在“运行设置 → 本机组件安装”中安装。详细步骤和验证范围见 [安装说明](docs/INSTALLATION.md)。开发环境仍可运行 `npm ci` 安装项目依赖。
 
 日常可以双击 `启动直播操盘台.command`。该启动器优先打开已经运行的服务；如本机存在旧的 `LiveOps/dashboard` 安装副本，也会优先使用安装副本。开发新版本时直接运行仓库的 `server.py`，并先正常停止占用 8765 端口的旧服务；有录制或媒体后处理时等待结束。
 
-运行数据位于 `~/Library/Application Support/LiveOps/`，与 Git 仓库分开。安装与配置详情见 [运行和连接说明](rpa/README.md)。目前没有自动安装全部外部组件的一键安装包；完整安装器是发布前待办。
+运行数据位于 `~/Library/Application Support/LiveOps/`，与 Git 仓库分开。安装器提供采集、录制、压缩和离线转写组件；DailyHotApi、KeyBERT 和其他平台接入仍待补齐。账号配置见 [运行和连接说明](rpa/README.md)。
 
 ## 测试
 

@@ -16,9 +16,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from flv_recovery import inspect_tail
+from runtime_config import DATA_ROOT
 
 
-DATA_ROOT = Path.home() / "Library" / "Application Support" / "LiveOps"
 PLUGIN_ROOT = DATA_ROOT / "plugins" / "media-pipeline"
 CONFIG_FILE = DATA_ROOT / "plugin-settings" / "media-pipeline.json"
 JOBS_FILE = DATA_ROOT / "plugin-settings" / "media-jobs.json"

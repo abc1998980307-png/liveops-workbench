@@ -464,6 +464,16 @@
         <section class="view" id="view-settings">
           <div class="page-head"><div><div class="eyebrow">PLUGIN SETTINGS</div><h1>运行设置</h1><p class="page-desc">管理本机已接入插件和操盘台刷新行为。</p></div><div class="button-row"><button class="btn" id="reloadSettings">重新读取</button></div></div>
           <div class="settings-stack">
+            <section class="panel" id="dependencyPanel">
+              <div class="panel-head"><div><div class="panel-title">本机组件安装</div><div class="panel-subtitle">为录制、压缩、离线字幕和罗盘采集准备运行工具</div></div><span class="tag" id="dependencyBadge" role="status">检查中</span></div>
+              <div class="panel-body">
+                <div id="dependencyItems" class="button-row" style="flex-wrap:wrap"></div>
+                <p class="recorder-description">支持 Apple Silicon Mac。首次下载约 350 MB，并编译离线转写工具；需要 Apple 命令行工具。已有工具与保存设置会保留，安装完成后再连接账号和录制器。</p>
+                <div class="button-row" style="flex-wrap:wrap"><button class="btn primary" id="installDependencies" type="button" disabled>安装缺少的组件</button><button class="btn" id="checkDependencies" type="button">检查安装状态</button><a class="source-link" href="https://www.google.com/chrome/" target="_blank" rel="noopener noreferrer">安装 Google Chrome ↗</a></div>
+                <p class="settings-status" id="dependencyMessage" role="status" aria-live="polite"></p>
+                <details id="dependencyLogWrap" hidden><summary>查看安装日志</summary><pre id="dependencyLog" style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:240px;overflow:auto"></pre></details>
+              </div>
+            </section>
             <section class="panel">
               <div class="panel-head"><div><div class="panel-title">录制器连接</div><div class="panel-subtitle">在这里启动、连接和管理本机录制器</div></div><span class="recorder-status" data-recorder-status role="status">检查中</span></div>
               <div class="panel-body">
@@ -1133,5 +1143,6 @@
   </script>
   <script src="/rpa-ui.js"></script>
   <script src="/feishu-ui.js"></script>
+  <script src="/dependency-ui.js"></script>
 </body>
 </html>

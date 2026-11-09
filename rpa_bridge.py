@@ -9,9 +9,10 @@ import shutil
 import subprocess
 import threading
 import uuid
+from runtime_config import DATA_ROOT, MANAGED_NODE, MANAGED_PLAYWRIGHT
 
 ROOT = Path(__file__).resolve().parent
-DATA = Path(os.environ.get("LIVEOPS_RPA_DATA", str(Path.home() / "Library/Application Support/LiveOps/rpa")))
+DATA = Path(os.environ.get("LIVEOPS_RPA_DATA", str(DATA_ROOT / "rpa")))
 RUNTIME = Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/node"
 
 
@@ -28,7 +29,7 @@ def _node_major(executable):
 
 def discover_node():
     explicit = os.environ.get("LIVEOPS_NODE")
-    candidates = [explicit] if explicit else [shutil.which("node"), RUNTIME / "bin/node"]
+    candidates = [explicit] if explicit else [shutil.which("node"), MANAGED_NODE, RUNTIME / "bin/node"]
     for candidate in candidates:
         if not candidate:
             continue
@@ -39,13 +40,14 @@ def discover_node():
                 return str(executable)
     if explicit:
         raise RuntimeError("LIVEOPS_NODE 必须指向可运行的 Node.js 24 或更新版本。")
-    raise RuntimeError("未找到 Node.js 24，请安装后加入 PATH，或配置 LIVEOPS_NODE。")
+    raise RuntimeError("未找到 Node.js 24，请运行 python3 scripts/install.py --apply --components node,collector，或配置 LIVEOPS_NODE。")
 
 
 def discover_playwright():
     explicit = os.environ.get("LIVEOPS_PLAYWRIGHT_MODULE")
     candidates = ([explicit] if explicit else
                   [ROOT / "node_modules/playwright-core/index.mjs",
+                   MANAGED_PLAYWRIGHT,
                    RUNTIME / "node_modules/playwright-core/index.mjs"])
     for candidate in candidates:
         module = Path(candidate).expanduser().resolve()

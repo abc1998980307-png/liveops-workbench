@@ -2,6 +2,7 @@
 """Read-only local dependency report. Does not log in, start services or install tools."""
 
 import json
+import argparse
 import os
 import platform
 import sys
@@ -10,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from rpa_bridge import discover_node, discover_playwright  # noqa: E402
+from runtime_config import DATA_ROOT  # noqa: E402
 
 
 def configured_path(path, key, default):
@@ -22,7 +24,11 @@ def configured_path(path, key, default):
 
 
 def main():
-    data = Path.home() / "Library/Application Support/LiveOps"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--full", action="store_true", help="录制、压缩和转写组件也必须就绪")
+    args = parser.parse_args()
+    data = DATA_ROOT
+    print(f"数据目录：{data}")
     checks = []
 
     def report(name, available, detail, required=True):
@@ -54,8 +60,12 @@ def main():
     for name, binary in (("录制器 bililive-go", recorder), ("录制器 FFmpeg", recorder_ffmpeg),
                          ("压缩 FFmpeg", ffmpeg), ("Whisper CLI", whisper)):
         ready = binary.is_file() and os.access(binary, os.X_OK)
-        report(name, ready, "可运行文件已找到" if ready else "未在程序使用的位置找到可执行文件", required=False)
-    report("Whisper 模型", model.is_file(), "已找到" if model.is_file() else "尚未配置本地模型", required=False)
+        report(name, ready, "可运行文件已找到" if ready else "未在程序使用的位置找到可执行文件", required=args.full)
+    report("Whisper 模型", model.is_file(), "已找到" if model.is_file() else "尚未配置本地模型", required=args.full)
+    template = data / "plugins/bililive-go/v0.8.3-darwin-arm64.tar.gz"
+    report("录制器配置模板", template.is_file(), "已找到" if template.is_file() else "缺少安装包中的配置模板", required=args.full)
+    if not all(available for available, _ in checks):
+        print("缺少组件时运行：python3 scripts/install.py --apply；Chrome 请从 Google 官网安装。")
     print("此检查仅确认本机依赖存在；账号权限、接口连接和真实采集需另行验收。")
     return 0 if all(available for available, required in checks if required) else 1
 

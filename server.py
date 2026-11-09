@@ -22,10 +22,11 @@ from pathlib import Path
 from douyin_profile import ProfileLookupError, normalize_profile_link, profile_state_from_response
 from rpa_bridge import COLLECTOR
 from recorder_service import RecorderManager, RecorderError
+from runtime_config import DATA_ROOT
+from dependency_service import DependencyManager
 
 
 ROOT = Path(__file__).resolve().parent
-DATA_ROOT = Path.home() / "Library" / "Application Support" / "LiveOps"
 RECORDINGS = DATA_ROOT / "recordings"
 TRANSCRIPTS = DATA_ROOT / "transcripts"
 ACCOUNT_FILE = DATA_ROOT / "accounts.json"
@@ -44,6 +45,7 @@ HOT_API = os.environ.get("LIVEOPS_HOT_API_URL", "http://127.0.0.1:16688").rstrip
 PORT = int(os.environ.get("LIVEOPS_PORT", "8765"))
 DOUYIN_HOSTS = {"live.douyin.com", "v.douyin.com"}
 RECORDER = RecorderManager(DATA_ROOT, BGO)
+DEPENDENCIES = DependencyManager(DATA_ROOT, ROOT)
 ACCOUNT_LOCK = threading.RLock()
 PROFILE_MONITOR_LOCK = threading.Lock()
 PROFILE_MONITOR_WAKE = threading.Event()
@@ -797,6 +799,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/health":
             self.send_json({"service": "liveops-dashboard", "ready": True})
             return
+        if path == "/api/dependencies/state":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台检查安装状态"}, 403)
+                return
+            self.send_json(DEPENDENCIES.state())
+            return
         if path == "/api/recorder/state":
             if not self.rpa_request_allowed():
                 self.send_json({"error": "仅允许从本机工作台管理录制器"}, 403)
@@ -925,6 +933,21 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.read_json()
         except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
             self.send_json({"error": str(error)}, 400)
+            return
+
+        if path == "/api/dependencies/install":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台安装组件"}, 403)
+                return
+            if not isinstance(payload, dict) or payload:
+                self.send_json({"error": "此入口只接受空对象，安装版本与目录由工作台确定"}, 400)
+                return
+            try:
+                self.send_json(DEPENDENCIES.install())
+            except ValueError as error:
+                self.send_json({"error": str(error)}, 400)
+            except (OSError, RuntimeError) as error:
+                self.send_json({"error": "无法启动安装：" + str(error)}, 503)
             return
 
         if path == "/api/media/retry":
@@ -1341,10 +1364,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def serve_static(self, url_path, head_only=False):
         requested = urllib.parse.unquote(url_path)
-        if requested not in ("", "/", "/直播操盘台.html", "/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css"):
+        if requested not in ("", "/", "/直播操盘台.html", "/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/dependency-ui.js"):
             self.send_json({"error": "not found"}, 404)
             return
-        candidate = ROOT / (requested.lstrip("/") if requested in ("/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css") else "直播操盘台.html")
+        candidate = ROOT / (requested.lstrip("/") if requested in ("/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/dependency-ui.js") else "直播操盘台.html")
         if not candidate.is_file():
             self.send_json({"error": "not found"}, 404)
             return

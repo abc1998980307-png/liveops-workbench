@@ -13,6 +13,8 @@
 !/start_dashboard.py
 !/rpa_bridge.py
 !/runtime_config.py
+!/dependency_service.py
+!/dependency-ui.js
 !/media_pipeline.py
 !/flv_recovery.py
 !/recorder_service.py
