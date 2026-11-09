@@ -104,6 +104,22 @@ def job_snapshot():
     }
 
 
+def archive_jobs():
+    """Return durable jobs for the session archive module without exposing them over HTTP."""
+    with _jobs_lock:
+        return json.loads(json.dumps(_read_jobs()))
+
+
+def validate_video(path):
+    """Public adapter used by the session archive module."""
+    _validate_video(Path(path))
+
+
+def run_command(command):
+    """Run an archive-owned FFmpeg command under the worker's stop boundary."""
+    _run(command)
+
+
 def _relative_file(value, root):
     if not value:
         return None

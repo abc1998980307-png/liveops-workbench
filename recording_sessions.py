@@ -221,7 +221,7 @@ class RecordingSessions:
             sessions.sort(key=lambda s: s["startedAt"], reverse=True)
             return {"sessions": sessions[:50], "total": len(sessions), "truncated": len(sessions) > 50,
                     "checkedAt": self.checked_at, "error": self.error,
-                    "note": "本机录制场次；从接入后观察文件，历史片段可能缺失。尚未关联罗盘场次或自动合并。"}
+                    "note": "本机录制场次；从接入后观察文件，历史片段可能缺失。录制器确认结束后可生成合并归档。"}
 
     def _loop(self):
         while not self.stop.is_set():

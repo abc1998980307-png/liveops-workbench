@@ -209,6 +209,41 @@ class RecordingSessionHTTPTests(unittest.TestCase):
             http_server.server_close()
             thread.join()
 
+    def test_archive_endpoint_is_local_only_and_passes_session_id(self):
+        http_server = server.LocalHTTPServer(("127.0.0.1", 0), server.Handler)
+        port = http_server.server_address[1]
+        thread = threading.Thread(target=http_server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with mock.patch.object(server, "PORT", port), mock.patch.object(server, "RECORDING_ARCHIVES") as archives:
+                archives.snapshot.return_value = {"archives": [], "error": None}
+                archives.create.return_value = {"status": "completed", "sessionId": "a" * 32}
+                client = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                client.request("GET", "/api/recording-archives")
+                response = client.getresponse()
+                self.assertEqual(response.status, 200)
+                response.read()
+                client.close()
+
+                client = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                client.request("POST", "/api/recording-sessions/archive", json.dumps({"sessionId": "a" * 32}),
+                               {"Content-Type": "application/json"})
+                response = client.getresponse()
+                self.assertEqual(response.status, 200)
+                response.read()
+                client.close()
+                archives.create.assert_called_once_with("a" * 32)
+
+                client = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                client.request("POST", "/api/recording-sessions/archive", json.dumps({"sessionId": "a" * 32}),
+                               {"Content-Type": "application/json", "Host": "attacker.example"})
+                self.assertEqual(client.getresponse().status, 403)
+                client.close()
+        finally:
+            http_server.shutdown()
+            http_server.server_close()
+            thread.join()
+
 
 if __name__ == "__main__":
     unittest.main()

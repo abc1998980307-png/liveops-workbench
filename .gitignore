@@ -19,6 +19,7 @@
 !/flv_recovery.py
 !/recorder_service.py
 !/recording_sessions.py
+!/recording_archives.py
 !/recording-sessions-ui.js
 !/直播操盘台.html
 !/启动直播操盘台.command

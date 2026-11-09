@@ -25,6 +25,7 @@ from recorder_service import RecorderManager, RecorderError
 from runtime_config import DATA_ROOT
 from dependency_service import DependencyManager
 from recording_sessions import RecordingSessions
+from recording_archives import RecordingArchiveManager
 
 
 ROOT = Path(__file__).resolve().parent
@@ -70,6 +71,9 @@ _pipeline_spec = importlib.util.spec_from_file_location("liveops_media_pipeline"
 MEDIA_PIPELINE = importlib.util.module_from_spec(_pipeline_spec) if _pipeline_spec else None
 if _pipeline_spec and _pipeline_spec.loader:
     _pipeline_spec.loader.exec_module(MEDIA_PIPELINE)
+
+RECORDING_ARCHIVES = RecordingArchiveManager(DATA_ROOT, RECORDING_SESSIONS, MEDIA_PIPELINE,
+                                             lambda: read_settings()["recordingDirectory"])
 
 
 def read_accounts():
@@ -878,7 +882,15 @@ class Handler(BaseHTTPRequestHandler):
             if not self.rpa_request_allowed():
                 self.send_json({"error": "仅允许从本机工作台读取录制场次"}, 403)
                 return
-            self.send_json(RECORDING_SESSIONS.snapshot())
+            snapshot = RECORDING_SESSIONS.snapshot()
+            snapshot["archives"] = RECORDING_ARCHIVES.snapshot().get("archives", [])
+            self.send_json(snapshot)
+            return
+        if path == "/api/recording-archives":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台读取录制归档"}, 403)
+                return
+            self.send_json(RECORDING_ARCHIVES.snapshot())
             return
         if path.startswith("/transcripts/"):
             self.serve_transcript(path[len("/transcripts/"):])
@@ -977,6 +989,23 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(error)}, 400)
             except OSError as error:
                 self.send_json({"error": "无法保存重试任务：" + str(error)}, 500)
+            return
+
+        if path == "/api/recording-sessions/archive":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台生成录制归档"}, 403)
+                return
+            if not isinstance(payload, dict):
+                self.send_json({"error": "请求必须是 JSON 对象"}, 400)
+                return
+            try:
+                self.send_json(RECORDING_ARCHIVES.create(payload.get("sessionId")))
+            except FileNotFoundError as error:
+                self.send_json({"error": str(error)}, 404)
+            except ValueError as error:
+                self.send_json({"error": str(error)}, 400)
+            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                self.send_json({"error": str(error)}, 500)
             return
 
         if path == "/api/recordings/reveal":
