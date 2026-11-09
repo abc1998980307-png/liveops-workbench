@@ -1,0 +1,63 @@
+# 直播操盘台 · LiveOps Workbench
+
+本机运行的直播经营工作台，将直播监控、录屏后处理、罗盘经营数据、热点榜和飞书多维表格同步集中到网页中。
+
+**当前版本是持续开发基线，尚未完成全部功能与真实业务验收。** 开发范围、优先级和逐项验收见 [功能路线图](docs/ROADMAP.md) 与 [技术架构](docs/ARCHITECTURE.md)。
+
+## 当前能力
+
+- 直播账号管理，bililive-go 连接、启动、停止、监测状态和录屏列表。
+- 录屏完成后压缩，验证成功后按设置删除对应原文件，保留压缩视频；可用 whisper.cpp 生成 TXT / SRT。
+- 罗盘独立账号登录、今日场次检测、8 项核心指标、商品数据、本机趋势和 JSON 导出。
+- 飞书多维表格配置、按账号和场次更新、去重、失败重试；实际写入仍需配置并验证授权。
+- DailyHotApi 热点榜、筛选和导出。
+- Ego 后台接入的最近核验记录。Ego 浏览器辅助操作与定时 Chrome 采集是不同连接方式。
+
+千川消耗已有真实历史单场核验，但自动消耗采集、历史批量导入、自动复盘和关键词分析仍在开发清单中。没有真实权限或数据的功能不显示模拟业务结果。
+
+## 运行方式
+
+当前完整运行环境为 **macOS Apple Silicon**。Python 核心服务只使用标准库；罗盘采集需要 Node.js 24+、Google Chrome 和 Playwright Core。录制、压缩、转写和热点榜分别依赖额外的本机服务。
+
+```sh
+git clone https://github.com/abc1998980307-png/liveops-workbench.git
+cd liveops-workbench
+npm ci
+python3 scripts/doctor.py
+python3 server.py
+```
+
+在浏览器访问 <http://127.0.0.1:8765/#business>。Python 需要 3.9+。`npm ci` 仅安装采集代码依赖，不安装浏览器或 Whisper 模型。环境检查会列出缺少的组件；只有核心网页启动并不代表录制与转写已就绪。
+
+日常可以双击 `启动直播操盘台.command`。该启动器优先打开已经运行的服务；如本机存在旧的 `LiveOps/dashboard` 安装副本，也会优先使用安装副本。开发新版本时直接运行仓库的 `server.py`，并先正常停止占用 8765 端口的旧服务；有录制或媒体后处理时等待结束。
+
+运行数据位于 `~/Library/Application Support/LiveOps/`，与 Git 仓库分开。安装与配置详情见 [运行和连接说明](rpa/README.md)。目前没有自动安装全部外部组件的一键安装包；完整安装器是发布前待办。
+
+## 测试
+
+```sh
+node --test tests/*.test.mjs
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+python3 scripts/check_frontend.py
+```
+
+GitHub Actions 在推送和 Pull Request 时运行这些检查。测试使用合成数据或临时目录，不扫码、不录制真实直播、不写入真实飞书表格。真实业务验收单独记录。
+
+## 项目结构
+
+| 路径 | 用途 |
+|---|---|
+| `直播操盘台.html`、`*-ui.js/css` | 六个工作台页面及连接 UI |
+| `server.py` | 本机 HTTP API、静态文件和服务适配 |
+| `rpa/`、`rpa_bridge.py` | 浏览器采集、SQLite 存储、飞书同步 |
+| `recorder_service.py` | 录制器进程和配置管理 |
+| `media_pipeline.py` | 压缩、校验、转写及源文件清理 |
+| `scripts/` | 环境检查和开发检查 |
+| `tests/` | 自动测试 |
+| `docs/` | 范围、进度、验收和交接 |
+
+## GitHub 与跨电脑使用
+
+GitHub 保存源码、文档、测试与版本历史。它不会运行本机录制器，也不会自动同步浏览器登录态或业务数据库。其他电脑需要取得仓库、安装依赖并重新登录自己的后台；GitHub Pages 不能运行本项目的 Python/Node 后端。
+
+本仓库只包含自行实现的工作台代码与文档，不包含第三方程序包、逆向原始脚本、账号会话、密钥、录屏、转写内容和真实经营数据。维护方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。

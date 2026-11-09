@@ -1,0 +1,16 @@
+{
+  "name": "liveops-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local livestream operations workbench for macOS",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "doctor": "python3 scripts/doctor.py"
+  },
+  "dependencies": {
+    "playwright-core": "1.62.1"
+  }
+}

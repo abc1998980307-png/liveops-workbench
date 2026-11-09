@@ -1,0 +1,1041 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f6f5">
+  <title>直播操盘台</title>
+  <link rel="stylesheet" href="/rpa-ui.css">
+  <link rel="stylesheet" href="/feishu-ui.css">
+  <style>
+    :root {
+      color-scheme: light;
+      --canvas: #f4f6f5;
+      --surface: #ffffff;
+      --surface-soft: #f8faf9;
+      --ink: #1c2726;
+      --muted: #687875;
+      --line: #e2e9e6;
+      --teal: #147d70;
+      --teal-soft: #e6f4f0;
+      --orange: #c66b31;
+      --orange-soft: #fff1e7;
+      --red: #bd4e4c;
+      --red-soft: #fff0ef;
+      --green: #277e55;
+      --green-soft: #eaf5ee;
+      --shadow: 0 1px 2px rgb(18 40 35 / 4%), 0 8px 24px rgb(18 40 35 / 3%);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-synthesis: none;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--canvas); color: var(--ink); min-width: 320px; }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    .app-shell { display: grid; grid-template-columns: 224px minmax(0, 1fr); min-height: 100vh; }
+    .sidebar { background: #fff; border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 22px 14px 16px; }
+    .brand { display: flex; align-items: center; gap: 11px; padding: 0 9px 28px; }
+    .brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; background: #174c45; color: #fff; font-size: 17px; font-weight: 700; }
+    .brand-name { font-size: 15px; font-weight: 700; line-height: 1.25; }
+    .brand-caption { color: var(--muted); font-size: 10px; margin-top: 3px; letter-spacing: .08em; }
+    .nav-label { color: #98a5a1; font-size: 10px; font-weight: 700; padding: 9px 11px 8px; letter-spacing: .1em; }
+    .nav-list { display: grid; gap: 4px; }
+    .nav-button { width: 100%; display: flex; align-items: center; justify-content: space-between; min-height: 40px; padding: 0 11px; text-align: left; border: 0; border-radius: 6px; background: transparent; color: #53615e; font-size: 13px; }
+    .nav-button:hover { background: #f4f7f6; color: var(--ink); }
+    .nav-button.active { background: var(--teal-soft); color: #126c61; font-weight: 650; }
+    .nav-button .nav-count { font-size: 11px; color: #84928e; }
+    .sidebar-spacer { flex: 1; }
+    .workspace-card { border-top: 1px solid var(--line); padding: 16px 9px 0; }
+    .workspace-name { font-size: 12px; font-weight: 650; }
+    .workspace-sub { color: var(--muted); font-size: 11px; margin-top: 5px; }
+    .workspace-dot { display: inline-block; width: 7px; height: 7px; background: #d39b40; border-radius: 50%; margin-right: 5px; }
+    .main { min-width: 0; }
+    .topbar { height: 60px; background: rgb(255 255 255 / 88%); border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; padding: 0 30px; position: sticky; top: 0; z-index: 4; backdrop-filter: blur(12px); }
+    .breadcrumb { color: var(--muted); font-size: 12px; }
+    .breadcrumb strong { color: var(--ink); font-weight: 600; }
+    .top-actions { display: flex; align-items: center; gap: 13px; }
+    .demo-pill { display: inline-flex; align-items: center; gap: 6px; background: #eaf5ee; color: #28704b; border: 1px solid #d6eadc; border-radius: 4px; font-size: 11px; padding: 5px 8px; white-space: nowrap; }
+    .demo-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #4e9a6c; }
+    .avatar { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: #e9efed; color: #52615d; font-size: 11px; font-weight: 650; }
+    .content { max-width: 1500px; margin: 0 auto; padding: 25px 30px 44px; }
+    .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 19px; }
+    .eyebrow { color: var(--teal); font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; margin-bottom: 7px; }
+    h1 { font-size: 22px; line-height: 1.25; margin: 0; letter-spacing: 0; }
+    .page-desc { color: var(--muted); font-size: 12px; margin: 7px 0 0; }
+    .button-row { display: flex; align-items: center; gap: 8px; }
+    .btn { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid #d8e1dd; border-radius: 5px; background: #fff; color: #394744; padding: 0 11px; font-size: 12px; font-weight: 600; transition: background .15s, border-color .15s; white-space: nowrap; }
+    .btn:hover { background: #f8fbfa; border-color: #b7c8c2; }
+    .btn.primary { border-color: #176f64; background: #176f64; color: #fff; }
+    .btn.primary:hover { background: #115e54; }
+    .btn.small { min-height: 28px; padding: 0 8px; font-size: 11px; }
+    .btn.text { border-color: transparent; background: transparent; color: var(--teal); padding: 0 5px; }
+    .notice { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; border: 1px solid #ecd9b5; border-left: 3px solid #d89b2c; background: #fffaf0; color: #745a2e; padding: 10px 13px; margin-bottom: 16px; border-radius: 4px; font-size: 11px; line-height: 1.55; }
+    .notice strong { color: #60471d; }
+    .notice a { color: inherit; font-weight: 650; text-decoration: underline; text-underline-offset: 2px; }
+    .notice-close { border: 0; color: #987d4e; background: transparent; padding: 0 2px; font-size: 16px; line-height: 1; }
+    .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 6px; background: var(--surface); box-shadow: var(--shadow); margin-bottom: 16px; }
+    .stat { padding: 14px 17px; border-right: 1px solid var(--line); min-width: 0; }
+    .stat:last-child { border-right: 0; }
+    .stat-label { color: var(--muted); display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; }
+    .stat-value { margin-top: 8px; display: flex; align-items: baseline; gap: 8px; font-size: 24px; font-weight: 650; line-height: 1; font-variant-numeric: tabular-nums; }
+    .stat-note { color: #899793; font-size: 10px; font-weight: 450; }
+    .stat-note.up { color: var(--green); }
+    .workspace { display: grid; grid-template-columns: minmax(0, 1.56fr) minmax(300px, .84fr); gap: 16px; align-items: start; }
+    .panel { border: 1px solid var(--line); border-radius: 6px; background: var(--surface); box-shadow: var(--shadow); min-width: 0; }
+    .panel-head { min-height: 55px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 16px; border-bottom: 1px solid var(--line); }
+    .panel-title { font-size: 13px; font-weight: 650; }
+    .panel-subtitle { color: var(--muted); font-size: 10px; margin-top: 3px; }
+    .panel-body { padding: 14px 16px; }
+    .live-head-right { display: flex; align-items: center; gap: 8px; }
+    .live-total { color: var(--muted); font-size: 11px; }
+    .control-row { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+    .search-wrap { position: relative; flex: 1; min-width: 110px; }
+    .search-wrap input { width: 100%; min-height: 33px; border: 1px solid var(--line); border-radius: 4px; background: #fff; padding: 0 10px 0 30px; outline: none; font-size: 11px; color: var(--ink); }
+    .search-wrap input:focus, .field input:focus, .field select:focus { border-color: #80b7ad; box-shadow: 0 0 0 3px rgb(20 125 112 / 9%); }
+    .search-symbol { position: absolute; left: 10px; top: 9px; width: 11px; height: 11px; border: 1.5px solid #879590; border-radius: 50%; }
+    .search-symbol::after { content: ""; position: absolute; width: 5px; height: 1.5px; background: #879590; right: -4px; bottom: -2px; transform: rotate(45deg); }
+    select.filter { min-height: 33px; max-width: 135px; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: #51605c; padding: 0 25px 0 9px; outline: none; font-size: 11px; }
+    .table-wrap { overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; min-width: 620px; text-align: left; }
+    th { height: 31px; color: #889692; background: #f9fbfa; border-top: 1px solid #edf1ef; border-bottom: 1px solid #edf1ef; font-size: 10px; font-weight: 600; padding: 0 10px; white-space: nowrap; }
+    td { height: 57px; border-bottom: 1px solid #edf1ef; padding: 0 10px; color: #475552; font-size: 11px; white-space: nowrap; }
+    tr:last-child td { border-bottom: 0; }
+    tbody tr { cursor: pointer; transition: background .12s; }
+    tbody tr:hover { background: #f8fbfa; }
+    tbody tr.selected { background: #f0f8f5; }
+    .account-cell { display: flex; align-items: center; gap: 8px; }
+    .account-avatar { flex: 0 0 29px; width: 29px; height: 29px; border-radius: 7px; display: grid; place-items: center; font-size: 10px; font-weight: 700; color: #405751; background: #e6eeeb; }
+    .account-meta { min-width: 0; }
+    .account-name { max-width: 145px; overflow: hidden; text-overflow: ellipsis; color: var(--ink); font-size: 11px; font-weight: 650; }
+    .account-id { color: #929e9a; font-size: 9px; margin-top: 3px; }
+    .tag { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; border-radius: 3px; background: #f0f3f2; color: #6f7e79; font-size: 9px; }
+    .tag.own { background: #e8f3ef; color: #2d7768; }
+    .tag.competitor { background: #edf0f4; color: #627080; }
+    .state { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 600; }
+    .state-dot { width: 6px; height: 6px; display: inline-block; border-radius: 50%; background: #9aa6a2; }
+    .state.live { color: #b74c47; }
+    .state.live .state-dot { background: #d85550; box-shadow: 0 0 0 3px #fff0ef; }
+    .state.offline { color: #74817d; }
+    .state.pending { color: #9a772f; }
+    .state.error { color: #b74c47; }
+    .state.error .state-dot { background: #d85550; box-shadow: 0 0 0 3px #fff0ef; }
+    .number { font-variant-numeric: tabular-nums; }
+    .data-origin { display: block; color: #9aa5a1; font-size: 9px; margin-top: 3px; }
+    .table-action { border: 0; background: transparent; color: var(--teal); font-size: 10px; padding: 5px 2px; }
+    .table-action:hover { text-decoration: underline; }
+    .table-empty { padding: 32px 12px; text-align: center; color: var(--muted); font-size: 12px; }
+    .detail-title-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+    .detail-account { display: flex; gap: 9px; align-items: center; }
+    .detail-account .account-avatar { width: 35px; height: 35px; font-size: 11px; }
+    .detail-name { font-size: 12px; font-weight: 650; }
+    .detail-id { font-size: 10px; color: var(--muted); margin-top: 4px; }
+    .source-note { color: #9aa6a2; font-size: 9px; text-align: right; line-height: 1.45; }
+    .detail-state-line { margin-top: 16px; display: flex; align-items: center; justify-content: space-between; font-size: 10px; color: var(--muted); }
+    .detail-state-line strong { color: #ad4e49; font-size: 11px; }
+    .detail-state-line { gap: 12px; align-items: flex-start; }
+    .detail-state-line span { max-width: 62%; text-align: right; white-space: normal; overflow-wrap: anywhere; }
+    .metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 12px; border: 1px solid #edf1ef; border-radius: 4px; }
+    .metric { padding: 10px 11px; min-width: 0; }
+    .metric:nth-child(odd) { border-right: 1px solid #edf1ef; }
+    .metric:nth-child(-n+2) { border-bottom: 1px solid #edf1ef; }
+    .metric-label { color: #84918d; font-size: 10px; }
+    .metric-value { margin-top: 5px; font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
+    .metric-value small { color: var(--green); font-size: 9px; font-weight: 550; margin-left: 4px; }
+    .chart-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 17px; color: #687672; font-size: 10px; }
+    .chart-legend { display: flex; gap: 11px; color: #889490; font-size: 9px; }
+    .legend-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--teal); margin-right: 4px; }
+    .legend-dot.orange { background: var(--orange); }
+    .chart-box { height: 104px; width: 100%; margin-top: 8px; overflow: hidden; }
+    .chart-box svg { width: 100%; height: 100%; display: block; }
+    .chart-gridline { stroke: #ebf0ed; stroke-width: 1; }
+    .chart-line-a { fill: none; stroke: var(--teal); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .chart-line-b { fill: none; stroke: var(--orange); stroke-width: 1.7; stroke-dasharray: 4 4; stroke-linecap: round; stroke-linejoin: round; }
+    .chart-fill { fill: url(#fillTeal); }
+    .chart-x { fill: #98a49f; font-size: 8px; }
+    .detail-actions { display: flex; gap: 8px; margin-top: 10px; }
+    .detail-actions .btn { flex: 1; }
+    .bottom-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(320px, .85fr); gap: 16px; margin-top: 16px; }
+    .keyword-preview { display: grid; gap: 0; }
+    .keyword-item { min-height: 42px; display: grid; grid-template-columns: minmax(120px, 1fr) 78px 78px 70px; align-items: center; gap: 8px; border-bottom: 1px solid #edf1ef; font-size: 10px; }
+    .keyword-item:last-child { border-bottom: 0; }
+    .keyword-word { color: #354440; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .keyword-rel { color: #788681; }
+    .trend-chip { color: var(--green); background: var(--green-soft); padding: 3px 5px; border-radius: 3px; text-align: center; width: fit-content; font-variant-numeric: tabular-nums; }
+    .trend-chip.flat { color: #7e8985; background: #f0f3f2; }
+    .keyword-source { color: #9aa5a1; font-size: 9px; }
+    .column-label { color: #9aa5a1; font-size: 9px; display: grid; grid-template-columns: minmax(120px, 1fr) 78px 78px 70px; gap: 8px; padding: 0 0 5px; }
+    .source-list { display: grid; }
+    .source-row { min-height: 46px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid #edf1ef; }
+    .source-row:last-child { border-bottom: 0; }
+    .source-main { display: flex; gap: 8px; align-items: center; min-width: 0; }
+    .source-logo { flex: 0 0 27px; width: 27px; height: 27px; border: 1px solid #e2e9e6; border-radius: 5px; display: grid; place-items: center; color: #52635e; background: #fafcfb; font-size: 9px; font-weight: 700; }
+    .source-name { font-size: 10px; font-weight: 600; }
+    .source-desc { color: #939f9b; font-size: 9px; margin-top: 3px; }
+    .source-status { color: #9a762d; font-size: 9px; white-space: nowrap; }
+    .source-status.ready { color: var(--green); }
+    .source-status.estimate { color: #647483; }
+    .view { display: none; }
+    .view.active { display: block; }
+    .research-layout { display: grid; grid-template-columns: minmax(0, 1fr) 265px; gap: 16px; align-items: start; }
+    .research-toolbar { display: flex; gap: 8px; margin-bottom: 13px; }
+    .research-toolbar input { flex: 1; min-width: 0; min-height: 37px; border: 1px solid var(--line); border-radius: 4px; outline: 0; padding: 0 11px; font-size: 12px; }
+    .seed-chip-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 14px; }
+    .seed-label { color: #8c9894; font-size: 10px; margin-right: 2px; }
+    .seed-chip { background: #f2f6f4; border: 1px solid #e3ebe7; border-radius: 4px; color: #5d6c67; padding: 5px 8px; font-size: 10px; }
+    .seed-chip:hover { border-color: #9fc7bb; color: var(--teal); }
+    .research-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0; color: #788580; font-size: 10px; }
+    .keyword-table th, .keyword-table td { padding-left: 12px; }
+    .keyword-table td { height: 47px; }
+    .score { display: inline-flex; align-items: center; gap: 6px; color: #485652; font-variant-numeric: tabular-nums; }
+    .score-bar { width: 49px; height: 4px; border-radius: 3px; overflow: hidden; background: #edf1ef; }
+    .score-bar span { display: block; height: 100%; border-radius: inherit; background: var(--teal); }
+    .spark { width: 54px; height: 20px; }
+    .spark polyline { fill: none; stroke: #27866f; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+    .side-stack { display: grid; gap: 14px; }
+    .side-list { display: grid; gap: 10px; }
+    .rank-row { display: flex; align-items: center; gap: 9px; font-size: 10px; }
+    .rank-num { width: 18px; color: #a2aeaa; font-variant-numeric: tabular-nums; }
+    .rank-num.top { color: var(--orange); font-weight: 700; }
+    .rank-text { min-width: 0; flex: 1; color: #46534f; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rank-change { color: var(--green); font-variant-numeric: tabular-nums; }
+    .boundary-copy { color: #76837f; font-size: 10px; line-height: 1.7; }
+    .boundary-copy strong { color: #4e5c57; }
+    .source-link { display: inline-flex; margin-top: 9px; color: var(--teal); font-size: 10px; text-decoration: none; }
+    .source-link:hover { text-decoration: underline; }
+    .sessions-grid { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
+    .session-score { font-weight: 650; color: #3e645a; }
+    .session-note { color: #7b8883; font-size: 10px; }
+    .clip-list { display: grid; gap: 0; }
+    .clip-row { padding: 11px 0; border-bottom: 1px solid #edf1ef; }
+    .clip-row:last-child { border-bottom: 0; }
+    .clip-time { color: #a26836; font-size: 9px; font-variant-numeric: tabular-nums; }
+    .clip-text { color: #46534f; font-size: 10px; line-height: 1.55; margin-top: 5px; }
+    .data-source-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .source-card { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 15px; box-shadow: var(--shadow); }
+    .source-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+    .source-card-title { display: flex; align-items: center; gap: 9px; font-size: 12px; font-weight: 650; }
+    .source-card .source-logo { width: 31px; height: 31px; flex-basis: 31px; }
+    .source-card p { color: #75827e; font-size: 10px; line-height: 1.65; margin: 13px 0; min-height: 49px; }
+    .source-foot { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid #edf1ef; padding-top: 10px; }
+    .source-foot small { color: #96a19d; font-size: 9px; }
+    .settings-stack { display: grid; gap: 14px; }
+    .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px 16px; padding: 16px; }
+    .setting-field { display: grid; align-content: start; gap: 6px; min-width: 0; }
+    .setting-field label { color: #5f6d68; font-size: 10px; font-weight: 600; }
+    .setting-field input, .setting-field select { width: 100%; min-height: 35px; border: 1px solid var(--line); border-radius: 4px; background: #fff; padding: 0 9px; outline: none; font-size: 11px; }
+    .setting-field input:focus { border-color: #80b7ad; box-shadow: 0 0 0 3px rgb(20 125 112 / 9%); }
+    .input-action { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:7px; align-items:center; }
+    .input-action .btn { min-height:35px; }
+    .setting-help { color: #929e99; font-size: 9px; line-height: 1.5; }
+    .setting-check { display: flex; align-items: center; gap: 8px; min-height: 35px; color: #53615c; font-size: 11px; }
+    .setting-check input { width: 15px; height: 15px; accent-color: var(--teal); }
+    .settings-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--line); }
+    .settings-status { color: #7c8984; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+    .settings-status.pending { color: #9a6a25; }
+    .settings-note { margin: 0 16px 15px; }
+    .recorder-strip { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; margin-bottom: 14px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+    .recorder-heading { display: flex; align-items: center; gap: 9px; font-size: 12px; font-weight: 650; }
+    .recorder-status { display: inline-flex; align-items: center; gap: 5px; color: #8b7754; font-size: 10px; font-weight: 500; }
+    .recorder-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .recorder-status.connected { color: var(--teal); }
+    .recorder-description { margin: 6px 0 0; color: #7c8984; font-size: 10px; line-height: 1.6; }
+    .recorder-controls { flex-wrap: wrap; }
+    .recorder-error { color: #a34f42; overflow-wrap: anywhere; }
+    .footer-note { color: #a0aaa6; font-size: 9px; padding: 18px 2px 0; }
+    .modal-backdrop { position: fixed; inset: 0; z-index: 10; display: none; align-items: center; justify-content: center; padding: 18px; background: rgb(24 37 34 / 34%); }
+    .modal-backdrop.open { display: flex; }
+    .modal { width: min(100%, 430px); background: #fff; border: 1px solid var(--line); border-radius: 7px; box-shadow: 0 16px 55px rgb(10 28 23 / 22%); }
+    .modal-head { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); padding: 15px 17px; }
+    .modal-title { font-size: 14px; font-weight: 650; }
+    .modal-close { width: 27px; height: 27px; border: 0; border-radius: 4px; background: transparent; color: #697672; font-size: 18px; }
+    .modal-close:hover { background: #f2f5f4; }
+    .modal-body { padding: 17px; }
+    .field { display: grid; gap: 6px; margin-bottom: 14px; }
+    .field label { color: #5f6d68; font-size: 10px; font-weight: 600; }
+    .field input, .field select { min-height: 36px; border: 1px solid var(--line); border-radius: 4px; background: #fff; padding: 0 10px; outline: none; font-size: 11px; }
+    .field-help { color: #98a39f; font-size: 9px; line-height: 1.5; }
+    .choice-row { display: flex; gap: 7px; }
+    .choice { position: relative; flex: 1; }
+    .choice input { position: absolute; opacity: 0; pointer-events: none; }
+    .choice span { display: flex; min-height: 34px; justify-content: center; align-items: center; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: #61706b; font-size: 10px; cursor: pointer; }
+    .choice input:checked + span { border-color: #79b3a5; color: #146c60; background: #f0f8f5; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--line); padding: 12px 17px; }
+    .toast { position: fixed; z-index: 20; bottom: 22px; left: 50%; transform: translate(-50%, 12px); opacity: 0; pointer-events: none; transition: .2s; background: #263936; color: #fff; border-radius: 5px; padding: 10px 14px; font-size: 11px; box-shadow: var(--shadow); }
+    .toast.show { opacity: 1; transform: translate(-50%, 0); }
+    .mobile-menu { display: none; }
+    @media (max-width: 1080px) {
+      .app-shell { grid-template-columns: 196px minmax(0, 1fr); }
+      .content { padding-left: 20px; padding-right: 20px; }
+      .topbar { padding: 0 20px; }
+      .workspace, .bottom-grid { grid-template-columns: minmax(0, 1fr); }
+      .detail-panel { order: -1; }
+      .research-layout, .sessions-grid { grid-template-columns: minmax(0, 1fr); }
+      .side-stack { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 720px) {
+      .app-shell { display: block; }
+      .sidebar { position: fixed; z-index: 8; left: 0; top: 0; bottom: 0; width: 248px; transform: translateX(-101%); transition: transform .2s; box-shadow: 15px 0 45px rgb(20 40 35 / 12%); }
+      .sidebar.mobile-open { transform: translateX(0); }
+      .mobile-menu { display: inline-flex; width: 32px; height: 32px; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: 5px; background: #fff; color: #4a5954; font-size: 17px; }
+      .topbar { height: 54px; padding: 0 13px; gap: 10px; }
+      .breadcrumb { flex: 1; }
+      .content { padding: 20px 13px 35px; }
+      .page-head { align-items: flex-start; flex-direction: column; gap: 12px; }
+      .page-head .button-row { width: 100%; }
+      .page-head .button-row .btn { flex: 1; }
+      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .stat { padding: 12px; border-bottom: 1px solid var(--line); }
+      .stat:nth-child(2) { border-right: 0; }
+      .stat:nth-child(n+3) { border-bottom: 0; }
+      .stat-value { font-size: 21px; }
+      .panel-head { padding: 0 12px; }
+      .panel-body { padding: 12px; }
+      .live-head-right .live-total { display: none; }
+      .control-row { flex-wrap: wrap; }
+      .control-row .search-wrap { flex-basis: 100%; }
+      select.filter { max-width: none; flex: 1; }
+      .keyword-item, .column-label { grid-template-columns: minmax(90px, 1fr) 62px 60px 52px; gap: 5px; }
+      .side-stack { grid-template-columns: minmax(0, 1fr); }
+      .data-source-grid { grid-template-columns: minmax(0, 1fr); }
+      .settings-grid { grid-template-columns: minmax(0, 1fr); }
+      .settings-actions { align-items: flex-start; flex-direction: column; }
+      .recorder-strip { align-items: flex-start; flex-direction: column; }
+      .notice { font-size: 10px; }
+      .demo-pill { font-size: 0; padding: 7px; }
+      .demo-pill::before { margin: 0; }
+      .top-actions { gap: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-mark">播</div>
+        <div><div class="brand-name">直播操盘台</div><div class="brand-caption">LIVE COMMERCE OPS</div></div>
+      </div>
+      <div class="nav-label">工作台</div>
+      <nav class="nav-list" aria-label="主导航">
+        <button class="nav-button active" data-view="monitor"><span>直播监控</span><span class="nav-count" id="navLiveCount">02</span></button>
+        <button class="nav-button" data-view="business"><span>经营数据</span><span class="nav-count">罗盘</span></button>
+        <button class="nav-button" data-view="keywords"><span>热词洞察</span></button>
+        <button class="nav-button" data-view="sessions"><span>场次复盘</span></button>
+      </nav>
+      <div class="nav-label" style="margin-top:20px">设置</div>
+      <nav class="nav-list" aria-label="设置导航">
+        <button class="nav-button" data-view="sources"><span>数据源接入</span></button>
+        <button class="nav-button" data-view="settings"><span>运行设置</span></button>
+      </nav>
+      <div class="sidebar-spacer"></div>
+      <div class="workspace-card">
+        <div class="workspace-name"><span class="workspace-dot"></span>本地工作区</div>
+        <div class="workspace-sub">服务绑定本机回环地址</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="mobile-menu" id="mobileMenu" aria-label="打开导航">☰</button>
+        <div class="breadcrumb">操盘中心 <span style="color:#aab4b0;padding:0 6px">/</span> <strong id="breadcrumbTitle">直播监控</strong></div>
+        <div class="top-actions"><span class="demo-pill">本机服务</span><div class="avatar" title="本地用户">李</div></div>
+      </header>
+      <div class="content">
+        <section class="view active" id="view-monitor">
+          <div class="page-head">
+            <div><div class="eyebrow">LIVE ROOM CONTROL</div><h1>直播监控</h1><p class="page-desc">统一查看自有账号与竞品账号的开播状态、场次数据和录制状态。</p></div>
+            <div class="button-row"><button class="btn" id="refreshBtn">刷新列表</button><button class="btn primary" id="addAccountBtn">＋ 添加账号</button></div>
+          </div>
+          <div class="recorder-strip">
+            <div><div class="recorder-heading">本机录制器 <span class="recorder-status" data-recorder-status role="status">检查中</span></div><p class="recorder-description" data-recorder-summary>连接后可在账号详情中开启直播监测与录制。</p></div>
+            <div class="button-row recorder-controls"><button class="btn primary" data-recorder-action="start" disabled>启动并连接</button><button class="btn" data-recorder-action="check">检查连接</button><button class="btn" data-go-view="settings">录制器设置</button></div>
+          </div>
+          <div class="notice" id="serviceNotice"><div><strong>数据口径：</strong>开播状态与录制由本机 bililive-go 提供；热点榜来自 DailyHotApi。两者都不是成交数据源，观看人数和 GMV 需要另行授权接入。</div><button class="notice-close" id="dismissNotice" aria-label="关闭">×</button></div>
+          <div class="stats">
+            <div class="stat"><div class="stat-label">监控账号 <span class="stat-note">自有 + 竞品</span></div><div class="stat-value" id="statAccounts">0 <span class="stat-note">个账号</span></div></div>
+            <div class="stat"><div class="stat-label">当前直播 <span class="stat-note up">本机采集器</span></div><div class="stat-value" id="statLive">0 <span class="stat-note">场</span></div></div>
+            <div class="stat"><div class="stat-label">已绑定直播间 <span class="stat-note">可自动监测</span></div><div class="stat-value" id="statBound">0 <span class="stat-note">个</span></div></div>
+            <div class="stat"><div class="stat-label">本地录屏 <span class="stat-note">已存档</span></div><div class="stat-value" id="statRecording">0 <span class="stat-note">个文件</span></div></div>
+          </div>
+          <div class="workspace">
+            <section class="panel">
+              <div class="panel-head">
+                <div><div class="panel-title">账号列表</div><div class="panel-subtitle">状态检查时间 <span id="lastChecked">连接中</span></div></div>
+                <div class="live-head-right"><span class="live-total" id="accountTotal">显示 0 / 0 个账号</span><button class="btn small" id="exportAccounts">导出</button></div>
+              </div>
+              <div class="panel-body">
+                <div class="control-row">
+                  <div class="search-wrap"><span class="search-symbol"></span><input id="accountSearch" type="search" placeholder="搜索抖音号或账号名称" aria-label="搜索账号"></div>
+                  <select class="filter" id="typeFilter" aria-label="账号类型"><option value="all">全部类型</option><option value="own">自有账号</option><option value="competitor">竞品账号</option></select>
+                  <select class="filter" id="stateFilter" aria-label="直播状态"><option value="all">全部状态</option><option value="live">正在直播</option><option value="offline">未开播</option><option value="error">采集异常</option><option value="paused">监测已暂停</option><option value="pending">待接入</option></select>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead><tr><th>账号</th><th>类型</th><th>状态</th><th>观看人数</th><th>本场成交</th><th>录制</th><th></th></tr></thead>
+                    <tbody id="accountRows"></tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+            <aside class="panel detail-panel" id="detailPanel"></aside>
+          </div>
+          <div class="bottom-grid">
+            <section class="panel">
+              <div class="panel-head"><div><div class="panel-title">抖音热点榜</div><div class="panel-subtitle" id="hotPreviewMeta">DailyHotApi · 加载中</div></div><button class="btn text" data-go-view="keywords">打开热词洞察 →</button></div>
+              <div class="panel-body">
+                <div class="column-label"><span>热点词</span><span>榜单热度</span><span>上榜时间</span><span>来源</span></div>
+                <div class="keyword-preview" id="keywordPreview"></div>
+              </div>
+            </section>
+            <section class="panel">
+              <div class="panel-head"><div><div class="panel-title">数据源状态</div><div class="panel-subtitle">连接后显示实时采集情况</div></div><button class="btn text" data-go-view="sources">管理 →</button></div>
+              <div class="panel-body"><div class="source-list" id="sourceMiniList"></div></div>
+            </section>
+          </div>
+          <div class="footer-note">开播与录制状态读取本机 bililive-go；热点榜读取 DailyHotApi。成交与观看人数未接入时显示为空。</div>
+        </section>
+
+        <section class="view" id="view-business">
+          <div class="page-head"><div><div class="eyebrow">LIVE BUSINESS DATA</div><h1>经营数据</h1><p class="page-desc">连接自己的罗盘账号，自动同步直播场次、核心指标和商品表现。</p></div><button class="btn primary" id="rpaConnect">＋ 连接罗盘账号</button></div>
+          <div id="rpaStatus" class="rpa-status" role="status" aria-live="polite">正在连接本机采集服务…</div>
+          <div id="rpaWorkspace"></div>
+          <div id="egoWorkspace" style="margin-top:16px"></div>
+          <div id="feishuWorkspace"></div>
+        </section>
+
+        <section class="view" id="view-keywords">
+          <div class="page-head">
+            <div><div class="eyebrow">KEYWORD INTELLIGENCE</div><h1>热词洞察</h1><p class="page-desc">用趋势、内容热度和自家搜索来源交叉判断选题机会。</p></div>
+            <div class="button-row"><button class="btn" id="exportKeywords">导出词表</button></div>
+          </div>
+          <div class="notice"><div><strong>口径说明：</strong>以下是 DailyHotApi 当前返回的抖音热点榜原始热度值，不是搜索量、长尾词库或成交意向。输入词只会在当前榜单中筛选。</div></div>
+          <div class="research-layout">
+            <section class="panel">
+              <div class="panel-head"><div><div class="panel-title">抖音当前热点</div><div class="panel-subtitle">检索当前榜单中包含种子词的词条</div></div><span class="tag">DailyHotApi</span></div>
+              <div class="panel-body">
+                <form class="research-toolbar" id="keywordForm"><input id="keywordInput" aria-label="筛选热点词" placeholder="筛选当前热点，例如：教育"><button class="btn primary" type="submit">筛选榜单</button></form>
+                <div class="research-summary"><span id="keywordSummary">抖音热点榜 · 正在读取</span><span id="hotUpdatedAt">更新时间：读取中</span></div>
+                <div class="table-wrap"><table class="keyword-table"><thead><tr><th>热点词</th><th>榜单热度</th><th>上榜时间</th><th>数据来源</th><th>链接</th></tr></thead><tbody id="keywordRows"></tbody></table></div>
+              </div>
+            </section>
+            <div class="side-stack">
+              <section class="panel"><div class="panel-head"><div><div class="panel-title">热词来源</div><div class="panel-subtitle">建议交叉验证，不混算指标</div></div></div><div class="panel-body"><div class="side-list" id="keywordSources"></div></div></section>
+              <section class="panel"><div class="panel-head"><div><div class="panel-title">观察方法</div><div class="panel-subtitle">词热不等于成交</div></div></div><div class="panel-body"><div class="boundary-copy"><strong>趋势：</strong>巨量算数观察平台内容热度。<br><strong>联想：</strong>抖音搜索补充用户问法。<br><strong>竞品：</strong>飞瓜、蝉妈妈观察内容与直播动向。<br><strong>转化：</strong>电商罗盘验证自家搜索流量和成交。<br><br>建议将“相关度”“趋势指数”“搜索来源”和“转化结果”作为不同字段展示。</div><a class="source-link" href="https://www.5118.com/ci/douyin" target="_blank" rel="noreferrer">打开 5118 抖音关键词工具 →</a></div></section>
+            </div>
+          </div>
+          <div class="footer-note">长尾词仅作为选题线索。真实搜索需求以平台授权数据为准，第三方趋势不能替代店铺转化结果。</div>
+        </section>
+
+        <section class="view" id="view-sessions">
+          <div class="page-head"><div><div class="eyebrow">SESSION REVIEW</div><h1>场次复盘</h1><p class="page-desc">查看 bililive-go 保存到本机的直播录屏文件。</p></div><div class="button-row"><button class="btn" id="refreshSessions">刷新录屏</button><button class="btn" id="exportSessions">导出清单</button></div></div>
+          <div class="notice"><div><strong>录制状态：</strong>此处仅列出本机录制目录中的实际文件。bililive-go 只会对已绑定的直播间链接启动监测和录制。</div></div>
+          <div class="sessions-grid">
+            <section class="panel"><div class="panel-head"><div><div class="panel-title">本地录屏文件</div><div class="panel-subtitle" id="recordingDirectory">正在读取录制目录</div></div></div><div class="table-wrap"><table><thead><tr><th>文件</th><th>修改时间</th><th>大小</th><th></th></tr></thead><tbody id="sessionRows"></tbody></table></div></section>
+            <section class="panel"><div class="panel-head"><div><div class="panel-title">压缩与转写队列</div><div class="panel-subtitle">录制完成后压缩视频，再生成中文文本与字幕</div></div><span class="tag" id="mediaPipelineStatus">检查中</span></div><div class="panel-body"><div class="boundary-copy" id="mediaPipelineNote">FFmpeg 压缩与 whisper.cpp 转写队列状态读取中。</div><div id="mediaJobRows" class="clip-list"></div></div></section>
+          </div>
+          <div class="footer-note">真实指标应标注来源及更新时间；竞品指标以第三方估算为准，自有账号成交以商家后台为准。</div>
+        </section>
+
+        <section class="view" id="view-sources">
+          <div class="page-head"><div><div class="eyebrow">DATA CONNECTORS</div><h1>数据源接入</h1><p class="page-desc">将官方经营数据、第三方竞品数据与本地录制分层采集。</p></div></div>
+          <div class="notice"><div><strong>本机服务：</strong>状态和热点数据通过回环地址转发，服务仅监听本机。RPA、飞瓜、蝉妈妈和官方经营报表仍需各自授权或接口配置。</div></div>
+          <div class="data-source-grid" id="sourceCards"></div>
+          <div class="footer-note">本机 bililive-go 与 DailyHotApi 已接入；媒体处理使用 FFmpeg 和 whisper.cpp。KeyBERT、RPA 及巨量算数、电商罗盘、飞瓜、蝉妈妈仍需单独安装或授权。</div>
+        </section>
+
+        <section class="view" id="view-settings">
+          <div class="page-head"><div><div class="eyebrow">PLUGIN SETTINGS</div><h1>运行设置</h1><p class="page-desc">管理本机已接入插件和操盘台刷新行为。</p></div><div class="button-row"><button class="btn" id="reloadSettings">重新读取</button></div></div>
+          <div class="settings-stack">
+            <section class="panel">
+              <div class="panel-head"><div><div class="panel-title">录制器连接</div><div class="panel-subtitle">在这里启动、连接和管理本机录制器</div></div><span class="recorder-status" data-recorder-status role="status">检查中</span></div>
+              <div class="panel-body">
+                <div class="button-row recorder-controls"><button class="btn primary" data-recorder-action="start" disabled>启动并连接</button><button class="btn" data-recorder-action="check">检查连接</button><button class="btn" data-recorder-action="restart" disabled>保存并应用设置</button><button class="btn" data-recorder-action="stop" disabled>停止录制器</button></div>
+                <p class="recorder-description" data-recorder-summary>正在检查本机录制器。</p>
+                <p class="recorder-description">首次连接会以暂停状态导入已有直播间。连接后，到“直播监控”选择账号并点击“开启监测”，开播时就会自动录制。</p>
+                <p class="recorder-description">修改下方录制参数后，点击“保存并应用设置”即可重启生效。停止或重启前，请先暂停正在录制的直播间。</p>
+                <p class="recorder-description recorder-error" id="recorderError" role="status" hidden></p>
+              </div>
+            </section>
+            <section class="panel">
+              <div class="panel-head"><div><div class="panel-title">录屏后处理</div><div class="panel-subtitle">新录屏完成后自动压缩，再运行本机语音转写</div></div><span class="tag" id="mediaSettingsBadge">检查中</span></div>
+              <div class="settings-grid">
+                <div class="setting-field"><label>自动处理</label><label class="setting-check"><input id="mediaPipelineEnabled" type="checkbox">录屏完成后自动压缩</label><div class="setting-help">压缩成功后生成 MP4；语音转写组件可用时，再生成 TXT 文本和 SRT 字幕。</div></div>
+                <div class="setting-field"><label>源文件清理</label><label class="setting-check"><input id="deleteOriginalAfterCompression" type="checkbox">压缩校验成功后删除原录屏</label><div class="setting-help">压缩或完整性校验失败时会保留原文件。</div></div>
+                <div class="setting-field"><label for="mediaCodec">压缩编码</label><select id="mediaCodec"><option value="hevc_videotoolbox">H.265 硬件编码（文件较小）</option><option value="h264_videotoolbox">H.264 硬件编码（兼容性好）</option><option value="libx265">H.265 软件编码</option><option value="libx264">H.264 软件编码</option></select></div>
+                <div class="setting-field"><label for="videoBitrate">视频码率（Kbps）</label><input id="videoBitrate" type="number" min="500" max="12000" step="100"></div>
+                <div class="setting-field"><label for="audioBitrate">音频码率（Kbps）</label><input id="audioBitrate" type="number" min="32" max="320" step="16"></div>
+                <div class="setting-field"><label for="transcriptLanguage">转写语言</label><select id="transcriptLanguage"><option value="zh">中文</option><option value="auto">自动识别</option><option value="en">英语</option><option value="ja">日语</option><option value="ko">韩语</option></select></div>
+                <div class="setting-field"><label for="whisperModel">Whisper 模型文件</label><input id="whisperModel" type="text" autocomplete="off"><div class="setting-help">small-q5_1 多语言量化模型约 190 MB；安装后启用离线中文转写。</div></div>
+              </div>
+              <div class="settings-actions"><span class="settings-status" id="mediaSettingsStatus">FFmpeg 与 whisper.cpp 状态检查中。</span></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head"><div><div class="panel-title">操盘台</div><div class="panel-subtitle">浏览器轮询设置，保存后立即生效</div></div><span class="tag">本机</span></div>
+              <div class="settings-grid">
+                <div class="setting-field"><label for="accountRefreshSeconds">直播状态刷新间隔（秒）</label><input id="accountRefreshSeconds" type="number" min="5" max="300" step="1"><div class="setting-help">控制账号、录制状态和录屏列表的自动刷新频率。</div></div>
+                <div class="setting-field"><label for="hotwordsRefreshSeconds">热点榜刷新间隔（秒）</label><input id="hotwordsRefreshSeconds" type="number" min="60" max="3600" step="30"><div class="setting-help">降低频率可减少对 DailyHotApi 和上游榜单的请求。</div></div>
+              </div>
+            </section>
+            <section class="panel">
+              <div class="panel-head"><div><div class="panel-title">bililive-go</div><div class="panel-subtitle">直播监测、录制、分段与录制后处理</div></div><span class="tag" id="bgoSettingsBadge">读取中</span></div>
+              <div class="settings-grid">
+                <div class="setting-field"><label for="bgoInterval">开播检查间隔（秒）</label><input id="bgoInterval" type="number" min="5" max="300" step="1"></div>
+                <div class="setting-field"><label for="recordingPath">录制保存目录</label><div class="input-action"><input id="recordingPath" type="text" autocomplete="off"><button class="btn small" id="chooseRecordingPath" type="button" title="选择文件夹">选择…</button></div><div class="setting-help">选择本机文件夹并保存；录制器在线并应用配置后，新录屏会写入该位置。正在录制的场次不受影响。</div></div>
+                <div class="setting-field"><label for="ffmpegPath">FFmpeg 程序路径</label><input id="ffmpegPath" type="text" autocomplete="off"><div class="setting-help">留空使用插件默认查找方式。</div></div>
+                <div class="setting-field"><label for="outputTemplate">录制文件名模板</label><input id="outputTemplate" type="text" autocomplete="off"><div class="setting-help">留空使用 bililive-go 默认模板。</div></div>
+                <div class="setting-field"><label for="maxDuration">单文件最长时长（秒）</label><input id="maxDuration" type="number" min="0" max="86400" step="60"><div class="setting-help">0 表示不按时长分段。</div></div>
+                <div class="setting-field"><label for="maxFileSize">单文件最大大小（MB）</label><input id="maxFileSize" type="number" min="0" step="100"><div class="setting-help">0 表示不按大小分段。</div></div>
+                <div class="setting-field"><label for="streamTimeout">直播流读取超时（秒）</label><input id="streamTimeout" type="number" min="5" max="300" step="5"></div>
+                <div class="setting-field"><label>分段规则</label><label class="setting-check"><input id="splitOnTitle" type="checkbox">直播标题变化时新建文件</label></div>
+                <div class="setting-field"><label>录制选项</label><label class="setting-check"><input id="fixFlv" type="checkbox">录制结束后修复 FLV</label><label class="setting-check"><input id="convertMp4" type="checkbox">录制结束后转为 MP4</label></div>
+                <div class="setting-field"><label>弹幕</label><label class="setting-check"><input id="danmakuEnable" type="checkbox">启用弹幕记录</label></div>
+              </div>
+              <div class="settings-actions"><span class="settings-status" id="bgoSettingsStatus">正在读取插件配置</span></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head"><div><div class="panel-title">DailyHotApi</div><div class="panel-subtitle">热点榜缓存和请求行为</div></div><span class="tag" id="dailyhotSettingsBadge">读取中</span></div>
+              <div class="settings-grid">
+                <div class="setting-field"><label for="cacheTTL">热点缓存时间（秒）</label><input id="cacheTTL" type="number" min="60" max="86400" step="60"></div>
+                <div class="setting-field"><label for="requestTimeout">上游请求超时（毫秒）</label><input id="requestTimeout" type="number" min="1000" max="60000" step="500"></div>
+                <div class="setting-field"><label>榜单过滤</label><label class="setting-check"><input id="filterWeiboAds" type="checkbox">过滤微博广告词（仅影响微博榜单）</label></div>
+              </div>
+              <div class="settings-actions"><span class="settings-status" id="dailyhotSettingsStatus">保存后需重启 DailyHotApi 生效。</span></div>
+            </section>
+            <div class="button-row"><button class="btn primary" id="saveSettings">保存设置</button></div>
+          </div>
+          <div class="footer-note">罗盘账号和采集频率在“经营数据”页面管理。录制参数保存后，可通过上方“保存并应用设置”生效；录制器离线时，点击“启动并连接”即可使用已保存设置。处理队列会等待录屏结束后压缩，源文件清理设置保存后生效；压缩视频、转写文本和字幕会保留。</div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="modalBackdrop" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal"><div class="modal-head"><div class="modal-title" id="modalTitle">添加监控账号</div><button class="modal-close" id="modalClose" aria-label="关闭">×</button></div><div class="modal-body" id="modalBody"></div><div class="modal-actions" id="modalActions"></div></div>
+  </div>
+  <div class="toast" id="toast" role="status"></div>
+
+  <script>
+    const sources = [
+      {id:"bililive", name:"bililive-go", short:"录", desc:"抖音开播监测与本地录制", status:"检查中", cls:"", note:"本机状态", detail:"读取本机 bililive-go 的监控列表、直播状态和录制状态；不会提供观看人数或成交额。"},
+      {id:"dailyhot", name:"DailyHotApi", short:"热", desc:"抖音当前热点榜", status:"检查中", cls:"", note:"公开热点榜", detail:"读取公开热点榜及热度值；不提供关键词搜索量、长尾词扩展或关联度。"},
+      {id:"buzz", name:"whisper.cpp", short:"转", desc:"Apple Silicon 本地语音转写", status:"安装中", cls:"", note:"离线中文转写", detail:"本地运行多语言 Whisper 模型；录屏先压缩，再从压缩视频提取音轨转写为 TXT 和 SRT。"},
+      {id:"keybert", name:"KeyBERT", short:"词", desc:"语料关键词提取", status:"待语料", cls:"", note:"文本分析", detail:"从转写、评论等已有语料抽取关键词；不会提供抖音实时热搜或真实搜索量。"},
+      {id:"playwright", name:"本机采集器", short:"RPA", desc:"罗盘后台自动同步", status:"检查中", cls:"", note:"数据保存在本机", detail:"在独立浏览器窗口登录罗盘后，自动采集直播场次和经营指标。在“经营数据”中管理连接与同步频率。"},
+      {id:"compass", name:"电商罗盘", short:"罗", desc:"自己账号的直播经营数据", status:"待登录", cls:"", note:"第一方实绩", detail:"使用你在本机登录的罗盘会话，采集该账号可查看的直播指标、商品表现和场次状态。"},
+      {id:"feigua", name:"飞瓜数据", short:"飞", desc:"竞品内容与直播数据", status:"待授权", cls:"estimate", note:"第三方估算", detail:"需有效产品账号和授权方式；第三方估算不能当作自家真实成交。"},
+      {id:"chanmama", name:"蝉妈妈", short:"蝉", desc:"行业与商品趋势", status:"待授权", cls:"estimate", note:"第三方估算", detail:"需有效产品账号和授权方式；本机尚未建立官方连接。"},
+      {id:"juliang", name:"巨量算数", short:"巨", desc:"平台内容趋势洞察", status:"待连接", cls:"", note:"趋势指数", detail:"可用于平台趋势参照；指数不等同于店铺搜索量或成交数据。"}
+    ];
+    let accounts = [];
+    let selectedId = null;
+    let keywordResults = [];
+    let sessions = [];
+    let serviceState = {};
+    let hotUpdateTime = null;
+    let hotLoaded = false;
+    let currentView = "monitor";
+    let toastTimer;
+    let settingsData = null;
+    let accountRefreshTimer = null;
+    let hotwordsRefreshTimer = null;
+    let recorderState = null;
+    let recorderBusy = "";
+    let recorderPollTimer = null;
+    let recorderRefreshPending = null;
+    let recorderActionError = "";
+    function esc(value) { return String(value).replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch])); }
+    function timeNow() { return new Intl.DateTimeFormat("zh-CN", {hour:"2-digit", minute:"2-digit", second:"2-digit", hour12:false}).format(new Date()); }
+    function toast(message) {
+      const el = document.getElementById("toast"); el.textContent = message; el.classList.add("show");
+      clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove("show"), 2300);
+    }
+    async function apiRequest(path, options = {}) {
+      const response = await fetch(path, {headers:{"Content-Type":"application/json"}, ...options});
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `本机服务返回 ${response.status}`);
+      return body;
+    }
+    function formatBytes(size) {
+      if (size < 1024) return `${size} B`;
+      if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+      return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+    }
+    function formatTime(value) {
+      const date = new Date(value);
+      return Number.isNaN(date.valueOf()) ? "—" : new Intl.DateTimeFormat("zh-CN", {month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", hour12:false}).format(date);
+    }
+    function stateMarkup(account) {
+      if (account.state === "live") return `<span class="state live"><span class="state-dot"></span>直播中</span><span class="data-origin">${esc(account.room || "直播间正在直播")}</span>`;
+      if (account.state === "error") {
+        const errorText = account.lastError || "无法确认直播状态";
+        const errorCode = errorText.match(/\b\d{3}\b/)?.[0];
+        return `<span class="state error" title="${esc(errorText)}"><span class="state-dot"></span>采集异常</span><span class="data-origin">${errorCode ? `HTTP ${errorCode}` : "查看详情"}</span>`;
+      }
+      if (account.state === "paused") return `<span class="state pending"><span class="state-dot"></span>监测已暂停</span><span class="data-origin">手动暂停了开播检查</span>`;
+      if (account.state === "pending") return `<span class="state pending"><span class="state-dot"></span>待接入直播间</span><span class="data-origin">${esc(account.room || "需要直播间链接")}</span>`;
+      return `<span class="state offline"><span class="state-dot"></span>未开播</span><span class="data-origin">${esc(account.room || "等待下一场")}</span>`;
+    }
+    function renderAccounts() {
+      const q = document.getElementById("accountSearch").value.trim().toLowerCase();
+      const type = document.getElementById("typeFilter").value;
+      const state = document.getElementById("stateFilter").value;
+      const shown = accounts.filter(a => {
+        const text = `${a.name} ${a.handle} ${a.id}`.toLowerCase();
+        return (!q || text.includes(q)) && (type === "all" || a.type === type) && (state === "all" || a.state === state);
+      });
+      const rows = document.getElementById("accountRows");
+      rows.innerHTML = shown.length ? shown.map(a => `<tr data-account="${esc(a.id)}" class="${a.id === selectedId ? "selected" : ""}">
+        <td><div class="account-cell"><div class="account-avatar" style="background:${esc(a.color || "#e7eeeb")}">${esc(a.initials || a.name.slice(0,1))}</div><div class="account-meta"><div class="account-name">${esc(a.name)}</div><div class="account-id">${esc(a.handle || a.id)}</div></div></div></td>
+        <td><span class="tag ${a.type}">${a.type === "own" ? "自有" : "竞品"}</span></td>
+        <td>${stateMarkup(a)}</td>
+        <td class="number">—<span class="data-origin">需经营数据授权</span></td>
+        <td class="number">—<span class="data-origin">需经营数据授权</span></td>
+        <td>${a.state === "pending" ? "—" : a.recording ? `<span style="color:#b54c47">● 录制中</span>` : a.state === "live" ? `<span style="color:#899590">未录制</span>` : `<span style="color:#899590">—</span>`}</td>
+        <td><button class="table-action" data-open="${esc(a.id)}">详情</button></td>
+      </tr>`).join("") : `<tr><td colspan="7"><div class="table-empty">没有符合条件的账号</div></td></tr>`;
+      document.getElementById("accountTotal").textContent = `显示 ${shown.length} / ${accounts.length} 个账号`;
+      document.getElementById("statAccounts").innerHTML = `${accounts.length} <span class="stat-note">个账号</span>`;
+      const liveCount = accounts.filter(a => a.state === "live").length;
+      document.getElementById("statLive").innerHTML = `${liveCount} <span class="stat-note">场</span>`;
+      document.getElementById("statBound").innerHTML = `${accounts.filter(a => a.roomUrl).length} <span class="stat-note">个</span>`;
+      document.getElementById("statRecording").innerHTML = `${sessions.length} <span class="stat-note">个文件</span>`;
+      document.getElementById("navLiveCount").textContent = String(liveCount).padStart(2,"0");
+      if (!accounts.some(a => a.id === selectedId)) selectedId = accounts[0]?.id;
+      document.querySelectorAll("tr[data-account]").forEach(row => {
+        row.addEventListener("click", event => {
+          if (event.target.closest("button")) return;
+          selectedId = row.dataset.account; renderAccounts(); renderDetail();
+        });
+      });
+      document.querySelectorAll("[data-open]").forEach(button => button.addEventListener("click", event => {
+        event.stopPropagation(); selectedId = button.dataset.open; renderAccounts(); renderDetail();
+      }));
+    }
+    function renderKeywords() {
+      const query = document.getElementById("keywordInput").value.trim().toLocaleLowerCase();
+      const matches = keywordResults.filter(item => !query || item.title.toLocaleLowerCase().includes(query));
+      const tbody = document.getElementById("keywordRows");
+      tbody.innerHTML = matches.length ? matches.map(k => `<tr><td><strong style="color:#354440;font-weight:600">${esc(k.title)}</strong></td><td class="number">${Number(k.hot || 0).toLocaleString("zh-CN")}</td><td>${formatTime(k.timestamp)}</td><td><span class="tag">抖音热点榜</span></td><td><a class="table-action" href="${esc(k.url)}" target="_blank" rel="noreferrer">查看</a></td></tr>`).join("") : `<tr><td colspan="5"><div class="table-empty">${!hotLoaded ? "正在读取抖音热点榜" : keywordResults.length ? "当前热点榜没有匹配词条" : "热点榜暂不可用，请检查 DailyHotApi"}</div></td></tr>`;
+      document.getElementById("keywordSummary").textContent = !hotLoaded ? "抖音热点榜 · 正在读取" : query ? `当前榜单包含“${query}”的词条 · ${matches.length} 条` : `抖音热点榜 · ${matches.length} 条`;
+      document.getElementById("hotUpdatedAt").textContent = `更新时间：${hotUpdateTime ? formatTime(hotUpdateTime) : "暂无数据"}`;
+      document.getElementById("hotPreviewMeta").textContent = hotUpdateTime ? `DailyHotApi · ${formatTime(hotUpdateTime)} 更新` : "DailyHotApi · 等待连接";
+      document.getElementById("keywordPreview").innerHTML = keywordResults.length ? keywordResults.slice(0,5).map(k => `<div class="keyword-item"><div class="keyword-word">${esc(k.title)}</div><div class="keyword-rel">${Number(k.hot || 0).toLocaleString("zh-CN")}</div><div class="keyword-source">${formatTime(k.timestamp)}</div><div class="keyword-source">抖音榜单</div></div>`).join("") : `<div class="table-empty">${hotLoaded ? "热点榜暂不可用" : "正在读取热点榜"}</div>`;
+    }
+    function renderSources() {
+      document.getElementById("sourceMiniList").innerHTML = sources.slice(0,4).map(s => `<div class="source-row"><div class="source-main"><div class="source-logo">${esc(s.short)}</div><div><div class="source-name">${esc(s.name)}</div><div class="source-desc">${esc(s.desc)}</div></div></div><div class="source-status ${s.cls}">${esc(s.status)}</div></div>`).join("");
+      document.getElementById("keywordSources").innerHTML = sources.slice(0,5).map(s => `<div class="rank-row"><div class="source-logo">${esc(s.short)}</div><div class="rank-text">${esc(s.name)}<div class="source-desc">${esc(s.note)}</div></div><div class="source-status ${s.cls}">${esc(s.status)}</div></div>`).join("");
+      document.getElementById("sourceCards").innerHTML = sources.map((s,i) => `<article class="source-card"><div class="source-card-head"><div class="source-card-title"><div class="source-logo">${esc(s.short)}</div>${esc(s.name)}</div><span class="source-status ${s.cls}">${esc(s.status)}</span></div><p>${esc(s.detail)}</p><div class="source-foot"><small>${esc(s.note)}</small><button class="btn small" data-source="${i}">查看接入方式</button></div></article>`).join("");
+      document.querySelectorAll("[data-source]").forEach(b => b.addEventListener("click", () => showSourceInfo(Number(b.dataset.source))));
+    }
+    function applyServiceStatuses() {
+      const statusMap = {
+        bililive: (recorderState?.connected ?? serviceState.bililive?.connected) ? ["已连接", "ready"] : ["未运行", ""],
+        dailyhot: serviceState.dailyhot?.connected ? ["已连接", "ready"] : ["不可用", ""],
+        buzz: serviceState.buzz?.connected ? ["已连接", "ready"] : ["未安装", ""],
+        keybert: serviceState.keybert?.connected ? ["已连接", "ready"] : ["待语料", ""],
+        playwright: serviceState.playwright?.connected ? ["已配置", "ready"] : ["待授权", ""],
+        compass: serviceState.compass?.connected ? ["已连接", "ready"] : ["待登录", ""], feigua: ["待授权", "estimate"], chanmama: ["待授权", "estimate"], juliang: ["待连接", ""]
+      };
+      sources.forEach(source => { [source.status, source.cls] = statusMap[source.id] || ["待连接", ""]; });
+      const buzzTag = document.getElementById("buzzStatus");
+      if (buzzTag) buzzTag.textContent = serviceState.buzz?.connected ? "已连接" : "未安装";
+      const transcribe = document.getElementById("transcribeBtn");
+      if (transcribe) { transcribe.disabled = !serviceState.buzz?.connected; transcribe.textContent = serviceState.buzz?.connected ? "选择录屏并转写" : "转写服务未安装"; }
+      renderSources();
+    }
+    async function refreshServiceStatus() {
+      try {
+        const result = await apiRequest("/api/status");
+        serviceState = result.services || {};
+        document.getElementById("lastChecked").textContent = formatTime(result.lastChecked);
+        applyServiceStatuses();
+      } catch (error) {
+        serviceState = {};
+        document.getElementById("lastChecked").textContent = "本机服务不可用";
+        applyServiceStatuses();
+      }
+    }
+    async function refreshAccounts() {
+      try {
+        const result = await apiRequest("/api/accounts");
+        accounts = result.accounts || [];
+        renderAccounts(); renderDetail();
+        document.getElementById("lastChecked").textContent = timeNow();
+      } catch (error) {
+        document.getElementById("lastChecked").textContent = "读取失败";
+        if (recorderState?.connected) toast(error.message);
+      }
+    }
+    async function refreshHotwords() {
+      try {
+        const result = await apiRequest("/api/hotwords?limit=50");
+        if (result.code !== 200) throw new Error(result.message || "热点榜暂不可用");
+        keywordResults = result.data || [];
+        hotUpdateTime = result.updateTime || null;
+      } catch (error) {
+        console.error("DailyHotApi request failed", error);
+        keywordResults = [];
+        hotUpdateTime = null;
+        serviceState.dailyhot = {connected:false, error:error.message};
+        applyServiceStatuses();
+      } finally {
+        hotLoaded = true;
+      }
+      renderKeywords();
+    }
+    async function refreshSessions() {
+      try {
+        const result = await apiRequest("/api/sessions");
+        sessions = result.recordings || [];
+        document.getElementById("recordingDirectory").textContent = result.directory;
+      } catch (error) {
+        sessions = [];
+        document.getElementById("recordingDirectory").textContent = "本机录制目录不可用";
+      }
+      renderSessions(); renderAccounts();
+    }
+    function renderRecorder() {
+      const connected = Boolean(recorderState?.connected);
+      const managed = Boolean(recorderState?.managed);
+      const recordingCount = Number(recorderState?.recordingCount || 0);
+      const pending = Boolean(settingsData?.bililive?.pendingRestart);
+      const actionLabels = {start:"正在启动…", check:"正在检查…", restart:"正在应用…", stop:"正在停止…"};
+      const label = recorderBusy ? actionLabels[recorderBusy] : !recorderState ? "检查中" : connected ? "已连接" : "未连接";
+      let summary = "正在检查本机录制器。";
+      if (recorderState) {
+        summary = connected
+          ? `已连接 ${Number(recorderState.roomCount || 0)} 个直播间 · ${recordingCount} 个正在录制。${!managed ? "此录制器由其他程序启动，工作台可读取状态。" : recordingCount ? "请在录制结束后保存并应用设置。" : pending ? "有待应用参数，可在运行设置中应用。" : "选择账号并开启监测，开播时自动录制。"}`
+          : recorderState.installed === false ? "未找到本机录制器程序，请恢复安装后检查连接。" : "录制器未运行，点击“启动并连接”即可连接本机录制器。";
+      }
+      document.querySelectorAll("[data-recorder-status]").forEach(el => {
+        el.textContent = label;
+        el.className = "recorder-status" + (connected ? " connected" : "");
+      });
+      document.querySelectorAll("[data-recorder-summary]").forEach(el => { el.textContent = summary; });
+      document.querySelectorAll("[data-recorder-action]").forEach(button => {
+        const action = button.dataset.recorderAction;
+        const labels = {start:connected ? "已连接" : "启动并连接", check:"检查连接", restart:"保存并应用设置", stop:"停止录制器"};
+        button.textContent = recorderBusy === action ? actionLabels[action] : labels[action];
+        button.disabled = Boolean(recorderBusy) || (action === "start" && (!recorderState || connected || recorderState.installed === false)) || (["stop", "restart"].includes(action) && (!connected || !managed)) || (["stop", "restart"].includes(action) && recordingCount > 0);
+        button.title = ["stop", "restart"].includes(action) && connected && !managed ? "此录制器由其他程序启动，不能在工作台停止或重启" : ["stop", "restart"].includes(action) && recordingCount > 0 ? "请先在直播监控中暂停正在录制的直播间" : "";
+      });
+      const error = document.getElementById("recorderError");
+      error.textContent = recorderActionError || (recorderState?.error ? `连接提示：${recorderState.error}` : "");
+      error.hidden = !error.textContent;
+      renderRecorderSettingsStatus();
+    }
+    function renderRecorderSettingsStatus() {
+      const connected = recorderState?.connected ?? settingsData?.bililive?.connected;
+      const pending = Boolean(settingsData?.bililive?.pendingRestart);
+      const status = document.getElementById("bgoSettingsStatus");
+      const badge = document.getElementById("bgoSettingsBadge");
+      status.textContent = pending
+        ? connected ? "设置已保存，点击上方“保存并应用设置”后生效；正在录制时请等待录制结束。" : "设置已保存，点击上方“启动并连接”时会自动应用。"
+        : connected ? "当前配置已应用；修改录制参数后，点击上方“保存并应用设置”。" : "录制器未连接；点击上方“启动并连接”即可使用已保存的录制参数。";
+      status.className = "settings-status" + (pending ? " pending" : "");
+      badge.textContent = pending ? "待应用" : connected ? "已连接" : "未连接";
+    }
+    async function refreshRecorder() {
+      if (recorderRefreshPending) return recorderRefreshPending;
+      recorderRefreshPending = (async () => {
+        try {
+          recorderState = await apiRequest("/api/recorder/state");
+        } catch (error) {
+          recorderState = {...recorderState, connected:false, error:`无法检查录制器：${error.message}`};
+        }
+        renderRecorder();
+        applyServiceStatuses();
+      })();
+      try { await recorderRefreshPending; } finally { recorderRefreshPending = null; }
+    }
+    async function runRecorderAction(action) {
+      if (recorderBusy) return;
+      recorderBusy = action;
+      recorderActionError = "";
+      renderRecorder();
+      try {
+        if (action === "check") {
+          await refreshRecorder();
+          toast(recorderState?.connected ? "录制器连接正常" : "录制器未连接，请查看连接提示");
+        } else {
+          if (recorderRefreshPending) await recorderRefreshPending;
+          if (action === "restart" && !(await saveSettings())) return;
+          const result = await apiRequest(`/api/recorder/${action}`, {method:"POST", body:"{}"});
+          recorderState = result;
+          settingsData = await apiRequest("/api/settings");
+          await Promise.allSettled([refreshServiceStatus(), refreshAccounts(), refreshSessions()]);
+          toast({start:"录制器已连接，可在账号详情中开启监测", restart:"已保存的录制参数已应用", stop:"录制器已停止"}[action]);
+        }
+      } catch (error) {
+        recorderActionError = error.message;
+        await refreshRecorder();
+        toast(error.message);
+      } finally {
+        recorderBusy = "";
+        renderRecorder();
+      }
+    }
+    function populateSettings(data) {
+      settingsData = data;
+      const dashboard = data.dashboard || {};
+      const bgo = data.bililive?.desired || {};
+      const dailyhot = data.dailyhot || {};
+      const media = data.mediaPipeline || {};
+      document.getElementById("accountRefreshSeconds").value = dashboard.accountRefreshSeconds ?? 10;
+      document.getElementById("hotwordsRefreshSeconds").value = dashboard.hotwordsRefreshSeconds ?? 300;
+      document.getElementById("bgoInterval").value = bgo.interval ?? 20;
+      document.getElementById("recordingPath").value = bgo.out_put_path ?? dashboard.recordingDirectory ?? "";
+      document.getElementById("ffmpegPath").value = bgo.ffmpeg_path ?? "";
+      document.getElementById("outputTemplate").value = bgo.out_put_tmpl ?? "";
+      document.getElementById("maxDuration").value = bgo.max_duration ?? 0;
+      document.getElementById("maxFileSize").value = parseInt(bgo.max_file_size ?? "0", 10) || 0;
+      document.getElementById("streamTimeout").value = bgo.timeout_seconds ?? 60;
+      document.getElementById("splitOnTitle").checked = Boolean(bgo.split_on_title);
+      document.getElementById("fixFlv").checked = Boolean(bgo.fix_flv_at_first);
+      document.getElementById("convertMp4").checked = Boolean(bgo.convert_to_mp4);
+      document.getElementById("danmakuEnable").checked = Boolean(bgo.danmaku_enable);
+      document.getElementById("cacheTTL").value = dailyhot.cacheTTL ?? 3600;
+      document.getElementById("requestTimeout").value = dailyhot.requestTimeout ?? 6000;
+      document.getElementById("filterWeiboAds").checked = Boolean(dailyhot.filterWeiboAds);
+      document.getElementById("mediaPipelineEnabled").checked = Boolean(media.enabled);
+      document.getElementById("deleteOriginalAfterCompression").checked = media.keepOriginal === false;
+      document.getElementById("mediaCodec").value = media.codec || "hevc_videotoolbox";
+      document.getElementById("videoBitrate").value = media.videoBitrateKbps ?? 2500;
+      document.getElementById("audioBitrate").value = media.audioBitrateKbps ?? 96;
+      document.getElementById("transcriptLanguage").value = media.language || "zh";
+      document.getElementById("whisperModel").value = media.model || "";
+      const mediaStatus = document.getElementById("mediaSettingsStatus");
+      const mediaBadge = document.getElementById("mediaSettingsBadge");
+      if (mediaStatus) {
+        mediaStatus.textContent = !media.compressionReady ? "FFmpeg 不可用，无法压缩录屏。" : media.transcriptionReady ? `压缩与转写已就绪；模型：${media.model}` : `压缩已就绪；转写未就绪，压缩任务仍会执行。模型路径：${media.model || "未设置"}`;
+        mediaStatus.className = media.compressionReady ? "settings-status" : "settings-status pending";
+      }
+      if (mediaBadge) mediaBadge.textContent = !media.compressionReady ? "压缩组件未就绪" : media.transcriptionReady ? "已就绪" : "压缩就绪 / 转写未就绪";
+      renderRecorder();
+      const dailyStatus = document.getElementById("dailyhotSettingsStatus");
+      const dailyBadge = document.getElementById("dailyhotSettingsBadge");
+      dailyBadge.textContent = serviceState.dailyhot?.connected ? "已连接" : "已保存 / 检查服务";
+      dailyStatus.textContent = dailyhot.pendingRestart ? `已写入 ${dailyhot.envFile}；重启 DailyHotApi 后生效。` : `当前使用默认参数；保存后写入 ${dailyhot.envFile}，重启 DailyHotApi 后生效。`;
+      dailyStatus.className = dailyhot.pendingRestart ? "settings-status pending" : "settings-status";
+    }
+    async function refreshSettings() {
+      try {
+        populateSettings(await apiRequest("/api/settings"));
+      } catch (error) {
+        document.getElementById("bgoSettingsStatus").textContent = `设置读取失败：${error.message}`;
+        document.getElementById("dailyhotSettingsStatus").textContent = "设置服务不可用";
+      }
+    }
+    async function chooseRecordingPath() {
+      const button = document.getElementById("chooseRecordingPath");
+      button.disabled = true;
+      try {
+        const result = await apiRequest("/api/choose-recording-directory", {method:"POST", body:"{}"});
+        if (result.path) document.getElementById("recordingPath").value = result.path;
+      } catch (error) {
+        if (error.message !== "已取消选择文件夹") toast(error.message);
+      } finally {
+        button.disabled = false;
+      }
+    }
+    async function saveSettings() {
+      const number = id => Number(document.getElementById(id).value);
+      const text = id => document.getElementById(id).value.trim();
+      const checked = id => document.getElementById(id).checked;
+      const payload = {
+        dashboard: {accountRefreshSeconds:number("accountRefreshSeconds"), hotwordsRefreshSeconds:number("hotwordsRefreshSeconds")},
+        bililive: {
+          interval:number("bgoInterval"), out_put_path:text("recordingPath"), ffmpeg_path:text("ffmpegPath"), out_put_tmpl:text("outputTemplate"),
+          max_duration:number("maxDuration"), max_file_size:String(number("maxFileSize")), timeout_seconds:number("streamTimeout"),
+          split_on_title:checked("splitOnTitle"), fix_flv_at_first:checked("fixFlv"), convert_to_mp4:checked("convertMp4"), danmaku_enable:checked("danmakuEnable")
+        },
+        dailyhot: {cacheTTL:number("cacheTTL"), requestTimeout:number("requestTimeout"), filterWeiboAds:checked("filterWeiboAds")},
+        mediaPipeline: {enabled:checked("mediaPipelineEnabled"), keepOriginal:!checked("deleteOriginalAfterCompression"), codec:document.getElementById("mediaCodec").value, videoBitrateKbps:number("videoBitrate"), audioBitrateKbps:number("audioBitrate"), language:document.getElementById("transcriptLanguage").value, model:text("whisperModel")}
+      };
+      const button = document.getElementById("saveSettings");
+      button.disabled = true;
+      try {
+        const result = await apiRequest("/api/settings", {method:"POST", body:JSON.stringify(payload)});
+        populateSettings(result.settings);
+        startPolling();
+        toast(result.settings?.bililive?.pendingRestart ? "设置已保存；录屏后处理立即生效，录制参数待应用" : "设置已保存；录屏后处理立即生效");
+        return true;
+      } catch (error) {
+        toast(error.message);
+        return false;
+      } finally {
+        button.disabled = false;
+      }
+    }
+    function startPolling() {
+      if (accountRefreshTimer) clearInterval(accountRefreshTimer);
+      if (hotwordsRefreshTimer) clearInterval(hotwordsRefreshTimer);
+      if (recorderPollTimer) clearInterval(recorderPollTimer);
+      if (window.location.protocol === "file:") return;
+      const dashboard = settingsData?.dashboard || {};
+      accountRefreshTimer = setInterval(() => { refreshAccounts(); refreshSessions(); }, (dashboard.accountRefreshSeconds || 10) * 1000);
+      hotwordsRefreshTimer = setInterval(() => { refreshServiceStatus(); refreshHotwords(); }, (dashboard.hotwordsRefreshSeconds || 300) * 1000);
+      recorderPollTimer = setInterval(() => { if (!document.hidden && ["monitor", "settings"].includes(currentView) && !recorderBusy) refreshRecorder(); }, 5000);
+    }
+    async function refreshAll() {
+      await Promise.allSettled([refreshServiceStatus(), refreshAccounts(), refreshHotwords(), refreshSessions(), refreshSettings(), refreshRecorder()]);
+    }
+    function sourceDetail(i) {
+      return sources[i]?.detail || "暂未配置接入方式。";
+    }
+    function renderDetail() {
+      const a = accounts.find(x => x.id === selectedId);
+      const panel = document.getElementById("detailPanel");
+      if (!a) { panel.innerHTML = `<div class="panel-head"><div class="panel-title">账号详情</div></div><div class="panel-body"><div class="table-empty">选择一个账号查看详情</div></div>`; return; }
+      const isLive = a.state === "live";
+      const isPaused = a.state === "paused";
+      panel.innerHTML = `<div class="panel-head"><div><div class="panel-title">账号详情</div><div class="panel-subtitle">场次状态与核心指标</div></div><button class="btn small" id="detailSource">数据口径</button></div>
+        <div class="panel-body"><div class="detail-title-row"><div class="detail-account"><div class="account-avatar" style="background:${esc(a.color || "#e7eeeb")}">${esc(a.initials || a.name.slice(0,1))}</div><div><div class="detail-name">${esc(a.name)}</div><div class="detail-id">${esc(a.handle || a.id)} · ${a.type === "own" ? "自有账号" : "竞品账号"}</div></div></div><span class="tag ${a.type}">${a.type === "own" ? "自有" : "竞品"}</span></div>
+        <div class="detail-state-line"><strong>${isLive ? "● 正在直播" : isPaused ? "监测已暂停" : a.state === "pending" ? "等待接入" : a.state === "error" ? "采集异常" : "○ 当前未开播"}</strong><span>${isLive ? (Number.isFinite(a.minutes) ? "本机已监测 " + a.minutes + " 分钟" : "监测时长未知") : esc(a.state === "error" ? (a.lastError || "无法确认直播状态") : (a.room || "等待下一场"))}</span></div>
+        <div class="metric-grid"><div class="metric"><div class="metric-label">当前观看</div><div class="metric-value">—</div></div><div class="metric"><div class="metric-label">本场成交额</div><div class="metric-value">—</div></div><div class="metric"><div class="metric-label">数据来源</div><div class="metric-value" style="font-size:13px">${a.bgoId ? "bililive-go" : "未连接"}</div></div><div class="metric"><div class="metric-label">录制状态</div><div class="metric-value" style="font-size:14px;color:${a.recording ? "#b54c47" : "#6e7b76"}">${a.recording ? "录制中" : a.state === "error" ? "未确认" : isLive ? "等待录制状态" : "未录制"}</div></div></div>
+        <div class="chart-heading"><span>场次趋势</span><span class="chart-legend">经营数据源未连接</span></div>
+        <div class="chart-box"><div class="table-empty" style="padding:32px 0">bililive-go 提供开播与录制状态；观看、互动和成交数据需另接授权来源。</div></div>
+        <div class="source-note" style="text-align:left;margin-top:3px">${esc(a.origin || "本机采集状态")} · 最近检查 ${timeNow()}</div>
+        <div class="detail-actions"><button class="btn small" id="toggleMonitor" ${!a.roomUrl ? "disabled" : ""}>${a.monitoring ? "暂停监测" : "开启监测"}</button><button class="btn small" id="openReview">查看录屏</button><button class="btn small" id="removeAccount">移出列表</button></div></div>`;
+      document.getElementById("detailSource").addEventListener("click", () => toast("bililive-go 只返回状态，不提供观看人数、互动或成交额"));
+      document.getElementById("toggleMonitor").addEventListener("click", async () => {
+        if (!a.roomUrl) { toast("请添加 live.douyin.com 直播间链接后再监测"); return; }
+        try {
+          await apiRequest(`/api/accounts/${encodeURIComponent(a.id)}/monitor`, {method:"POST", body:JSON.stringify({enabled:!a.monitoring})});
+          await refreshAccounts(); toast(a.monitoring ? "已暂停监测" : "已开启监测");
+        } catch (error) { toast(error.message); }
+      });
+      document.getElementById("openReview").addEventListener("click", () => switchView("sessions"));
+      document.getElementById("removeAccount").addEventListener("click", async () => {
+        if (!window.confirm(`将“${a.name}”从本地监控列表移除？`)) return;
+        try {
+          await apiRequest(`/api/accounts/${encodeURIComponent(a.id)}`, {method:"DELETE"});
+          selectedId = null; await refreshAccounts(); toast("账号和对应监控项已移除");
+        } catch (error) { toast(error.message); }
+      });
+    }
+    function renderSessions() {
+      document.getElementById("sessionRows").innerHTML = sessions.length ? sessions.map(file => `<tr><td><div class="account-name">${esc(file.name)}</div><div class="account-id">${esc(file.path)}</div></td><td>${formatTime(file.modified)}</td><td>${formatBytes(file.size)}</td><td><a class="table-action" href="${esc(file.url)}" target="_blank" rel="noreferrer">播放 / 下载</a></td></tr>`).join("") : `<tr><td colspan="4"><div class="table-empty">录制目录中还没有视频文件</div></td></tr>`;
+      refreshMediaJobs();
+    }
+    async function refreshMediaJobs() {
+      try {
+        const data = await apiRequest("/api/media/jobs");
+        const status = document.getElementById("mediaPipelineStatus");
+        const note = document.getElementById("mediaPipelineNote");
+        const badge = document.getElementById("mediaSettingsBadge");
+        if (!data.enabled) { status.textContent = "已关闭"; note.textContent = "自动压缩与转写已关闭。"; }
+        else if (!data.compressionReady) { status.textContent = "压缩工具未就绪"; note.textContent = "FFmpeg 当前不可用，无法压缩录屏。"; }
+        else { status.textContent = data.workerRunning ? "处理中" : data.transcriptionReady ? "自动压缩与转写已启用" : "自动压缩已启用"; note.textContent = `处理顺序：录屏完成 → 压缩 MP4${data.keepOriginal ? "（保留原文件）" : " → 校验后删除原文件"}${data.transcriptionReady ? " → 中文语音转写" : "；转写组件未就绪时仍会完成压缩"}。`; }
+        if (badge) badge.textContent = !data.enabled ? "已关闭" : !data.compressionReady ? "压缩组件未就绪" : data.transcriptionReady ? "已就绪" : "压缩就绪 / 转写未就绪";
+        const rows = document.getElementById("mediaJobRows");
+        if (rows) rows.innerHTML = data.jobs?.length ? data.jobs.map(job => `<div class="clip-row"><div class="clip-time">${esc(job.status === "completed" ? job.stage || "已完成" : job.status === "processing" ? job.stage : job.status === "failed" ? "失败" : "排队中")}</div><div class="clip-text">${esc(job.name)}${job.compressedUrl ? `<br><a class="source-link" href="${esc(job.compressedUrl)}" target="_blank" rel="noreferrer">压缩视频</a>` : ""}${job.transcriptUrl ? ` · <a class="source-link" href="${esc(job.transcriptUrl)}" target="_blank" rel="noreferrer">转写文本</a>` : ""}${job.subtitles ? ` · <a class="source-link" href="/transcripts/${encodeURIComponent(job.subtitles.split("/transcripts/")[1] || "")}" target="_blank" rel="noreferrer">字幕</a>` : ""}${job.sourceDeleted ? `<br><span class="settings-status">原录屏已清理，仅保留压缩视频</span>` : ""}${job.error ? `<br><span style="color:#b74c47">${esc(job.error)}</span>` : ""}</div></div>`).join("") : `<div class="table-empty" style="padding:20px 0">${data.ready ? "尚无处理任务；新录屏结束后会自动进入队列。" : "压缩工具就绪后，队列会自动启用。"}</div>`;
+      } catch (error) {
+        const status = document.getElementById("mediaPipelineStatus");
+        if (status) status.textContent = "队列不可用";
+      }
+    }
+    function switchView(name) {
+      currentView = name;
+      document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === `view-${name}`));
+      document.querySelectorAll(".nav-button[data-view]").forEach(b => b.classList.toggle("active", b.dataset.view === name));
+      const labels = {monitor:"直播监控", business:"经营数据", keywords:"热词洞察", sessions:"场次复盘", sources:"数据源接入", settings:"运行设置"};
+      document.getElementById("breadcrumbTitle").textContent = labels[name];
+      document.getElementById("sidebar").classList.remove("mobile-open");
+      if (name === "sessions") refreshSessions();
+      if (name === "settings") refreshSettings();
+      if (["monitor", "settings"].includes(name)) refreshRecorder();
+      if (name === "business") { window.LiveRpa?.refresh(); window.LiveFeishu?.refresh(); }
+      history.replaceState(null, "", "#" + name);
+      window.scrollTo({top:0, behavior:"smooth"});
+    }
+    const validViews = new Set(["monitor", "business", "keywords", "sessions", "sources", "settings"]);
+    window.addEventListener("hashchange", () => {
+      const view = window.location.hash.slice(1);
+      if (validViews.has(view) && view !== currentView) switchView(view);
+    });
+    function openModal(title, body, actions) {
+      document.getElementById("modalTitle").textContent = title;
+      document.getElementById("modalBody").innerHTML = body;
+      document.getElementById("modalActions").innerHTML = actions;
+      document.getElementById("modalBackdrop").classList.add("open");
+      document.getElementById("modalClose").focus();
+    }
+    function closeModal() { document.getElementById("modalBackdrop").classList.remove("open"); }
+    function addAccountModal() {
+      openModal("添加监控账号", `<div class="field"><label for="accountHandle">抖音号或主页链接</label><input id="accountHandle" placeholder="例如：@kids_code_lab" autocomplete="off"><div class="field-help">bililive-go 需要直播间链接才能监测和录制。仅填抖音号会先保存账号，待补充直播间链接后才能监测。</div></div><div class="field"><label for="roomUrl">抖音直播间链接（可选）</label><input id="roomUrl" type="url" placeholder="https://live.douyin.com/..."><div class="field-help">链接需指向 live.douyin.com 的具体直播间。自有账号可用授权方式提供直播间地址。</div></div><div class="field"><label>账号类型</label><div class="choice-row"><label class="choice"><input type="radio" name="accountType" value="own" checked><span>自有 / 已授权</span></label><label class="choice"><input type="radio" name="accountType" value="competitor"><span>竞品账号</span></label></div></div><div class="field"><label for="accountName">显示名称（可选）</label><input id="accountName" placeholder="例如：少儿编程研究所"></div>`, `<button class="btn" id="cancelAdd">取消</button><button class="btn primary" id="saveAccount">加入列表</button>`);
+      const roomUrlInput = document.getElementById("roomUrl");
+      roomUrlInput.placeholder = "https://live.douyin.com/... 或 https://v.douyin.com/...";
+      roomUrlInput.nextElementSibling.textContent = "支持 live.douyin.com 直播间地址或 v.douyin.com 分享短链。";
+      document.getElementById("cancelAdd").addEventListener("click", closeModal);
+      document.getElementById("saveAccount").addEventListener("click", async () => {
+        const raw = document.getElementById("accountHandle").value.trim();
+        if (!raw) { toast("请输入抖音号或主页链接"); document.getElementById("accountHandle").focus(); return; }
+        const handle = raw.replace(/^https?:\/\/(www\.)?douyin\.com\//i, "@").replace(/[?#].*$/, "").replace(/\/$/, "");
+        const type = document.querySelector('input[name="accountType"]:checked').value;
+        const name = document.getElementById("accountName").value.trim() || handle;
+        const roomUrl = document.getElementById("roomUrl").value.trim();
+        try {
+          const result = await apiRequest("/api/accounts", {method:"POST", body:JSON.stringify({name, handle, type, roomUrl})});
+          selectedId = result.account.id; closeModal(); await refreshAccounts();
+          toast(result.needsRoomUrl ? "已添加账号；补充直播间链接后才能自动监测" : "已添加直播间，请在账号详情中开启监测");
+        } catch (error) { toast(error.message); }
+      });
+    }
+    function showSourceInfo(i) {
+      if (sources[i]?.id === "bililive") { switchView("settings"); return; }
+      if (["playwright", "compass"].includes(sources[i]?.id)) { switchView("business"); return; }
+      const s=sources[i];
+      openModal(`${s.name} · 接入说明`, `<div class="boundary-copy"><strong>${esc(s.note)}</strong><br><br>${esc(sourceDetail(i))}<br><br>连接前需要确认账号授权、套餐权限、采集频率和服务条款。本原型不会让你输入密码或 API 密钥。</div>`, `<button class="btn" id="closeSourceInfo">关闭</button><button class="btn primary" id="sourceAcknowledge">我知道了</button>`);
+      document.getElementById("closeSourceInfo").addEventListener("click", closeModal);
+      document.getElementById("sourceAcknowledge").addEventListener("click", closeModal);
+    }
+    function downloadCsv(filename, rows) {
+      const csv = "\ufeff" + rows.map(row => row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\r\n");
+      const url = URL.createObjectURL(new Blob([csv], {type:"text/csv;charset=utf-8"}));
+      const a=document.createElement("a"); a.href=url; a.download=filename; a.click(); URL.revokeObjectURL(url);
+    }
+    function exportAccounts() { downloadCsv("直播账号列表.csv", [["账号名称","抖音号","类型","状态","直播间链接","录制状态","数据来源"], ...accounts.map(a=>[a.name,a.handle,a.type === "own" ? "自有" : "竞品",a.state === "live" ? "直播中" : a.state === "pending" ? "待接入直播间" : "未开播",a.roomUrl,a.recording ? "录制中" : "未录制",a.origin])]); toast("账号列表已导出"); }
+    function exportKeywords() { downloadCsv("抖音热点榜.csv", [["热点词","榜单热度","上榜时间","来源","链接"], ...keywordResults.map(k=>[k.title,k.hot,formatTime(k.timestamp),"DailyHotApi",k.url])]); toast("当前热点榜已导出"); }
+    function exportSessions() { downloadCsv("本地录屏文件.csv", [["文件名","相对路径","修改时间","文件大小"], ...sessions.map(file=>[file.name,file.path,formatTime(file.modified),formatBytes(file.size)])]); toast("本地录屏清单已导出"); }
+    function generateKeywords() {
+      renderKeywords();
+      toast("已筛选 DailyHotApi 当前热点榜；未查询长尾搜索词库");
+    }
+    document.querySelectorAll(".nav-button[data-view]").forEach(b => b.addEventListener("click", () => switchView(b.dataset.view)));
+    document.querySelectorAll("[data-go-view]").forEach(b => b.addEventListener("click", () => switchView(b.dataset.goView)));
+    document.querySelectorAll("[data-recorder-action]").forEach(b => b.addEventListener("click", () => runRecorderAction(b.dataset.recorderAction)));
+    document.getElementById("mobileMenu").addEventListener("click", () => document.getElementById("sidebar").classList.toggle("mobile-open"));
+    document.getElementById("accountSearch").addEventListener("input", renderAccounts);
+    document.getElementById("typeFilter").addEventListener("change", renderAccounts);
+    document.getElementById("stateFilter").addEventListener("change", renderAccounts);
+    document.getElementById("addAccountBtn").addEventListener("click", addAccountModal);
+    document.getElementById("modalClose").addEventListener("click", closeModal);
+    document.getElementById("modalBackdrop").addEventListener("click", event => { if (event.target.id === "modalBackdrop") closeModal(); });
+    document.addEventListener("keydown", event => { if (event.key === "Escape") closeModal(); });
+    document.getElementById("refreshBtn").addEventListener("click", refreshAll);
+    document.getElementById("refreshSessions").addEventListener("click", refreshSessions);
+    document.getElementById("reloadSettings").addEventListener("click", refreshSettings);
+      document.getElementById("saveSettings").addEventListener("click", saveSettings);
+    document.getElementById("chooseRecordingPath").addEventListener("click", chooseRecordingPath);
+    document.getElementById("dismissNotice").addEventListener("click", () => document.getElementById("serviceNotice").remove());
+    document.getElementById("keywordForm").addEventListener("submit", event => { event.preventDefault(); generateKeywords(); });
+    document.getElementById("exportAccounts").addEventListener("click", exportAccounts);
+    document.getElementById("exportKeywords").addEventListener("click", exportKeywords);
+    document.getElementById("exportSessions").addEventListener("click", exportSessions);
+    document.getElementById("transcribeBtn")?.addEventListener("click", () => toast("Buzz 转写服务未安装"));
+    renderAccounts(); renderDetail(); renderKeywords(); renderSources(); renderSessions();
+    if (window.location.protocol === "file:") {
+      window.location.replace("http://127.0.0.1:8765/");
+    } else {
+      const initialView = window.location.hash.slice(1);
+      if (validViews.has(initialView)) switchView(initialView);
+      refreshAll();
+      startPolling();
+    }
+  </script>
+  <script src="/rpa-ui.js"></script>
+  <script src="/feishu-ui.js"></script>
+</body>
+</html>

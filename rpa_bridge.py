@@ -1,0 +1,140 @@
+"""Private stdio connection to the local browser collector; no extra listening port."""
+import atexit
+import json
+import os
+from pathlib import Path
+import queue
+import re
+import shutil
+import subprocess
+import threading
+import uuid
+
+ROOT = Path(__file__).resolve().parent
+DATA = Path(os.environ.get("LIVEOPS_RPA_DATA", str(Path.home() / "Library/Application Support/LiveOps/rpa")))
+RUNTIME = Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/node"
+
+
+def _node_major(executable):
+    """Probe only the runtime version; never start the collector during discovery."""
+    try:
+        result = subprocess.run([str(executable), "--version"], capture_output=True,
+                                text=True, timeout=5, check=False)
+        match = re.fullmatch(r"v(\d+)\.\d+\.\d+[^\s]*", result.stdout.strip())
+        return int(match[1]) if result.returncode == 0 and match else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def discover_node():
+    explicit = os.environ.get("LIVEOPS_NODE")
+    candidates = [explicit] if explicit else [shutil.which("node"), RUNTIME / "bin/node"]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        executable = Path(candidate).expanduser().resolve()
+        if executable.is_file() and os.access(executable, os.X_OK):
+            major = _node_major(executable)
+            if major is not None and major >= 24:
+                return str(executable)
+    if explicit:
+        raise RuntimeError("LIVEOPS_NODE 必须指向可运行的 Node.js 24 或更新版本。")
+    raise RuntimeError("未找到 Node.js 24，请安装后加入 PATH，或配置 LIVEOPS_NODE。")
+
+
+def discover_playwright():
+    explicit = os.environ.get("LIVEOPS_PLAYWRIGHT_MODULE")
+    candidates = ([explicit] if explicit else
+                  [ROOT / "node_modules/playwright-core/index.mjs",
+                   RUNTIME / "node_modules/playwright-core/index.mjs"])
+    for candidate in candidates:
+        module = Path(candidate).expanduser().resolve()
+        if module.is_file():
+            return str(module)
+    if explicit:
+        raise RuntimeError("LIVEOPS_PLAYWRIGHT_MODULE 指定的文件不存在。")
+    raise RuntimeError("未找到浏览器采集组件，请在项目目录运行 npm ci，或配置 LIVEOPS_PLAYWRIGHT_MODULE。")
+
+
+class CollectorBridge:
+    def __init__(self):
+        self.process = None
+        self.lock = threading.RLock()
+        self.pending = {}
+        self.log = None
+
+    def _start(self):
+        if self.process and self.process.poll() is None:
+            return
+        node = discover_node()
+        module = discover_playwright()
+        DATA.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if self.log:
+            self.log.close()
+        self.log = (DATA / "collector.log").open("a", encoding="utf-8")
+        env = dict(os.environ, LIVEOPS_PLAYWRIGHT_MODULE=module, LIVEOPS_RPA_DATA=str(DATA))
+        self.process = subprocess.Popen(
+            [node, str(ROOT / "rpa/collector.mjs")], cwd=ROOT, env=env,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log,
+            text=True, bufsize=1,
+        )
+        threading.Thread(target=self._read, args=(self.process,), daemon=True).start()
+
+    def _read(self, process):
+        try:
+            for line in process.stdout:
+                try:
+                    response = json.loads(line)
+                except ValueError:
+                    continue
+                with self.lock:
+                    target = self.pending.pop(response.get("id"), None)
+                if target:
+                    target.put(response)
+        finally:
+            with self.lock:
+                if self.process is process:
+                    for target in self.pending.values():
+                        target.put({"error": "本机采集器已停止，请刷新页面重试。"})
+                    self.pending.clear()
+
+    def call(self, method, args=None, timeout=12):
+        identifier, target = uuid.uuid4().hex, queue.Queue(maxsize=1)
+        with self.lock:
+            self._start()
+            self.pending[identifier] = target
+            try:
+                self.process.stdin.write(json.dumps({"id": identifier, "method": method, "args": args or {}}) + "\n")
+                self.process.stdin.flush()
+            except (OSError, ValueError):
+                self.pending.pop(identifier, None)
+                raise RuntimeError("采集器连接中断，请刷新后重试。")
+        try:
+            response = target.get(timeout=timeout)
+        except queue.Empty:
+            raise RuntimeError("采集器响应超时，请稍后刷新状态。")
+        finally:
+            with self.lock:
+                self.pending.pop(identifier, None)
+        if response.get("error"):
+            raise RuntimeError(response["error"])
+        return response.get("result")
+
+    def close(self):
+        process = self.process
+        if process and process.poll() is None:
+            try:
+                process.stdin.close()
+                process.wait(timeout=20)
+            except (OSError, subprocess.TimeoutExpired):
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+        if self.log:
+            self.log.close()
+
+
+COLLECTOR = CollectorBridge()
+atexit.register(COLLECTOR.close)
