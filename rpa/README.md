@@ -38,7 +38,7 @@ python3 tests/test_rpa_http.py
 
 待写数据、创建幂等 token 与成功检查点使用同一个 SQLite 数据库保存。网络异常后先查询稳定同步键再重试创建/更新，创建请求复用持久化 UUID，按 30 秒至 10 分钟退避，重启后继续；查到多个同步键时报告冲突，不删除用户行。暂停后已发出的单次请求可能完成，后续场次停止。尚未开始写入的场次上传最近保留的快照（本机保留 30 天）；已经开始但未确认成功的写入独立持久化，超过快照期限仍可恢复；未开启自动同步时可单次手动写入。
 
-验证：`node --test tests/rpa.test.mjs tests/feishu.test.mjs`、`python3 tests/test_rpa_http.py`。飞书测试使用内存模拟 API，不写入真实表格。真实连通仍需用户在工作台配置目标表格和应用授权。
+验证：`node --test tests/rpa.test.mjs tests/feishu.test.mjs`、`python3 tests/test_rpa_http.py`。飞书测试使用内存模拟 API，不写入真实表格。部署时仍需在工作台配置目标表格和应用授权。当前本机已完成授权；真实接口上的临时记录新增、更新、响应丢失后重启恢复及重复同步均验证通过，临时记录已清理。此项使用合成内容，真实经营数据链路仍待验收。
 
 官方参考：
 - <https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/authentication-management/access-token/tenant_access_token>
