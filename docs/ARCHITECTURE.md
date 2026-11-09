@@ -59,6 +59,8 @@ flowchart TD
 | 直播监控 | `/api/accounts`、`/api/recorder/state`、录制器动作接口 | bililive-go 提供直播与录制状态，不提供真实成交指标 |
 | 经营数据 | `/api/rpa/state`、`/api/rpa/session`、账号动作、`/api/rpa/feishu/*`、`/api/rpa/ego/state` | 罗盘自动采集为今日场次；Ego 状态为最近核验记录 |
 | 热词洞察 | `/api/hotwords` | 当前抖音热点榜及过滤，非搜索量、词库生成或模型关键词 |
+| 字幕检索 | `/api/session-search?q=...&limit=50` | 本机 SRT 检索；返回片段内时间、命中文本、字幕链接及相对录屏路径；无经营场次 ID 或网页视频播放 |
+| 录屏定位 | `/api/recordings/reveal`、`/api/recordings/open-directory` | 本机可信请求调用 Finder；检查路径在保存目录内且文件存在 |
 | 场次复盘 | `/api/sessions`、`/api/media/jobs`、录屏 / 文本文件服务 | 当前为文件与任务视图，完整复盘待开发 |
 | 数据源接入 | `/api/status` | 真实服务状态和说明卡混合，未接入项必须保持明确标识 |
 | 运行设置 | `/api/settings`、`/api/choose-recording-directory`、`/api/recorder/*` | 本机目录和进程操作；目录选择使用 macOS 系统能力 |

@@ -48,6 +48,14 @@ ACCOUNT_LOCK = threading.RLock()
 PROFILE_MONITOR_LOCK = threading.Lock()
 PROFILE_MONITOR_WAKE = threading.Event()
 PROFILE_POLL_SECONDS = 60
+SESSION_SEARCH_MAX_FILES = 2000
+SESSION_SEARCH_MAX_FILE_BYTES = 8 * 1024 * 1024
+SESSION_SEARCH_MAX_BYTES = 64 * 1024 * 1024
+SESSION_SEARCH_MAX_RESULTS = 100
+SUBTITLE_TIME_RE = re.compile(
+    r"^\s*(?P<start>\d{1,6}:\d{2}:\d{2}[,.]\d{1,3})\s*-->\s*"
+    r"(?P<end>\d{1,6}:\d{2}:\d{2}[,.]\d{1,3})(?:\s+.*)?\s*$"
+)
 
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 RECORDINGS.mkdir(parents=True, exist_ok=True)
@@ -514,9 +522,15 @@ def recording_files():
     results = []
     root = recording_directory()
     for path in root.rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in allowed or ".tmp." in path.name:
+        if path.suffix.lower() not in allowed or ".tmp." in path.name or path.is_symlink():
             continue
-        stat = path.stat()
+        try:
+            if not path.is_file() or not path.resolve().is_relative_to(root.resolve()):
+                continue
+            stat = path.stat()
+        except OSError:
+            # A completed compression can remove its source during discovery.
+            continue
         results.append({
             "name": path.name,
             "path": str(path.relative_to(root)),
@@ -525,6 +539,180 @@ def recording_files():
             "url": "/recordings/" + urllib.parse.quote(str(path.relative_to(root))),
         })
     return sorted(results, key=lambda item: item["modified"], reverse=True)
+
+
+def reveal_recording(relative_path):
+    """Ask Finder to reveal a file listed inside the configured recordings directory."""
+    if not isinstance(relative_path, str) or not relative_path.strip():
+        raise ValueError("请选择一个录屏文件")
+    relative = Path(relative_path)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise PermissionError("只能打开录制目录内的文件")
+    root = recording_directory().resolve()
+    requested = root / relative
+    candidate = requested.resolve(strict=True)
+    if not candidate.is_relative_to(root) or requested.is_symlink():
+        raise PermissionError("只能打开录制目录内的文件")
+    if not candidate.is_file():
+        raise IsADirectoryError("请选择一个录屏文件")
+    subprocess.run(["/usr/bin/open", "-R", str(candidate)], check=True, timeout=10)
+
+
+def open_recording_directory():
+    directory = recording_directory().resolve(strict=True)
+    if not directory.is_dir():
+        raise NotADirectoryError("录制保存目录不可用")
+    subprocess.run(["/usr/bin/open", str(directory)], check=True, timeout=10)
+
+
+def _subtitle_seconds(value):
+    hours, minutes, seconds = value.replace(",", ".").split(":")
+    hours = int(hours)
+    minutes = int(minutes)
+    seconds = float(seconds)
+    if minutes > 59 or seconds >= 60:
+        raise ValueError("字幕时间码超出有效范围")
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def _playable_video_index():
+    """Match local media for Finder; omit ambiguous cross-platform matches."""
+    root = recording_directory().resolve()
+    index = {}
+    media_extensions = {".mp4", ".m4v", ".mov", ".flv", ".mkv", ".ts", ".aac", ".mp3"}
+    for item in recording_files():
+        relative = Path(item["path"])
+        candidate = (root / relative).resolve()
+        if (not candidate.is_relative_to(root) or not candidate.is_file()
+                or (root / relative).is_symlink()):
+            continue
+        filename = candidate.name
+        compressed = filename.endswith(".compressed.mp4")
+        if compressed:
+            source_name = filename[:-len(".compressed.mp4")]
+            possible_id = source_name.rsplit(".", 1)
+            if len(possible_id) == 2 and re.fullmatch(r"[a-f0-9]{32}", possible_id[1]):
+                source_name = possible_id[0]
+        elif candidate.suffix.lower() not in media_extensions:
+            continue
+        else:
+            source_name = filename
+        stem = Path(source_name).stem if Path(source_name).suffix.lower() in media_extensions else source_name
+        key = (relative.parent.name, stem)
+        priority = 2 if compressed else 1
+        # Transcripts currently use the account directory name, without platform.
+        # Do not silently associate a caption with a different platform's video.
+        candidates = index.setdefault(key, {})
+        previous = candidates.get(str(relative.parent))
+        if previous and previous[0] >= priority:
+            continue
+        candidates[str(relative.parent)] = (priority, str(relative))
+    return {key: next(iter(value.values()))[1] for key, value in index.items() if len(value) == 1}
+
+
+def _caption_excerpt(caption, needle):
+    """Keep the matched words visible even in unusually long subtitle cues."""
+    folded = caption.casefold()
+    offset = folded.index(needle)
+    # Case folding can expand characters (for example, ß -> ss).
+    original_offset = 0
+    consumed = 0
+    while consumed < offset:
+        consumed += len(caption[original_offset].casefold())
+        original_offset += 1
+    start = max(0, original_offset - 70)
+    end = min(len(caption), max(start + 240, original_offset + len(needle)))
+    return ("…" if start else "") + caption[start:end] + ("…" if end < len(caption) else "")
+
+
+def search_subtitles(query, limit=50):
+    if not isinstance(query, str) or not query.strip() or len(query.strip()) > 100:
+        raise ValueError("搜索词需为 1 到 100 个字符")
+    query = query.strip()
+    limit = min(max(int(limit), 1), SESSION_SEARCH_MAX_RESULTS)
+    transcript_root = TRANSCRIPTS.resolve()
+    video_index = _playable_video_index()
+    subtitle_files = []
+    truncated = False
+    for path in TRANSCRIPTS.rglob("*.srt"):
+        if path.is_symlink():
+            continue
+        try:
+            candidate = path.resolve(strict=True)
+            size = candidate.stat().st_size
+        except OSError:
+            continue
+        if not candidate.is_relative_to(transcript_root) or not candidate.is_file():
+            continue
+        if size > SESSION_SEARCH_MAX_FILE_BYTES:
+            truncated = True
+            continue
+        if len(subtitle_files) >= SESSION_SEARCH_MAX_FILES:
+            truncated = True
+            break
+        subtitle_files.append((candidate.stat().st_mtime, candidate, size))
+    subtitle_files.sort(key=lambda item: item[0], reverse=True)
+
+    results = []
+    bytes_scanned = 0
+    files_scanned = 0
+    needle = query.casefold()
+    for _modified, path, size in subtitle_files:
+        if bytes_scanned + size > SESSION_SEARCH_MAX_BYTES:
+            truncated = True
+            break
+        try:
+            with path.open("rb") as handle:
+                raw = handle.read(min(SESSION_SEARCH_MAX_FILE_BYTES, SESSION_SEARCH_MAX_BYTES - bytes_scanned) + 1)
+        except OSError:
+            continue
+        if len(raw) > min(SESSION_SEARCH_MAX_FILE_BYTES, SESSION_SEARCH_MAX_BYTES - bytes_scanned):
+            truncated = True
+            continue
+        content = raw.decode("utf-8-sig", errors="replace")
+        bytes_scanned += len(raw)
+        files_scanned += 1
+        relative = path.relative_to(transcript_root)
+        recording_path = video_index.get((relative.parent.name, path.stem))
+        for block in re.split(r"\n\s*\n", content.replace("\r\n", "\n").replace("\r", "\n")):
+            lines = block.splitlines()
+            time_index = next((i for i, line in enumerate(lines) if SUBTITLE_TIME_RE.search(line)), None)
+            if time_index is None:
+                continue
+            match = SUBTITLE_TIME_RE.search(lines[time_index])
+            caption = " ".join(line.strip() for line in lines[time_index + 1:] if line.strip())
+            if not caption or needle not in caption.casefold():
+                continue
+            try:
+                seconds = _subtitle_seconds(match.group("start"))
+                end_seconds = _subtitle_seconds(match.group("end"))
+                if end_seconds < seconds:
+                    continue
+            except (ValueError, TypeError):
+                continue
+            results.append({
+                "file": relative.stem,
+                "account": relative.parent.name,
+                "timestamp": match.group("start").replace(".", ","),
+                "seconds": seconds,
+                "endSeconds": end_seconds,
+                "text": _caption_excerpt(caption, needle),
+                "recordingPath": recording_path,
+                "subtitleUrl": "/transcripts/" + urllib.parse.quote(str(relative)),
+            })
+            if len(results) > limit:
+                truncated = True
+                break
+        if len(results) > limit:
+            break
+    return {
+        "query": query,
+        "results": results[:limit],
+        "count": min(len(results), limit),
+        "filesScanned": files_scanned,
+        "bytesScanned": bytes_scanned,
+        "truncated": truncated,
+    }
 
 
 def recording_directory():
@@ -692,6 +880,18 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/sessions":
             self.send_json({"recordings": recording_files(), "directory": str(recording_directory())})
             return
+        if path == "/api/session-search":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机操盘台搜索字幕"}, 403)
+                return
+            try:
+                limit = int((query.get("limit") or ["50"])[0])
+                self.send_json(search_subtitles((query.get("q") or [""])[0], limit))
+            except ValueError as error:
+                self.send_json({"error": str(error)}, 400)
+            except OSError as error:
+                self.send_json({"error": "字幕搜索失败：" + str(error)}, 500)
+            return
         if path.startswith("/recordings/"):
             self.serve_recording(path[len("/recordings/"):])
             return
@@ -722,6 +922,46 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.read_json()
         except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
             self.send_json({"error": str(error)}, 400)
+            return
+
+        if path == "/api/recordings/reveal":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机操盘台打开录屏文件"}, 403)
+                return
+            if not isinstance(payload, dict):
+                self.send_json({"error": "请求必须是 JSON 对象"}, 400)
+                return
+            try:
+                reveal_recording(payload.get("path"))
+                self.send_json({"ok": True})
+            except ValueError as error:
+                self.send_json({"error": str(error)}, 400)
+            except PermissionError as error:
+                self.send_json({"error": str(error)}, 403)
+            except FileNotFoundError as error:
+                self.send_json({"error": "录屏文件不存在"}, 404)
+            except IsADirectoryError as error:
+                self.send_json({"error": str(error)}, 400)
+            except (OSError, subprocess.SubprocessError) as error:
+                self.send_json({"error": "Finder 无法定位文件：" + str(error)}, 500)
+            return
+
+        if path == "/api/recordings/open-directory":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机操盘台打开录制保存目录"}, 403)
+                return
+            if not isinstance(payload, dict):
+                self.send_json({"error": "请求必须是 JSON 对象"}, 400)
+                return
+            try:
+                open_recording_directory()
+                self.send_json({"ok": True})
+            except FileNotFoundError as error:
+                self.send_json({"error": "录制保存目录不存在"}, 404)
+            except NotADirectoryError as error:
+                self.send_json({"error": str(error)}, 400)
+            except (OSError, subprocess.SubprocessError) as error:
+                self.send_json({"error": "Finder 无法打开录制保存目录：" + str(error)}, 500)
             return
 
         if path == "/api/choose-recording-directory":

@@ -205,6 +205,15 @@
     .source-link { display: inline-flex; margin-top: 9px; color: var(--teal); font-size: 10px; text-decoration: none; }
     .source-link:hover { text-decoration: underline; }
     .sessions-grid { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
+    .session-search { margin-bottom: 16px; }
+    .session-search-meta { margin: 10px 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+    .session-hit { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 13px 0; border-top: 1px solid var(--line); }
+    .session-hit-title { font-size: 11px; font-weight: 600; overflow-wrap: anywhere; }
+    .session-hit-time { margin-right: 8px; color: var(--teal); font-variant-numeric: tabular-nums; }
+    .session-hit-file { margin-top: 4px; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+    .session-hit-text { font-size: 12px; line-height: 1.7; margin: 7px 0 0; overflow-wrap: anywhere; }
+    .session-hit-actions { display: flex; flex-direction: column; align-items: flex-end; justify-content: center; gap: 6px; }
+    .session-hit-actions .source-link { margin: 0; }
     .session-score { font-weight: 650; color: #3e645a; }
     .session-note { color: #7b8883; font-size: 10px; }
     .clip-list { display: grid; gap: 0; }
@@ -430,6 +439,14 @@
         <section class="view" id="view-sessions">
           <div class="page-head"><div><div class="eyebrow">SESSION REVIEW</div><h1>场次复盘</h1><p class="page-desc">查看 bililive-go 保存到本机的直播录屏文件。</p></div><div class="button-row"><button class="btn" id="refreshSessions">刷新录屏</button><button class="btn" id="exportSessions">导出清单</button></div></div>
           <div class="notice"><div><strong>录制状态：</strong>此处仅列出本机录制目录中的实际文件。bililive-go 只会对已绑定的直播间链接启动监测和录制。</div></div>
+          <section class="panel session-search">
+            <div class="panel-head"><div><div class="panel-title">转写字幕搜索</div><div class="panel-subtitle">查找录屏中的原话、字幕时间和对应文件</div></div><button class="btn small" id="exportSessionSearch" type="button" disabled>导出结果</button></div>
+            <div class="panel-body">
+              <form class="research-toolbar" id="sessionSearchForm"><input id="sessionSearchInput" type="search" maxlength="100" required aria-label="搜索录制字幕" placeholder="输入关键词，例如：自然拼读"><button class="btn primary" id="sessionSearchSubmit" type="submit">搜索字幕</button></form>
+              <div class="session-search-meta" id="sessionSearchStatus" role="status" aria-live="polite">搜索本机已生成的 SRT 字幕；时间从对应录屏片段开始计算。</div>
+              <div id="sessionSearchResults"></div>
+            </div>
+          </section>
           <div class="sessions-grid">
             <section class="panel"><div class="panel-head"><div><div class="panel-title">本地录屏文件</div><div class="panel-subtitle" id="recordingDirectory">正在读取录制目录</div></div></div><div class="table-wrap"><table><thead><tr><th>文件</th><th>修改时间</th><th>大小</th><th></th></tr></thead><tbody id="sessionRows"></tbody></table></div></section>
             <section class="panel"><div class="panel-head"><div><div class="panel-title">压缩与转写队列</div><div class="panel-subtitle">录制完成后压缩视频，再生成中文文本与字幕</div></div><span class="tag" id="mediaPipelineStatus">检查中</span></div><div class="panel-body"><div class="boundary-copy" id="mediaPipelineNote">FFmpeg 压缩与 whisper.cpp 转写队列状态读取中。</div><div id="mediaJobRows" class="clip-list"></div></div></section>
@@ -481,12 +498,12 @@
               <div class="panel-head"><div><div class="panel-title">bililive-go</div><div class="panel-subtitle">直播监测、录制、分段与录制后处理</div></div><span class="tag" id="bgoSettingsBadge">读取中</span></div>
               <div class="settings-grid">
                 <div class="setting-field"><label for="bgoInterval">开播检查间隔（秒）</label><input id="bgoInterval" type="number" min="5" max="300" step="1"></div>
-                <div class="setting-field"><label for="recordingPath">录制保存目录</label><div class="input-action"><input id="recordingPath" type="text" autocomplete="off"><button class="btn small" id="chooseRecordingPath" type="button" title="选择文件夹">选择…</button></div><div class="setting-help">选择本机文件夹并保存；录制器在线并应用配置后，新录屏会写入该位置。正在录制的场次不受影响。</div></div>
+                <div class="setting-field"><label for="recordingPath">录制保存目录</label><div class="input-action"><input id="recordingPath" type="text" autocomplete="off"><div class="button-row"><button class="btn small" id="openRecordingPath" type="button" title="在 Finder 中打开当前保存目录">打开文件夹</button><button class="btn small" id="chooseRecordingPath" type="button" title="更改保存目录">更改…</button></div></div><div class="setting-help">打开文件夹可直接查看录屏；更改目录后保存并应用，正在录制的场次不受影响。</div></div>
                 <div class="setting-field"><label for="ffmpegPath">FFmpeg 程序路径</label><input id="ffmpegPath" type="text" autocomplete="off"><div class="setting-help">留空使用插件默认查找方式。</div></div>
                 <div class="setting-field"><label for="outputTemplate">录制文件名模板</label><input id="outputTemplate" type="text" autocomplete="off"><div class="setting-help">留空使用 bililive-go 默认模板。</div></div>
-                <div class="setting-field"><label for="maxDuration">单文件最长时长（秒）</label><input id="maxDuration" type="number" min="0" max="86400" step="60"><div class="setting-help">0 表示不按时长分段。</div></div>
+                <div class="setting-field"><label for="maxDuration">单文件最长时长（秒）</label><input id="maxDuration" type="number" min="0" max="86400" step="60"><div class="setting-help">长时间连续录制请设为 0（不限时长）；3600 表示每段最多一小时。断流重连仍可能生成新文件。</div></div>
                 <div class="setting-field"><label for="maxFileSize">单文件最大大小（MB）</label><input id="maxFileSize" type="number" min="0" step="100"><div class="setting-help">0 表示不按大小分段。</div></div>
-                <div class="setting-field"><label for="streamTimeout">直播流读取超时（秒）</label><input id="streamTimeout" type="number" min="5" max="300" step="5"></div>
+                <div class="setting-field"><label for="streamTimeout">直播流读取超时（秒）</label><input id="streamTimeout" type="number" min="5" max="300" step="5"><div class="setting-help">控制录制器等待流数据的时间，不是录制总时长；源站或上游连接也可能提前中断。</div></div>
                 <div class="setting-field"><label>分段规则</label><label class="setting-check"><input id="splitOnTitle" type="checkbox">直播标题变化时新建文件</label></div>
                 <div class="setting-field"><label>录制选项</label><label class="setting-check"><input id="fixFlv" type="checkbox">录制结束后修复 FLV</label><label class="setting-check"><input id="convertMp4" type="checkbox">录制结束后转为 MP4</label></div>
                 <div class="setting-field"><label>弹幕</label><label class="setting-check"><input id="danmakuEnable" type="checkbox">启用弹幕记录</label></div>
@@ -531,6 +548,8 @@
     let selectedId = null;
     let keywordResults = [];
     let sessions = [];
+    let sessionSearchData = null;
+    let sessionSearchRequest = 0;
     let serviceState = {};
     let hotUpdateTime = null;
     let hotLoaded = false;
@@ -839,6 +858,18 @@
         button.disabled = false;
       }
     }
+    async function openRecordingPath() {
+      const button = document.getElementById("openRecordingPath");
+      button.disabled = true;
+      try {
+        await apiRequest("/api/recordings/open-directory", {method:"POST", body:"{}"});
+        toast("已在 Finder 中打开录制保存目录");
+      } catch (error) {
+        toast(error.message);
+      } finally {
+        button.disabled = false;
+      }
+    }
     async function saveSettings() {
       const number = id => Number(document.getElementById(id).value);
       const text = id => document.getElementById(id).value.trim();
@@ -916,8 +947,39 @@
       });
     }
     function renderSessions() {
-      document.getElementById("sessionRows").innerHTML = sessions.length ? sessions.map(file => `<tr><td><div class="account-name">${esc(file.name)}</div><div class="account-id">${esc(file.path)}</div></td><td>${formatTime(file.modified)}</td><td>${formatBytes(file.size)}</td><td><a class="table-action" href="${esc(file.url)}" target="_blank" rel="noreferrer">播放 / 下载</a></td></tr>`).join("") : `<tr><td colspan="4"><div class="table-empty">录制目录中还没有视频文件</div></td></tr>`;
+      document.getElementById("sessionRows").innerHTML = sessions.length ? sessions.map(file => `<tr><td><div class="account-name">${esc(file.name)}</div><div class="account-id">${esc(file.path)}</div></td><td>${formatTime(file.modified)}</td><td>${formatBytes(file.size)}</td><td><button class="table-action" type="button" data-recording-path="${esc(file.path)}" title="在 Finder 中显示此文件">打开文件位置</button></td></tr>`).join("") : `<tr><td colspan="4"><div class="table-empty">录制目录中还没有视频文件</div></td></tr>`;
       refreshMediaJobs();
+    }
+    async function searchSessionSubtitles() {
+      const query = document.getElementById("sessionSearchInput").value.trim();
+      const status = document.getElementById("sessionSearchStatus");
+      const results = document.getElementById("sessionSearchResults");
+      const submit = document.getElementById("sessionSearchSubmit");
+      const exportButton = document.getElementById("exportSessionSearch");
+      const request = ++sessionSearchRequest;
+      sessionSearchData = null;
+      exportButton.disabled = true;
+      results.replaceChildren();
+      if (!query || query.length > 100) { status.textContent = "请输入 1 到 100 个字符的搜索词。"; return; }
+      submit.disabled = true;
+      status.textContent = "正在搜索本机字幕…";
+      try {
+        const data = await apiRequest(`/api/session-search?q=${encodeURIComponent(query)}&limit=50`);
+        if (request !== sessionSearchRequest) return;
+        sessionSearchData = data;
+        status.textContent = `已检查 ${data.filesScanned} 份字幕，显示 ${data.count} 条匹配。${data.truncated ? "已达到扫描或结果上限，仅显示部分结果。" : ""}${data.filesScanned === 0 ? "录屏完成并生成 SRT 字幕后即可检索。" : data.count === 0 ? "没有匹配，请尝试其他关键词。" : "时间从对应录屏片段开始计算。"}`;
+        results.innerHTML = data.results.map(item => `<article class="session-hit"><div><div class="session-hit-title"><span class="session-hit-time">${esc(item.timestamp)}</span>${esc(item.account)}</div><div class="session-hit-file">${esc(item.file)}</div><p class="session-hit-text">${esc(item.text)}</p></div><div class="session-hit-actions">${item.recordingPath ? `<button class="btn small" type="button" data-recording-path="${esc(item.recordingPath)}">打开文件位置</button>` : `<span class="session-note">未找到唯一对应录屏</span>`}<a class="source-link" href="${esc(item.subtitleUrl)}" target="_blank" rel="noreferrer">查看字幕</a></div></article>`).join("");
+        exportButton.disabled = data.count === 0;
+      } catch (error) {
+        if (request === sessionSearchRequest) status.textContent = `搜索失败：${error.message}。可点击搜索重试。`;
+      } finally {
+        if (request === sessionSearchRequest) submit.disabled = false;
+      }
+    }
+    function exportSessionSearch() {
+      if (!sessionSearchData?.results?.length) return;
+      downloadCsv("字幕搜索结果.csv", [["搜索词", "账号目录", "录屏名称", "片段内时间", "开始秒数", "字幕原话", "录屏相对路径", "结果是否截断"], ...sessionSearchData.results.map(item => [sessionSearchData.query, item.account, item.file, item.timestamp, item.seconds, item.text, item.recordingPath || "", sessionSearchData.truncated ? "是" : "否"])]);
+      toast("当前字幕搜索结果已导出");
     }
     async function refreshMediaJobs() {
       try {
@@ -987,7 +1049,11 @@
       document.getElementById("sourceAcknowledge").addEventListener("click", closeModal);
     }
     function downloadCsv(filename, rows) {
-      const csv = "\ufeff" + rows.map(row => row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\r\n");
+      const cell = value => {
+        const text = String(value ?? "");
+        return `"${(/^[\s\uFEFF]*[=+@-]/u.test(text) ? "'" + text : text).replace(/"/g, '""')}"`;
+      };
+      const csv = "\ufeff" + rows.map(row => row.map(cell).join(",")).join("\r\n");
       const url = URL.createObjectURL(new Blob([csv], {type:"text/csv;charset=utf-8"}));
       const a=document.createElement("a"); a.href=url; a.download=filename; a.click(); URL.revokeObjectURL(url);
     }
@@ -1014,11 +1080,24 @@
     document.getElementById("reloadSettings").addEventListener("click", refreshSettings);
       document.getElementById("saveSettings").addEventListener("click", saveSettings);
     document.getElementById("chooseRecordingPath").addEventListener("click", chooseRecordingPath);
+    document.getElementById("openRecordingPath").addEventListener("click", openRecordingPath);
     document.getElementById("dismissNotice").addEventListener("click", () => document.getElementById("serviceNotice").remove());
     document.getElementById("keywordForm").addEventListener("submit", event => { event.preventDefault(); generateKeywords(); });
     document.getElementById("exportAccounts").addEventListener("click", exportAccounts);
     document.getElementById("exportKeywords").addEventListener("click", exportKeywords);
     document.getElementById("exportSessions").addEventListener("click", exportSessions);
+    document.getElementById("sessionSearchForm").addEventListener("submit", event => { event.preventDefault(); searchSessionSubtitles(); });
+    document.getElementById("exportSessionSearch").addEventListener("click", exportSessionSearch);
+    document.getElementById("view-sessions").addEventListener("click", async event => {
+      const button = event.target.closest("button[data-recording-path]");
+      if (!button || button.disabled) return;
+      button.disabled = true;
+      try {
+        await apiRequest("/api/recordings/reveal", {method:"POST", body:JSON.stringify({path:button.dataset.recordingPath})});
+        toast("已在 Finder 中显示录屏文件");
+      } catch (error) { toast(error.message); }
+      finally { button.disabled = false; }
+    });
     document.getElementById("transcribeBtn")?.addEventListener("click", () => toast("Buzz 转写服务未安装"));
     renderAccounts(); renderDetail(); renderKeywords(); renderSources(); renderSessions();
     if (window.location.protocol === "file:") {

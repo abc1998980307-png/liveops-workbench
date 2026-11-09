@@ -8,6 +8,7 @@
 
 - 直播账号管理，粘贴抖音主页链接后可自动检测开播并交给 bililive-go 监测 / 录制；支持录制器控制和录屏列表。
 - 录屏完成后压缩，验证成功后按设置删除对应原文件，保留压缩视频；可用 whisper.cpp 生成 TXT / SRT。
+- 场次页支持本地字幕搜索、片段内时间码、查看字幕、搜索结果 CSV 导出和 Finder 文件定位；视频已移走时仍可查找保留的字幕。
 - 罗盘独立账号登录、今日场次检测、8 项核心指标、商品数据、本机趋势和 JSON 导出。
 - 飞书多维表格配置、按账号和场次更新、去重、失败重试；实际写入仍需配置并验证授权。
 - DailyHotApi 热点榜、筛选和导出。
@@ -61,3 +62,5 @@ GitHub Actions 在推送和 Pull Request 时运行这些检查。测试使用合
 GitHub 保存源码、文档、测试与版本历史。完整交付清单在 [Issue #1](https://github.com/abc1998980307-png/liveops-workbench/issues/1)，逐项验收标准见 [docs/ROADMAP.md](docs/ROADMAP.md)。它不会运行本机录制器，也不会自动同步浏览器登录态或业务数据库。其他电脑需要取得仓库、安装依赖并重新登录自己的后台；GitHub Pages 不能运行本项目的 Python/Node 后端。
 
 本仓库只包含自行实现的工作台代码与文档，不包含第三方程序包、逆向原始脚本、账号会话、密钥、录屏、转写内容和真实经营数据。维护方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+长直播录制及断流限制见 [录制诊断记录](docs/RECORDING_DIAGNOSTICS.md)，开发变更见 [变更记录](docs/CHANGELOG.md)。
