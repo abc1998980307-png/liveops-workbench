@@ -10,8 +10,10 @@ permissions:
 
 jobs:
   test:
-    runs-on: macos-latest
+    runs-on: macos-15
     timeout-minutes: 10
+    env:
+      LIVEOPS_DATA_ROOT: ${{ runner.temp }}/liveops-test-data
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -22,6 +24,8 @@ jobs:
         with:
           python-version: '3.11'
       - run: npm ci --ignore-scripts
+      - name: Install pinned FFmpeg for real media tests
+        run: python3 scripts/install.py --components ffmpeg --apply
       - run: node --test tests/*.test.mjs
       - run: python3 -m unittest discover -s tests -p 'test_*.py' -v
       - run: python3 scripts/check_frontend.py

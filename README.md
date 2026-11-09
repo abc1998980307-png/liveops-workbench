@@ -40,12 +40,13 @@ python3 server.py
 ## 测试
 
 ```sh
+python3 scripts/install.py --components ffmpeg --apply
 node --test tests/*.test.mjs
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 python3 scripts/check_frontend.py
 ```
 
-GitHub Actions 在推送和 Pull Request 时运行这些检查。测试使用合成数据或临时目录，不扫码、不录制真实直播、不写入真实飞书表格。真实业务验收单独记录。
+GitHub Actions 在推送和 Pull Request 时运行这些检查，并在独立临时数据目录安装已锁定版本和哈希的 FFmpeg，以实际验证合成视频合并后的音频、容器时长和完整解码。测试使用合成数据或临时目录，不扫码、不录制真实直播、不写入真实飞书表格。真实业务验收单独记录。
 
 ## 项目结构
 
