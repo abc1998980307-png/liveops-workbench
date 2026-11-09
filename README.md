@@ -58,6 +58,6 @@ GitHub Actions 在推送和 Pull Request 时运行这些检查。测试使用合
 
 ## GitHub 与跨电脑使用
 
-GitHub 保存源码、文档、测试与版本历史。它不会运行本机录制器，也不会自动同步浏览器登录态或业务数据库。其他电脑需要取得仓库、安装依赖并重新登录自己的后台；GitHub Pages 不能运行本项目的 Python/Node 后端。
+GitHub 保存源码、文档、测试与版本历史。完整交付清单在 [Issue #1](https://github.com/abc1998980307-png/liveops-workbench/issues/1)，逐项验收标准见 [docs/ROADMAP.md](docs/ROADMAP.md)。它不会运行本机录制器，也不会自动同步浏览器登录态或业务数据库。其他电脑需要取得仓库、安装依赖并重新登录自己的后台；GitHub Pages 不能运行本项目的 Python/Node 后端。
 
 本仓库只包含自行实现的工作台代码与文档，不包含第三方程序包、逆向原始脚本、账号会话、密钥、录屏、转写内容和真实经营数据。维护方式见 [CONTRIBUTING.md](CONTRIBUTING.md)。

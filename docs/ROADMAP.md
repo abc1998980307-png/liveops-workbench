@@ -2,6 +2,8 @@
 
 核对日期：2026-11-09。首个交付目标是在 **macOS Apple Silicon** 上可安装、可启动、可维护的本机工作台，由 GitHub 管理源码、任务、测试和版本。
 
+GitHub：私有仓库 [abc1998980307-png/liveops-workbench](https://github.com/abc1998980307-png/liveops-workbench)。总任务：[Issue #1 · 全功能交付](https://github.com/abc1998980307-png/liveops-workbench/issues/1)。
+
 “全部完成”以本清单中的用户流程和验收结果为准：按钮可用、数据真实、失败可恢复、能够在另一台目标电脑安装。完成界面、存在接口或测试通过，都不单独等于业务已经验收。
 
 ## 范围与状态
