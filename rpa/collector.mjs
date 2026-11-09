@@ -124,6 +124,7 @@ export class Collector {
         if (!Number.isInteger(interval) || interval < 30 || interval > 600) throw new Error('同步间隔需为 30–600 秒');
         this.store.save({ ...a, interval }); this.next.set(a.id, Date.now() + interval * 1000); return { ok: true };
       }
+      case 'profile.lookup': return this.engine.lookupProfile(String(args.secUserId || ''));
       case 'detail': return this.store.detail(String(args.account), String(args.room), args.raw === true);
       default: throw new Error('不支持的操作');
     }

@@ -19,6 +19,8 @@ flowchart TD
     Bridge --> Collector[rpa/collector.mjs]
     Collector --> Chrome[Playwright Core · 独立 Chrome 会话]
     Chrome --> Compass[已登录的电商罗盘网页]
+    Collector --> ProfileReader[独立无登录主页读取器]
+    ProfileReader --> Douyin[抖音公开主页]
     Collector --> Store[本机 SQLite]
     Store --> Feishu[rpa/feishu.mjs · 官方飞书接口]
     HTTP --> Hot[本机 DailyHotApi]
@@ -42,6 +44,7 @@ flowchart TD
 | `rpa_bridge.py` | Python 与 Node 采集器的私有 JSON stdio 通道、请求关联和超时 |
 | `rpa/engine.mjs` | 每个本地账号的持久化 Chrome 会话、网页同会话只读请求 |
 | `rpa/model.mjs` | 固定请求目标、响应校验、场次识别、指标与商品规范化 |
+| `rpa/douyin-profile.mjs` | 抖音主页嵌入状态的有限提取与房间字段筛选 |
 | `rpa/collector.mjs` | 调度、账号身份校验、单账号串行采集、暂停和错误状态 |
 | `rpa/store.mjs` | SQLite 账号、场次、采样、事件和保留策略 |
 | `rpa/feishu.mjs` | 飞书访问令牌、字段检查、稳定同步键、持久化写入及重试 |
@@ -61,6 +64,12 @@ flowchart TD
 | 运行设置 | `/api/settings`、`/api/choose-recording-directory`、`/api/recorder/*` | 本机目录和进程操作；目录选择使用 macOS 系统能力 |
 
 默认工作台入口是 `http://127.0.0.1:8765`；录制器和热点服务也使用回环地址。静态资源采用白名单，运行数据不是静态网站资源。录屏服务支持 HTTP Range，限制在配置的录屏根目录内；转写文件由独立目录提供。
+
+### 主页开播检测
+
+直播监控可保存标准抖音主页链接或 `v.douyin.com` 主页短链。每 60 秒由 Node 采集器在独立、无登录态的 Chrome 页面读取公开主页数据；不复用罗盘窗口或其 Cookie。优先检查网页用户资料响应，响应不可用时只从当前主页明确的嵌入状态提取 `room_data`。只有直播状态明确且 `web_rid` 是有效房间号时，才会将 `https://live.douyin.com/<web_rid>` 注册到 bililive-go。明确离线时继续轮询；缺字段、未知状态、验证页、限流和页面结构变化均显示检测错误，不当作离线。账号暂停后不再查询，录制中的旧房间不会因主页切换而被停止。
+
+这使用的是抖音网页端数据，不是官方承诺稳定的开放 API；页面或接口变化、限流和无效主页会显示为检测错误。监测新主页默认关闭，需用户在账号详情中手动开启。bililive-go 仍只负责直播间状态与录制，不提供观看或成交指标。
 
 当前不是公开多用户 Web 服务。外网部署需要另行设计身份认证、权限隔离、HTTPS、作业隔离与存储服务，不能简单改成监听所有网卡。现有 RPA 和录制器控制复用 Host / Origin 校验；新增敏感接口必须按同一规则检查，不能假定所有旧路由已经具备相同保护。
 

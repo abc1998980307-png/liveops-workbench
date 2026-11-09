@@ -355,7 +355,7 @@
           <div class="stats">
             <div class="stat"><div class="stat-label">监控账号 <span class="stat-note">自有 + 竞品</span></div><div class="stat-value" id="statAccounts">0 <span class="stat-note">个账号</span></div></div>
             <div class="stat"><div class="stat-label">当前直播 <span class="stat-note up">本机采集器</span></div><div class="stat-value" id="statLive">0 <span class="stat-note">场</span></div></div>
-            <div class="stat"><div class="stat-label">已绑定直播间 <span class="stat-note">可自动监测</span></div><div class="stat-value" id="statBound">0 <span class="stat-note">个</span></div></div>
+            <div class="stat"><div class="stat-label">已接入账号 <span class="stat-note">主页 / 直播间</span></div><div class="stat-value" id="statBound">0 <span class="stat-note">个</span></div></div>
             <div class="stat"><div class="stat-label">本地录屏 <span class="stat-note">已存档</span></div><div class="stat-value" id="statRecording">0 <span class="stat-note">个文件</span></div></div>
           </div>
           <div class="workspace">
@@ -573,7 +573,7 @@
         return `<span class="state error" title="${esc(errorText)}"><span class="state-dot"></span>采集异常</span><span class="data-origin">${errorCode ? `HTTP ${errorCode}` : "查看详情"}</span>`;
       }
       if (account.state === "paused") return `<span class="state pending"><span class="state-dot"></span>监测已暂停</span><span class="data-origin">手动暂停了开播检查</span>`;
-      if (account.state === "pending") return `<span class="state pending"><span class="state-dot"></span>待接入直播间</span><span class="data-origin">${esc(account.room || "需要直播间链接")}</span>`;
+      if (account.state === "pending") return `<span class="state pending"><span class="state-dot"></span>${account.profileUrl ? account.profileStatus === "live" ? "已发现直播间" : "主页检测中" : account.profileCandidate ? "可开启主页检测" : "待接入直播间"}</span><span class="data-origin">${esc(account.room || "等待下一场")}</span>`;
       return `<span class="state offline"><span class="state-dot"></span>未开播</span><span class="data-origin">${esc(account.room || "等待下一场")}</span>`;
     }
     function renderAccounts() {
@@ -598,7 +598,7 @@
       document.getElementById("statAccounts").innerHTML = `${accounts.length} <span class="stat-note">个账号</span>`;
       const liveCount = accounts.filter(a => a.state === "live").length;
       document.getElementById("statLive").innerHTML = `${liveCount} <span class="stat-note">场</span>`;
-      document.getElementById("statBound").innerHTML = `${accounts.filter(a => a.roomUrl).length} <span class="stat-note">个</span>`;
+      document.getElementById("statBound").innerHTML = `${accounts.filter(a => a.roomUrl || a.profileUrl || a.profileCandidate).length} <span class="stat-note">个</span>`;
       document.getElementById("statRecording").innerHTML = `${sessions.length} <span class="stat-note">个文件</span>`;
       document.getElementById("navLiveCount").textContent = String(liveCount).padStart(2,"0");
       if (!accounts.some(a => a.id === selectedId)) selectedId = accounts[0]?.id;
@@ -892,18 +892,18 @@
       const isPaused = a.state === "paused";
       panel.innerHTML = `<div class="panel-head"><div><div class="panel-title">账号详情</div><div class="panel-subtitle">场次状态与核心指标</div></div><button class="btn small" id="detailSource">数据口径</button></div>
         <div class="panel-body"><div class="detail-title-row"><div class="detail-account"><div class="account-avatar" style="background:${esc(a.color || "#e7eeeb")}">${esc(a.initials || a.name.slice(0,1))}</div><div><div class="detail-name">${esc(a.name)}</div><div class="detail-id">${esc(a.handle || a.id)} · ${a.type === "own" ? "自有账号" : "竞品账号"}</div></div></div><span class="tag ${a.type}">${a.type === "own" ? "自有" : "竞品"}</span></div>
-        <div class="detail-state-line"><strong>${isLive ? "● 正在直播" : isPaused ? "监测已暂停" : a.state === "pending" ? "等待接入" : a.state === "error" ? "采集异常" : "○ 当前未开播"}</strong><span>${isLive ? (Number.isFinite(a.minutes) ? "本机已监测 " + a.minutes + " 分钟" : "监测时长未知") : esc(a.state === "error" ? (a.lastError || "无法确认直播状态") : (a.room || "等待下一场"))}</span></div>
+        <div class="detail-state-line"><strong>${isLive ? "● 正在直播" : isPaused ? "监测已暂停" : a.state === "pending" ? (a.profileUrl ? a.profileStatus === "live" ? "已发现直播间" : "主页检测中" : a.profileCandidate ? "可开启主页检测" : "等待接入") : a.state === "error" ? "采集异常" : "○ 当前未开播"}</strong><span>${isLive ? (Number.isFinite(a.minutes) ? "本机已监测 " + a.minutes + " 分钟" : "监测时长未知") : esc(a.state === "error" ? (a.lastError || "无法确认直播状态") : (a.room || "等待下一场"))}</span></div>
         <div class="metric-grid"><div class="metric"><div class="metric-label">当前观看</div><div class="metric-value">—</div></div><div class="metric"><div class="metric-label">本场成交额</div><div class="metric-value">—</div></div><div class="metric"><div class="metric-label">数据来源</div><div class="metric-value" style="font-size:13px">${a.bgoId ? "bililive-go" : "未连接"}</div></div><div class="metric"><div class="metric-label">录制状态</div><div class="metric-value" style="font-size:14px;color:${a.recording ? "#b54c47" : "#6e7b76"}">${a.recording ? "录制中" : a.state === "error" ? "未确认" : isLive ? "等待录制状态" : "未录制"}</div></div></div>
         <div class="chart-heading"><span>场次趋势</span><span class="chart-legend">经营数据源未连接</span></div>
         <div class="chart-box"><div class="table-empty" style="padding:32px 0">bililive-go 提供开播与录制状态；观看、互动和成交数据需另接授权来源。</div></div>
         <div class="source-note" style="text-align:left;margin-top:3px">${esc(a.origin || "本机采集状态")} · 最近检查 ${timeNow()}</div>
-        <div class="detail-actions"><button class="btn small" id="toggleMonitor" ${!a.roomUrl ? "disabled" : ""}>${a.monitoring ? "暂停监测" : "开启监测"}</button><button class="btn small" id="openReview">查看录屏</button><button class="btn small" id="removeAccount">移出列表</button></div></div>`;
+        <div class="detail-actions"><button class="btn small" id="toggleMonitor" ${!(a.roomUrl || a.profileUrl || a.profileCandidate) ? "disabled" : ""}>${a.monitoring ? "暂停监测" : "开启监测"}</button><button class="btn small" id="openReview">查看录屏</button><button class="btn small" id="removeAccount">移出列表</button></div></div>`;
       document.getElementById("detailSource").addEventListener("click", () => toast("bililive-go 只返回状态，不提供观看人数、互动或成交额"));
       document.getElementById("toggleMonitor").addEventListener("click", async () => {
-        if (!a.roomUrl) { toast("请添加 live.douyin.com 直播间链接后再监测"); return; }
+        if (!(a.roomUrl || a.profileUrl || a.profileCandidate)) { toast("请先添加抖音主页链接"); return; }
         try {
           await apiRequest(`/api/accounts/${encodeURIComponent(a.id)}/monitor`, {method:"POST", body:JSON.stringify({enabled:!a.monitoring})});
-          await refreshAccounts(); toast(a.monitoring ? "已暂停监测" : "已开启监测");
+          await refreshAccounts(); toast(a.monitoring ? "已暂停监测" : a.profileUrl || a.profileCandidate ? "已开启主页检测，正在识别直播间" : "已开启监测");
         } catch (error) { toast(error.message); }
       });
       document.getElementById("openReview").addEventListener("click", () => switchView("sessions"));
@@ -964,22 +964,17 @@
     }
     function closeModal() { document.getElementById("modalBackdrop").classList.remove("open"); }
     function addAccountModal() {
-      openModal("添加监控账号", `<div class="field"><label for="accountHandle">抖音号或主页链接</label><input id="accountHandle" placeholder="例如：@kids_code_lab" autocomplete="off"><div class="field-help">bililive-go 需要直播间链接才能监测和录制。仅填抖音号会先保存账号，待补充直播间链接后才能监测。</div></div><div class="field"><label for="roomUrl">抖音直播间链接（可选）</label><input id="roomUrl" type="url" placeholder="https://live.douyin.com/..."><div class="field-help">链接需指向 live.douyin.com 的具体直播间。自有账号可用授权方式提供直播间地址。</div></div><div class="field"><label>账号类型</label><div class="choice-row"><label class="choice"><input type="radio" name="accountType" value="own" checked><span>自有 / 已授权</span></label><label class="choice"><input type="radio" name="accountType" value="competitor"><span>竞品账号</span></label></div></div><div class="field"><label for="accountName">显示名称（可选）</label><input id="accountName" placeholder="例如：少儿编程研究所"></div>`, `<button class="btn" id="cancelAdd">取消</button><button class="btn primary" id="saveAccount">加入列表</button>`);
-      const roomUrlInput = document.getElementById("roomUrl");
-      roomUrlInput.placeholder = "https://live.douyin.com/... 或 https://v.douyin.com/...";
-      roomUrlInput.nextElementSibling.textContent = "支持 live.douyin.com 直播间地址或 v.douyin.com 分享短链。";
+      openModal("添加监控账号", `<div class="field"><label for="profileUrl">抖音主页链接</label><input id="profileUrl" type="url" placeholder="https://www.douyin.com/user/..." autocomplete="url" required><div class="field-help">粘贴个人主页链接或主页分享短链。开启监测后会自动识别当前直播间，并继续等待下一场。</div></div><div class="field"><label>账号类型</label><div class="choice-row"><label class="choice"><input type="radio" name="accountType" value="own" checked><span>自有 / 已授权</span></label><label class="choice"><input type="radio" name="accountType" value="competitor"><span>竞品账号</span></label></div></div><div class="field"><label for="accountName">显示名称（可选）</label><input id="accountName" placeholder="默认读取抖音昵称"></div>`, `<button class="btn" id="cancelAdd">取消</button><button class="btn primary" id="saveAccount">加入列表</button>`);
       document.getElementById("cancelAdd").addEventListener("click", closeModal);
       document.getElementById("saveAccount").addEventListener("click", async () => {
-        const raw = document.getElementById("accountHandle").value.trim();
-        if (!raw) { toast("请输入抖音号或主页链接"); document.getElementById("accountHandle").focus(); return; }
-        const handle = raw.replace(/^https?:\/\/(www\.)?douyin\.com\//i, "@").replace(/[?#].*$/, "").replace(/\/$/, "");
+        const profileUrl = document.getElementById("profileUrl").value.trim();
+        if (!profileUrl) { toast("请输入抖音主页链接"); document.getElementById("profileUrl").focus(); return; }
         const type = document.querySelector('input[name="accountType"]:checked').value;
-        const name = document.getElementById("accountName").value.trim() || handle;
-        const roomUrl = document.getElementById("roomUrl").value.trim();
+        const name = document.getElementById("accountName").value.trim();
         try {
-          const result = await apiRequest("/api/accounts", {method:"POST", body:JSON.stringify({name, handle, type, roomUrl})});
+          const result = await apiRequest("/api/accounts", {method:"POST", body:JSON.stringify({name, type, profileUrl})});
           selectedId = result.account.id; closeModal(); await refreshAccounts();
-          toast(result.needsRoomUrl ? "已添加账号；补充直播间链接后才能自动监测" : "已添加直播间，请在账号详情中开启监测");
+          toast("主页已添加；在账号详情中开启监测后自动识别直播间");
         } catch (error) { toast(error.message); }
       });
     }

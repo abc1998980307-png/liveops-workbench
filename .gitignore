@@ -9,6 +9,7 @@
 !/package.json
 !/package-lock.json
 !/server.py
+!/douyin_profile.py
 !/start_dashboard.py
 !/rpa_bridge.py
 !/runtime_config.py

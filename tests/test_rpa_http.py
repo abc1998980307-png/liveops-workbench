@@ -70,6 +70,100 @@ class RpaHttpTests(unittest.TestCase):
         status, _ = self.request("POST", "/api/rpa/accounts/x/login", "{}", {"Content-Type":"application/json"})
         self.assertEqual(status, 404)
 
+    def test_profile_link_account_can_be_created_and_monitored_without_room_url(self):
+        profile_id = "MS4wLjABAAAA1234567890"
+        profile_url = f"https://www.douyin.com/user/{profile_id}"
+        with tempfile.TemporaryDirectory() as directory:
+            account_file = Path(directory) / "accounts.json"
+            with mock.patch.object(server, "ACCOUNT_FILE", account_file), \
+                 mock.patch.object(server, "RECORDER") as recorder, \
+                 mock.patch.object(server, "service_request", return_value=[]):
+                recorder.state.return_value = {"connected": True}
+                status, data = self.request("POST", "/api/accounts", json.dumps({
+                    "profileUrl": profile_url,
+                }), {"Content-Type": "application/json"})
+                self.assertEqual(status, 201)
+                created = json.loads(data)
+                account = created["account"]
+                self.assertEqual(account["profileUrl"], profile_url)
+                self.assertEqual(account["secUserId"], profile_id)
+                self.assertEqual(account["type"], "own")
+                self.assertEqual(account["name"], profile_id)
+                self.assertEqual(account["roomUrl"], "")
+                self.assertFalse(account["monitoring"])
+                self.assertFalse(created["needsRoomUrl"])
+
+                status, data = self.request("POST", f"/api/accounts/{account['id']}/monitor", json.dumps({
+                    "enabled": True,
+                }), {"Content-Type": "application/json"})
+                self.assertEqual(status, 200)
+                self.assertTrue(json.loads(data)["ok"])
+                saved = json.loads(account_file.read_text(encoding="utf-8"))[0]
+                self.assertTrue(saved["monitoring"])
+                self.assertEqual(saved["profileStatus"], "checking")
+
+    def test_legacy_copied_profile_share_text_can_be_enabled(self):
+        profile_id = "MS4wLjABAAAA1234567890"
+        profile_url = f"https://www.douyin.com/user/{profile_id}"
+        copied_text = "长按复制此条消息，打开抖音搜索 https://v.douyin.com/AbCdEf/ 2@5.com"
+        with tempfile.TemporaryDirectory() as directory:
+            account_file = Path(directory) / "accounts.json"
+            account_file.write_text(json.dumps([{
+                "id": "legacy-account", "name": copied_text, "handle": copied_text,
+                "type": "competitor", "roomUrl": "", "monitoring": False,
+            }]), encoding="utf-8")
+            with mock.patch.object(server, "ACCOUNT_FILE", account_file), \
+                 mock.patch.object(server, "RECORDER") as recorder, \
+                 mock.patch.object(server, "service_request", return_value=[]), \
+                 mock.patch.object(server, "normalize_profile_link", return_value={
+                     "profileUrl": profile_url, "secUserId": profile_id,
+                 }):
+                recorder.state.return_value = {"connected": True}
+                status, data = self.request("POST", "/api/accounts/legacy-account/monitor", json.dumps({
+                    "enabled": True,
+                }), {"Content-Type": "application/json"})
+                self.assertEqual(status, 200)
+                self.assertTrue(json.loads(data)["ok"])
+                saved = json.loads(account_file.read_text(encoding="utf-8"))[0]
+                self.assertEqual(saved["profileUrl"], profile_url)
+                self.assertEqual(saved["secUserId"], profile_id)
+                self.assertEqual(saved["name"], profile_id)
+                self.assertTrue(saved["monitoring"])
+
+    def test_pausing_profile_keeps_a_shared_room_running_for_another_account(self):
+        profile_id = "12345678-1234-1234-1234-123456789abc"
+        room_url = "https://live.douyin.com/1234567890"
+        room = {"id": 17, "live_url": room_url, "listening": True, "status": False, "recording": False}
+        with tempfile.TemporaryDirectory() as directory:
+            account_file = Path(directory) / "accounts.json"
+            account_file.write_text(json.dumps([
+                {
+                    "id": profile_id, "name": "主页账号", "handle": "profile-id",
+                    "type": "own", "profileUrl": "https://www.douyin.com/user/profile-id",
+                    "secUserId": "profile-id", "roomUrl": room_url, "monitoring": True,
+                },
+                {"id": "other-account", "name": "其他账号", "handle": "other", "type": "own", "roomUrl": room_url},
+            ]), encoding="utf-8")
+            calls = []
+
+            def request(_base, method="GET", path="/", payload=None, timeout=8):
+                calls.append({"method": method, "path": path})
+                return [room] if method == "GET" and path == "/api/lives" else {"ok": True}
+
+            with mock.patch.object(server, "ACCOUNT_FILE", account_file), \
+                 mock.patch.object(server, "RECORDER") as recorder, \
+                 mock.patch.object(server, "service_request", side_effect=request):
+                recorder.state.return_value = {"connected": True}
+                status, data = self.request("POST", f"/api/accounts/{profile_id}/monitor", json.dumps({
+                    "enabled": False,
+                }), {"Content-Type": "application/json"})
+                self.assertEqual(status, 200)
+                self.assertTrue(json.loads(data)["ok"])
+
+            saved = json.loads(account_file.read_text(encoding="utf-8"))
+            self.assertFalse(saved[0]["monitoring"])
+            self.assertFalse(any(call["path"].endswith("/stop") for call in calls))
+
     def test_ego_state_returns_only_validated_verification_fields(self):
         record = {
             "provider": "compass", "accountName": "测试账号",

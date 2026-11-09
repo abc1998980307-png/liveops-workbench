@@ -10,6 +10,8 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -17,6 +19,7 @@ import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from douyin_profile import ProfileLookupError, normalize_profile_link, profile_state_from_response
 from rpa_bridge import COLLECTOR
 from recorder_service import RecorderManager, RecorderError
 
@@ -41,6 +44,10 @@ HOT_API = os.environ.get("LIVEOPS_HOT_API_URL", "http://127.0.0.1:16688").rstrip
 PORT = int(os.environ.get("LIVEOPS_PORT", "8765"))
 DOUYIN_HOSTS = {"live.douyin.com", "v.douyin.com"}
 RECORDER = RecorderManager(DATA_ROOT, BGO)
+ACCOUNT_LOCK = threading.RLock()
+PROFILE_MONITOR_LOCK = threading.Lock()
+PROFILE_MONITOR_WAKE = threading.Event()
+PROFILE_POLL_SECONDS = 60
 
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 RECORDINGS.mkdir(parents=True, exist_ok=True)
@@ -53,17 +60,19 @@ if _pipeline_spec and _pipeline_spec.loader:
 
 
 def read_accounts():
-    try:
-        value = json.loads(ACCOUNT_FILE.read_text(encoding="utf-8"))
-        return value if isinstance(value, list) else []
-    except (OSError, ValueError):
-        return []
+    with ACCOUNT_LOCK:
+        try:
+            value = json.loads(ACCOUNT_FILE.read_text(encoding="utf-8"))
+            return value if isinstance(value, list) else []
+        except (OSError, ValueError):
+            return []
 
 
 def write_accounts(accounts):
-    temp_file = ACCOUNT_FILE.with_suffix(".tmp")
-    temp_file.write_text(json.dumps(accounts, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp_file.replace(ACCOUNT_FILE)
+    with ACCOUNT_LOCK:
+        temp_file = ACCOUNT_FILE.with_suffix(".tmp")
+        temp_file.write_text(json.dumps(accounts, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_file.replace(ACCOUNT_FILE)
 
 
 def ego_setup_snapshot():
@@ -246,6 +255,159 @@ def normalized_url(value):
     return value.strip().rstrip("/")
 
 
+def account_by_id(accounts, account_id):
+    return next((item for item in accounts if item.get("id") == account_id), None)
+
+
+def has_profile_link_candidate(value):
+    return isinstance(value, str) and bool(re.search(
+        r"https://(?:(?:www\.)?douyin\.com/(?:user|share/user)/|v\.douyin\.com/)", value, re.IGNORECASE
+    ))
+
+
+def set_profile_result(account_id, profile_url, now, result=None, error=None):
+    with ACCOUNT_LOCK:
+        accounts = read_accounts()
+        account = account_by_id(accounts, account_id)
+        if not account or not account.get("monitoring") or account.get("profileUrl") != profile_url:
+            return None
+        account["profileLastCheck"] = datetime.fromtimestamp(now, timezone.utc).isoformat()
+        retry_seconds = PROFILE_POLL_SECONDS * (2 if error else 1)
+        account["profileNextCheckAt"] = datetime.fromtimestamp(now + retry_seconds, timezone.utc).isoformat()
+        if error:
+            account["profileStatus"] = "error"
+            account["profileError"] = str(error).replace("\n", " ")[:220]
+        else:
+            account["profileStatus"] = result["status"]
+            account["profileError"] = None
+            if result.get("status") == "live" and result.get("roomUrl"):
+                account["roomUrl"] = result["roomUrl"]
+                account["retiredRoomUrls"] = result.get("retiredRoomUrls", account.get("retiredRoomUrls", []))
+            nickname = result.get("nickname")
+            if nickname and (not account.get("name") or account["name"] == account.get("handle")):
+                account["name"] = nickname
+        write_accounts(accounts)
+        return dict(account)
+
+
+def resolve_profile_state(sec_user_id):
+    """Read the public profile in an isolated browser, then validate its response."""
+    try:
+        payload = COLLECTOR.call("profile.lookup", {"secUserId": sec_user_id}, timeout=45)
+    except RuntimeError as error:
+        raise ProfileLookupError(str(error)) from error
+    if isinstance(payload, dict) and isinstance(payload.get("rawJson"), str):
+        try:
+            payload = json.loads(payload["rawJson"])
+        except ValueError as error:
+            raise ProfileLookupError("抖音主页接口没有返回有效 JSON 数据") from error
+    return profile_state_from_response(payload)
+
+
+def _profile_check_due(account, now):
+    value = account.get("profileNextCheckAt")
+    if not value:
+        return True
+    try:
+        due = datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return True
+    return due <= now
+
+
+def _other_account_uses_room(accounts, account_id, room_url):
+    target = normalized_url(room_url)
+    for account in accounts:
+        if account.get("id") == account_id:
+            continue
+        urls = [account.get("roomUrl", ""), *account.get("retiredRoomUrls", [])]
+        if any(url and normalized_url(url) == target for url in urls):
+            return True
+    return False
+
+
+def _sync_profile_room(account, room_url):
+    rooms = service_request(BGO, path="/api/lives", timeout=5) or []
+    room = next((item for item in rooms if normalized_url(item.get("live_url", "")) == normalized_url(room_url)), None)
+    if not room:
+        service_request(BGO, method="POST", path="/api/lives", payload=[{"url": room_url, "listen": True}], timeout=15)
+    elif not room.get("listening"):
+        service_request(BGO, path=f"/api/lives/{urllib.parse.quote(str(room['id']))}/start", timeout=10)
+
+    previous = normalized_url(account.get("roomUrl", ""))
+    retired = list(dict.fromkeys(
+        normalized_url(url) for url in account.get("retiredRoomUrls", []) if url
+    ))
+    if previous and previous != normalized_url(room_url):
+        retired.append(previous)
+    retired = [url for url in dict.fromkeys(retired) if url != normalized_url(room_url)]
+    all_accounts = read_accounts()
+    for old_url in retired:
+        if _other_account_uses_room(all_accounts, account.get("id"), old_url):
+            continue
+        old = next((item for item in rooms if normalized_url(item.get("live_url", "")) == old_url), None)
+        if old and old.get("listening") and not old.get("recording") and not old.get("status"):
+            service_request(BGO, path=f"/api/lives/{urllib.parse.quote(str(old['id']))}/stop", timeout=10)
+    return retired
+
+
+def _retire_offline_profile_room(account):
+    room_url = normalized_url(account.get("roomUrl", ""))
+    if not room_url:
+        return
+    accounts = read_accounts()
+    if _other_account_uses_room(accounts, account.get("id"), room_url):
+        return
+    rooms = service_request(BGO, path="/api/lives", timeout=5) or []
+    room = next((item for item in rooms if normalized_url(item.get("live_url", "")) == room_url), None)
+    if room and room.get("listening") and not room.get("recording") and not room.get("status"):
+        service_request(BGO, path=f"/api/lives/{urllib.parse.quote(str(room['id']))}/stop", timeout=10)
+
+
+def profile_monitor_tick(now=None, resolver=None):
+    """Poll enabled profile links without coupling checks to browser page refreshes."""
+    if not PROFILE_MONITOR_LOCK.acquire(blocking=False):
+        return
+    try:
+        checked_at = time.time() if now is None else now
+        resolver = resolver or resolve_profile_state
+        due_accounts = [
+            dict(account) for account in read_accounts()
+            if account.get("profileUrl") and account.get("secUserId")
+            and account.get("monitoring") and _profile_check_due(account, checked_at)
+        ]
+        for account in due_accounts:
+            try:
+                result = resolver(account["secUserId"])
+                if result.get("status") == "live" and result.get("roomUrl"):
+                    with ACCOUNT_LOCK:
+                        current = account_by_id(read_accounts(), account["id"])
+                        if not current or not current.get("monitoring") or current.get("profileUrl") != account["profileUrl"]:
+                            continue
+                        retired = _sync_profile_room(current, result["roomUrl"])
+                        set_profile_result(account["id"], account["profileUrl"], checked_at,
+                                           result={**result, "retiredRoomUrls": retired})
+                else:
+                    with ACCOUNT_LOCK:
+                        current = account_by_id(read_accounts(), account["id"])
+                        if not current or not current.get("monitoring") or current.get("profileUrl") != account["profileUrl"]:
+                            continue
+                        if result.get("status") == "offline":
+                            _retire_offline_profile_room(current)
+                        set_profile_result(account["id"], account["profileUrl"], checked_at, result=result)
+            except (OSError, ValueError, ProfileLookupError, urllib.error.URLError) as error:
+                set_profile_result(account["id"], account["profileUrl"], checked_at, error=error)
+    finally:
+        PROFILE_MONITOR_LOCK.release()
+
+
+def profile_monitor_worker(stop_event):
+    while not stop_event.is_set():
+        profile_monitor_tick()
+        PROFILE_MONITOR_WAKE.wait(timeout=5)
+        PROFILE_MONITOR_WAKE.clear()
+
+
 def live_minutes(room):
     try:
         started_at = int(room.get("last_start_time_unix") or 0)
@@ -266,27 +428,61 @@ def account_snapshot():
     for account in read_accounts():
         room_url = normalized_url(account.get("roomUrl", ""))
         room = room_by_url.get(room_url) if room_url else None
-        if room_url:
-            tracked_urls.add(room_url)
-        output.append({
-            **account,
-            "bgoId": room.get("id") if room else None,
-            "state": (
-                "error" if room and room.get("last_error")
-                else "live" if room and room.get("status")
-                else "paused" if room and not room.get("listening")
+        tracked_urls.update(normalized_url(url) for url in [room_url, *account.get("retiredRoomUrls", [])] if url)
+        is_profile = bool(account.get("profileUrl"))
+        profile_candidate = not is_profile and not room_url and has_profile_link_candidate(account.get("handle") or account.get("name"))
+        monitoring = bool(account.get("monitoring")) if is_profile else bool(room and room.get("listening"))
+        profile_status = account.get("profileStatus")
+        profile_error = account.get("profileError")
+        if room and room.get("last_error"):
+            state = "error"
+        elif room and room.get("status"):
+            state = "live"
+        elif is_profile:
+            if not monitoring:
+                state = "paused"
+            elif profile_error or profile_status == "error":
+                state = "error"
+            elif profile_status == "offline":
+                state = "offline"
+            else:
+                state = "pending"
+        else:
+            state = (
+                "paused" if room and not room.get("listening")
                 else "offline" if room
                 else "pending"
-            ),
-            "monitoring": bool(room and room.get("listening")),
+            )
+        if room:
+            room_label = room.get("room_name") or "直播间"
+        elif is_profile and monitoring and profile_status == "live":
+            room_label = "已发现直播间，等待录制器状态"
+        elif is_profile and monitoring and profile_status == "offline":
+            room_label = "主页未开播，继续检测"
+        elif is_profile and monitoring and profile_error:
+            room_label = profile_error
+        elif is_profile and monitoring:
+            room_label = "正在检查主页开播状态"
+        elif is_profile:
+            room_label = "主页已添加，尚未开启监测"
+        elif profile_candidate:
+            room_label = "已识别主页分享链接，可开启监测"
+        else:
+            room_label = "尚未绑定直播间链接" if not room_url else "等待开播"
+        output.append({
+            **account,
+            "profileCandidate": profile_candidate,
+            "bgoId": room.get("id") if room else None,
+            "state": state,
+            "monitoring": monitoring,
             "recording": bool(room and room.get("recording")),
             "minutes": live_minutes(room) if room else None,
-            "lastError": room.get("last_error") if room else None,
-            "room": room.get("room_name") if room else ("尚未绑定直播间链接" if not room_url else "等待开播"),
+            "lastError": (room.get("last_error") if room else None) or profile_error,
+            "room": room_label,
             "hostName": room.get("host_name") if room else None,
             "viewers": "—",
             "gmv": "—",
-            "origin": "bililive-go 状态" if room else "待连接直播间",
+            "origin": "抖音主页检测 + bililive-go" if is_profile else "抖音主页分享链接" if profile_candidate else "bililive-go 状态" if room else "待连接直播间",
         })
 
     for room in rooms or []:
@@ -582,18 +778,25 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/accounts":
             name = str(payload.get("name", "")).strip()
             handle = str(payload.get("handle", "")).strip()
-            account_type = payload.get("type")
+            account_type = payload.get("type", "own")
+            profile_url = str(payload.get("profileUrl", "")).strip()
             room_url = normalized_url(str(payload.get("roomUrl", "")))
+            profile = None
+            if profile_url:
+                try:
+                    profile = normalize_profile_link(profile_url)
+                except ProfileLookupError as error:
+                    self.send_json({"error": str(error)}, 400)
+                    return
+                profile_url = profile["profileUrl"]
+                handle = handle or profile["secUserId"]
+                name = name or handle
             if not name or not handle or account_type not in ("own", "competitor"):
-                self.send_json({"error": "账号名称、抖音号和账号类型必填"}, 400)
+                self.send_json({"error": "请提供抖音主页链接和账号类型"}, 400)
                 return
             parsed = urllib.parse.urlparse(room_url) if room_url else None
             if parsed and (parsed.scheme != "https" or parsed.hostname not in DOUYIN_HOSTS or not parsed.path.strip("/") or parsed.username or parsed.password):
                 self.send_json({"error": "请使用 https://live.douyin.com/... 直播间地址或 https://v.douyin.com/... 分享短链"}, 400)
-                return
-            accounts = read_accounts()
-            if any(item.get("handle", "").lower() == handle.lower() for item in accounts):
-                self.send_json({"error": "该账号已经存在"}, 409)
                 return
             account = {
                 "id": uuid.uuid4().hex,
@@ -604,16 +807,35 @@ class Handler(BaseHTTPRequestHandler):
                 "monitoring": False,
                 "createdAt": datetime.now(timezone.utc).isoformat(),
             }
-            if room_url:
-                try:
-                    service_request(BGO, method="POST", path="/api/lives", payload=[{"url": room_url, "listen": False}], timeout=15)
-                except (OSError, ValueError, urllib.error.URLError) as error:
-                    self.send_json({"error": "bililive-go 添加直播间失败：" + str(error)}, 502)
+            if profile:
+                account.update({
+                    "profileUrl": profile_url,
+                    "secUserId": profile["secUserId"],
+                    "profileStatus": "not_checked",
+                    "profileError": None,
+                    "profileLastCheck": None,
+                    "profileNextCheckAt": None,
+                    "retiredRoomUrls": [],
+                })
+            with ACCOUNT_LOCK:
+                accounts = read_accounts()
+                if any(
+                    item.get("handle", "").lower() == handle.lower()
+                    or (profile_url and item.get("profileUrl") == profile_url)
+                    for item in accounts
+                ):
+                    self.send_json({"error": "该账号已经存在"}, 409)
                     return
-            accounts.append(account)
-            write_accounts(accounts)
+                if room_url:
+                    try:
+                        service_request(BGO, method="POST", path="/api/lives", payload=[{"url": room_url, "listen": False}], timeout=15)
+                    except (OSError, ValueError, urllib.error.URLError) as error:
+                        self.send_json({"error": "bililive-go 添加直播间失败：" + str(error)}, 502)
+                        return
+                accounts.append(account)
+                write_accounts(accounts)
             RECORDER.state()
-            self.send_json({"account": account, "needsRoomUrl": not bool(room_url)}, 201)
+            self.send_json({"account": account, "needsRoomUrl": not bool(room_url or profile_url)}, 201)
             return
 
         if path == "/api/settings":
@@ -741,22 +963,62 @@ class Handler(BaseHTTPRequestHandler):
         parts = path.strip("/").split("/")
         if len(parts) == 4 and parts[:2] == ["api", "accounts"] and parts[3] == "monitor":
             account_id = parts[2]
-            accounts = read_accounts()
-            account = next((item for item in accounts if item.get("id") == account_id), None)
-            if not account or not account.get("roomUrl"):
-                self.send_json({"error": "请先添加抖音直播间链接，个人抖音号本身不能交给录制器监控"}, 409)
+            enabled = payload.get("enabled")
+            if not isinstance(enabled, bool):
+                self.send_json({"error": "监测开关必须为布尔值"}, 400)
                 return
             try:
-                rooms = service_request(BGO, path="/api/lives")
-                room = next((item for item in rooms or [] if normalized_url(item.get("live_url", "")) == normalized_url(account["roomUrl"])), None)
-                enabled = bool(payload.get("enabled"))
-                if not room and enabled:
-                    service_request(BGO, method="POST", path="/api/lives", payload=[{"url": account["roomUrl"], "listen": True}])
-                elif room:
-                    action = "start" if enabled else "stop"
-                    service_request(BGO, path=f"/api/lives/{urllib.parse.quote(str(room['id']))}/{action}")
-                account["monitoring"] = enabled
-                write_accounts(accounts)
+                with ACCOUNT_LOCK:
+                    accounts = read_accounts()
+                    account = account_by_id(accounts, account_id)
+                    if not account:
+                        self.send_json({"error": "账号不存在"}, 404)
+                        return
+                    if (enabled and not account.get("roomUrl") and not account.get("profileUrl")
+                            and has_profile_link_candidate(account.get("handle") or account.get("name"))):
+                        try:
+                            profile = normalize_profile_link(account.get("handle") or account.get("name"))
+                        except ProfileLookupError as error:
+                            self.send_json({"error": str(error)}, 400)
+                            return
+                        if account.get("name") == account.get("handle"):
+                            account["name"] = profile["secUserId"]
+                        account["handle"] = profile["secUserId"]
+                        account.update({
+                            "profileUrl": profile["profileUrl"],
+                            "secUserId": profile["secUserId"],
+                            "profileStatus": "not_checked",
+                            "profileError": None,
+                            "profileLastCheck": None,
+                            "profileNextCheckAt": None,
+                            "retiredRoomUrls": [],
+                        })
+                    if not (account.get("roomUrl") or account.get("profileUrl")):
+                        self.send_json({"error": "请先添加抖音主页链接"}, 409)
+                        return
+                    if account.get("profileUrl"):
+                        account["monitoring"] = enabled
+                        account["profileStatus"] = "checking" if enabled else "paused"
+                        account["profileError"] = None
+                        account["profileNextCheckAt"] = datetime.now(timezone.utc).isoformat() if enabled else None
+                        write_accounts(accounts)
+                        if enabled:
+                            PROFILE_MONITOR_WAKE.set()
+                        elif account.get("roomUrl") and not _other_account_uses_room(accounts, account["id"], account["roomUrl"]):
+                            rooms = service_request(BGO, path="/api/lives", timeout=5) or []
+                            room = next((item for item in rooms if normalized_url(item.get("live_url", "")) == normalized_url(account["roomUrl"])), None)
+                            if room and room.get("listening"):
+                                service_request(BGO, path=f"/api/lives/{urllib.parse.quote(str(room['id']))}/stop", timeout=10)
+                    else:
+                        rooms = service_request(BGO, path="/api/lives")
+                        room = next((item for item in rooms or [] if normalized_url(item.get("live_url", "")) == normalized_url(account["roomUrl"])), None)
+                        if not room and enabled:
+                            service_request(BGO, method="POST", path="/api/lives", payload=[{"url": account["roomUrl"], "listen": True}])
+                        elif room:
+                            action = "start" if enabled else "stop"
+                            service_request(BGO, path=f"/api/lives/{urllib.parse.quote(str(room['id']))}/{action}")
+                        account["monitoring"] = enabled
+                        write_accounts(accounts)
                 RECORDER.state()
                 self.send_json({"ok": True, "accounts": account_snapshot()})
             except (OSError, ValueError, urllib.error.URLError) as error:
@@ -780,15 +1042,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             remaining_accounts = [item for item in accounts if item.get("id") != account["id"]]
-            shared_room = account.get("roomUrl") and any(
-                normalized_url(item.get("roomUrl", "")) == normalized_url(account["roomUrl"])
-                for item in remaining_accounts
-            )
-            if account.get("roomUrl") and not shared_room:
+            room_urls = list(dict.fromkeys(
+                normalized_url(url) for url in [account.get("roomUrl", ""), *account.get("retiredRoomUrls", [])] if url
+            ))
+            if room_urls:
                 rooms = service_request(BGO, path="/api/lives")
-                room = next((item for item in rooms or [] if normalized_url(item.get("live_url", "")) == normalized_url(account["roomUrl"])), None)
-                if room:
-                    service_request(BGO, method="DELETE", path=f"/api/lives/{urllib.parse.quote(str(room['id']))}")
+                for room_url in room_urls:
+                    if _other_account_uses_room(remaining_accounts, account["id"], room_url):
+                        continue
+                    room = next((item for item in rooms or [] if normalized_url(item.get("live_url", "")) == room_url), None)
+                    if room:
+                        service_request(BGO, method="DELETE", path=f"/api/lives/{urllib.parse.quote(str(room['id']))}")
             write_accounts(remaining_accounts)
             RECORDER.state()
             self.send_json({"ok": True})
@@ -893,12 +1157,18 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, stop_on_signal)
     server = LocalHTTPServer(("127.0.0.1", PORT), Handler)
     media_worker = MEDIA_PIPELINE.start_worker() if MEDIA_PIPELINE else None
+    profile_stop = threading.Event()
+    profile_worker = threading.Thread(target=profile_monitor_worker, args=(profile_stop,), name="douyin-profile-monitor", daemon=True)
+    profile_worker.start()
     print(f"Live Ops adapter listening at http://127.0.0.1:{PORT}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        profile_stop.set()
+        PROFILE_MONITOR_WAKE.set()
+        profile_worker.join(timeout=12)
         COLLECTOR.close()
         if MEDIA_PIPELINE:
             MEDIA_PIPELINE.stop_worker()

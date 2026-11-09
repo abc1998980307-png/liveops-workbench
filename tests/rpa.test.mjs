@@ -107,3 +107,19 @@ test('pause cancels pending writes and stops automatic scheduling', async () => 
     t.collector.tick(); assert.equal(t.collector.busy.size, 0);
   } finally { await t.cleanup(); }
 });
+
+test('profile lookup command calls the isolated browser reader', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'liveops-profile-test-'));
+  const store = new Store(root);
+  const requested = [];
+  const engine = {
+    lookupProfile: async secUserId => { requested.push(secUserId); return { status_code: 0, user: { room_data: '' } }; },
+    close: async () => {},
+  };
+  const collector = new Collector(store, engine);
+  try {
+    const result = await collector.command('profile.lookup', { secUserId: 'MS4wLjABAAAA1234567890' });
+    assert.deepEqual(requested, ['MS4wLjABAAAA1234567890']);
+    assert.deepEqual(result, { status_code: 0, user: { room_data: '' } });
+  } finally { await collector.close(); fs.rmSync(root, { recursive: true }); }
+});
