@@ -992,12 +992,34 @@
         else { status.textContent = data.workerRunning ? "处理中" : data.transcriptionReady ? "自动压缩与转写已启用" : "自动压缩已启用"; note.textContent = `处理顺序：录屏完成 → 压缩 MP4${data.keepOriginal ? "（保留原文件）" : " → 校验后删除原文件"}${data.transcriptionReady ? " → 中文语音转写" : "；转写组件未就绪时仍会完成压缩"}。`; }
         if (badge) badge.textContent = !data.enabled ? "已关闭" : !data.compressionReady ? "压缩组件未就绪" : data.transcriptionReady ? "已就绪" : "压缩就绪 / 转写未就绪";
         const rows = document.getElementById("mediaJobRows");
-        if (rows) rows.innerHTML = data.jobs?.length ? data.jobs.map(job => `<div class="clip-row"><div class="clip-time">${esc(job.status === "completed" ? job.stage || "已完成" : job.status === "processing" ? job.stage : job.status === "failed" ? "失败" : "排队中")}</div><div class="clip-text">${esc(job.name)}${job.compressedUrl ? `<br><a class="source-link" href="${esc(job.compressedUrl)}" target="_blank" rel="noreferrer">压缩视频</a>` : ""}${job.transcriptUrl ? ` · <a class="source-link" href="${esc(job.transcriptUrl)}" target="_blank" rel="noreferrer">转写文本</a>` : ""}${job.subtitles ? ` · <a class="source-link" href="/transcripts/${encodeURIComponent(job.subtitles.split("/transcripts/")[1] || "")}" target="_blank" rel="noreferrer">字幕</a>` : ""}${job.sourceDeleted ? `<br><span class="settings-status">原录屏已清理，仅保留压缩视频</span>` : ""}${job.error ? `<br><span style="color:#b74c47">${esc(job.error)}</span>` : ""}</div></div>`).join("") : `<div class="table-empty" style="padding:20px 0">${data.ready ? "尚无处理任务；新录屏结束后会自动进入队列。" : "压缩工具就绪后，队列会自动启用。"}</div>`;
+        if (rows) rows.innerHTML = data.jobs?.length ? data.jobs.map(job => `<div class="clip-row"><div class="clip-time">${esc(job.stage || (job.status === "queued" ? "排队中" : job.status))}</div><div class="clip-text">${esc(job.name)}<div class="button-row">${job.compressedPath ? `<button class="btn small" type="button" data-recording-path="${esc(job.compressedPath)}">打开压缩视频位置</button>` : job.sourcePath ? `<button class="btn small" type="button" data-recording-path="${esc(job.sourcePath)}">打开原文件位置</button>` : ""}${job.transcriptUrl ? `<a class="source-link" href="${esc(job.transcriptUrl)}" target="_blank" rel="noreferrer">转写文本</a>` : ""}${job.subtitlesUrl ? `<a class="source-link" href="${esc(job.subtitlesUrl)}" target="_blank" rel="noreferrer">字幕</a>` : ""}${job.canRetry ? `<button class="btn small" type="button" data-media-retry="${esc(job.id)}" ${!data.enabled ? "disabled" : ""}>重试处理</button>` : ""}${job.canRecoverTail ? `<button class="btn small" type="button" data-media-recover="${esc(job.id)}" ${!data.enabled ? "disabled" : ""}>恢复末尾残包</button>` : ""}</div>${job.tailRecovery ? `<div class="settings-status">恢复范围：末尾 ${formatBytes(job.tailRecovery.removedBytes)}，原文件保留。只恢复收到的有效内容，不补回断流画面。</div>` : job.sourceDeleted ? `<div class="settings-status">原录屏已清理，保留压缩视频及已生成的文本、字幕。</div>` : ""}${job.error ? `<details style="color:#b74c47"><summary>查看失败原因</summary><div style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(job.error)}</div></details>` : ""}</div></div>`).join("") : `<div class="table-empty" style="padding:20px 0">${data.ready ? "尚无处理任务；新录屏结束后会自动进入队列。" : "压缩工具就绪后，队列会自动启用。"}</div>`;
       } catch (error) {
         const status = document.getElementById("mediaPipelineStatus");
         if (status) status.textContent = "队列不可用";
       }
     }
+    async function retryMediaJob(id, recoverTail, button) {
+      button.disabled = true;
+      try {
+        const result = await apiRequest("/api/media/retry", {method:"POST", body:JSON.stringify({id, recoverTail})});
+        toast(result.alreadyQueued ? "任务已在队列中" : "已加入处理队列");
+        closeModal();
+        await refreshMediaJobs();
+      } catch (error) {
+        toast(error.message);
+        button.disabled = false;
+      }
+    }
+    document.getElementById("mediaJobRows").addEventListener("click", event => {
+      const retry = event.target.closest("button[data-media-retry]");
+      if (retry) { retryMediaJob(retry.dataset.mediaRetry, false, retry); return; }
+      const recover = event.target.closest("button[data-media-recover]");
+      if (!recover) return;
+      const id = recover.dataset.mediaRecover;
+      openModal("恢复末尾残包", "<p>仅当损坏位于 FLV 最后一个 H.264 视频包时，才会保留之前的完整内容，生成并严格校验压缩视频，再生成文本与字幕。</p><p>损坏的原文件会保留。发现中间损坏或不支持的格式时会停止，不会删除原件，也无法补回断流期间未收到的画面。</p>", '<button class="btn" id="cancelMediaRecovery">取消</button><button class="btn primary" id="confirmMediaRecovery">恢复并保留原件</button>');
+      document.getElementById("cancelMediaRecovery").addEventListener("click", closeModal);
+      document.getElementById("confirmMediaRecovery").addEventListener("click", event => retryMediaJob(id, true, event.currentTarget));
+    });
     function switchView(name) {
       currentView = name;
       document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === `view-${name}`));

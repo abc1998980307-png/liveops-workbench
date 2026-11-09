@@ -1,7 +1,9 @@
 import os
+import json
 import sys
 import tempfile
 import unittest
+import threading
 from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
@@ -29,6 +31,9 @@ class MediaPipelineTests(unittest.TestCase):
             "MODEL": self.root / "missing-model",
             "FFMPEG": self.root / "fake-ffmpeg",
             "_stable": {},
+            "_stop": threading.Event(),
+            "_wake": threading.Event(),
+            "_worker_thread": None,
         }.items():
             self.stack.enter_context(mock.patch.object(pipeline, name, value))
         self.config = {
@@ -42,6 +47,7 @@ class MediaPipelineTests(unittest.TestCase):
         self.is_open = self.stack.enter_context(mock.patch.object(pipeline, "_is_open", return_value=False))
         self.run = self.stack.enter_context(mock.patch.object(pipeline, "_run", side_effect=self.successful_command))
         self.job = pipeline._create_job(self.source)
+        self.addCleanup(pipeline.stop_worker)
 
     def successful_command(self, command):
         # Encoding produces a real temporary file; validation has no output file.
@@ -124,7 +130,7 @@ class MediaPipelineTests(unittest.TestCase):
         real_unlink = Path.unlink
 
         def protected_unlink(path, *args, **kwargs):
-            if path == self.source:
+            if path.resolve() == self.source.resolve():
                 raise PermissionError("source is read only")
             return real_unlink(path, *args, **kwargs)
 
@@ -137,11 +143,13 @@ class MediaPipelineTests(unittest.TestCase):
 
     def test_worker_compresses_when_whisper_and_model_are_missing(self):
         pipeline.FFMPEG.touch()
-        with mock.patch.object(pipeline, "_stop") as stop, mock.patch.object(
-            pipeline, "_candidate_files", return_value=iter([self.source])
-        ):
-            stop.wait.side_effect = [False, True]
-            pipeline.worker_loop()
+        thread = pipeline.start_worker()
+        for _ in range(100):
+            if self.saved_job()["status"] == "completed":
+                break
+            threading.Event().wait(.01)
+        self.assertTrue(pipeline.stop_worker())
+        self.assertFalse(thread.is_alive())
         result = pipeline._read_jobs()[-1]
         self.assertEqual(result["status"], "completed")
         self.assertIn("转写组件未就绪", result["stage"])
@@ -168,6 +176,177 @@ class MediaPipelineTests(unittest.TestCase):
         pipeline._process(self.job, started_config)
         self.assert_source_preserved()
         self.assertTrue(Path(self.saved_job()["compressed"]).is_file())
+
+    def enable_transcription(self):
+        pipeline.WHISPER.touch()
+        pipeline.MODEL.touch()
+
+    def transcription_command(self, command, **kwargs):
+        if command[0] == str(pipeline.WHISPER):
+            Path(command[-1] + ".txt").write_text("合成测试字幕")
+            Path(command[-1] + ".srt").write_text("1\n00:00:00,000 --> 00:00:01,000\n合成测试字幕\n")
+        else:
+            self.successful_command(command)
+
+    def test_retry_after_transcription_failure_reuses_validated_video_without_source(self):
+        self.enable_transcription()
+        def fail_transcription(command):
+            if command[0] == str(pipeline.WHISPER):
+                raise RuntimeError("temporary transcription error")
+            self.successful_command(command)
+        self.run.side_effect = fail_transcription
+        with self.assertRaisesRegex(RuntimeError, "transcription error"):
+            pipeline._process(self.job, self.config)
+        self.assertFalse(self.source.exists())
+        saved = self.saved_job()
+        output = Path(saved["compressed"])
+        pipeline._update_job(saved["id"], status="failed")
+        pipeline.retry_job(saved["id"])
+        self.run.reset_mock()
+        self.run.side_effect = self.transcription_command
+        pipeline._process(pipeline._next_job(), self.config)
+        saved = self.saved_job()
+        self.assertEqual(saved["status"], "completed")
+        self.assertEqual(saved["compressed"], str(output))
+        self.assertTrue(Path(saved["transcript"]).is_file())
+        self.assertTrue(Path(saved["subtitles"]).is_file())
+        self.assertEqual(self.run.call_count, 3)  # Validate, extract, transcribe.
+        self.assertFalse(any("-c:v" in c.args[0] for c in self.run.call_args_list))
+
+    def test_missing_srt_regenerates_both_atomically_and_preserves_existing_text(self):
+        self.enable_transcription()
+        self.run.side_effect = self.transcription_command
+        pipeline._process(self.job, self.config)
+        saved = self.saved_job()
+        old_text = Path(saved["transcript"])
+        Path(saved["subtitles"]).unlink()
+        pipeline.retry_job(saved["id"])
+        pipeline._process(pipeline._next_job(), self.config)
+        result = self.saved_job()
+        self.assertNotEqual(result["transcript"], str(old_text))
+        self.assertEqual(old_text.read_text(), "合成测试字幕")
+        self.assertTrue(Path(result["subtitles"]).is_file())
+
+    def test_partial_transcription_is_not_published(self):
+        self.enable_transcription()
+        def partial(command):
+            if command[0] == str(pipeline.WHISPER):
+                Path(command[-1] + ".txt").write_text("partial")
+            else:
+                self.successful_command(command)
+        self.run.side_effect = partial
+        with self.assertRaisesRegex(RuntimeError, "文本或字幕不完整"):
+            pipeline._process(self.job, self.config)
+        self.assertEqual(list(pipeline.TRANSCRIPTS.rglob("*.txt")), [])
+        self.assertTrue(Path(self.saved_job()["compressed"]).is_file())
+
+    def test_missing_validated_output_is_an_explicit_failure(self):
+        pipeline._process(self.job, self.config)
+        saved = self.saved_job()
+        Path(saved["compressed"]).unlink()
+        with self.assertRaisesRegex(RuntimeError, "已不存在"):
+            pipeline._process(saved, self.config)
+
+    def test_modified_validated_output_is_not_used_or_overwritten(self):
+        self.config["keepOriginal"] = True
+        pipeline._process(self.job, self.config)
+        saved = self.saved_job()
+        output = Path(saved["compressed"])
+        output.write_bytes(b"externally replaced")
+        self.config["keepOriginal"] = False
+        with self.assertRaisesRegex(RuntimeError, "已被修改"):
+            pipeline._process(saved, self.config)
+        self.assert_source_preserved()
+        self.assertEqual(output.read_bytes(), b"externally replaced")
+
+    def test_retry_is_idempotent_and_disabled_pipeline_does_not_queue(self):
+        pipeline._update_job(self.job["id"], status="failed")
+        self.config["enabled"] = False
+        with self.assertRaisesRegex(ValueError, "开启自动处理"):
+            pipeline.retry_job(self.job["id"])
+        self.assertEqual(self.saved_job()["status"], "failed")
+        self.config["enabled"] = True
+        self.assertFalse(pipeline.retry_job(self.job["id"])["alreadyQueued"])
+        self.assertTrue(pipeline.retry_job(self.job["id"])["alreadyQueued"])
+        self.assertEqual(len(pipeline._read_jobs()), 1)
+
+    def test_restart_preserves_deleted_source_job_and_resumes_it(self):
+        pipeline._process(self.job, self.config)
+        self.enable_transcription()
+        self.run.side_effect = self.transcription_command
+        pipeline._update_job(self.job["id"], status="processing")
+        pipeline.FFMPEG.touch()
+        first = pipeline.start_worker()
+        self.assertIs(pipeline.start_worker(), first)
+        for _ in range(200):
+            if self.saved_job().get("transcriptionCompleted"):
+                break
+            threading.Event().wait(.01)
+        self.assertTrue(pipeline.stop_worker())
+        self.assertEqual(len(pipeline._read_jobs()), 1)
+        self.assertTrue(self.saved_job()["transcriptionCompleted"])
+        self.assertTrue(self.saved_job()["sourceDeleted"])
+
+    def test_disabled_worker_preserves_queued_jobs(self):
+        self.config["enabled"] = False
+        pipeline.FFMPEG.touch()
+        pipeline.start_worker()
+        self.assertTrue(pipeline.stop_worker())
+        self.assertEqual(self.saved_job()["status"], "queued")
+        self.run.assert_not_called()
+
+    def test_interruption_requeues_same_job(self):
+        pipeline.FFMPEG.touch()
+        def interrupt(command):
+            pipeline._stop.set()
+            pipeline._wake.set()
+            raise InterruptedError("shutdown")
+        self.run.side_effect = interrupt
+        thread = pipeline.start_worker()
+        thread.join(timeout=3)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(self.saved_job()["status"], "queued")
+        self.assert_source_preserved()
+
+    def test_retry_refuses_paths_outside_current_root_and_symlinks(self):
+        outside = self.root / "outside.flv"
+        outside.write_bytes(b"outside")
+        link = self.recordings / "link.flv"
+        link.symlink_to(outside)
+        for path in (outside, link):
+            pipeline._update_job(self.job["id"], status="failed", source=str(path))
+            with self.assertRaises(ValueError):
+                pipeline.retry_job(self.job["id"])
+
+    def test_crash_after_unlink_finishes_cleanup_bookkeeping(self):
+        pipeline._process(self.job, self.config)
+        pipeline._update_job(self.job["id"], sourceDeletePending=True, sourceDeleted=False)
+        pipeline._process(self.saved_job(), self.config)
+        self.assertTrue(self.saved_job()["sourceDeleted"])
+        self.assertFalse(self.saved_job()["sourceDeletePending"])
+
+    def test_published_transcript_attempt_resumes_without_regenerating(self):
+        self.enable_transcription()
+        self.run.side_effect = self.transcription_command
+        pipeline._process(self.job, self.config)
+        saved = self.saved_job()
+        pipeline._update_job(self.job["id"], status="processing", transcriptionCompleted=False, transcript=None, subtitles=None)
+        self.run.reset_mock()
+        pipeline._process(self.saved_job(), self.config)
+        self.assertEqual(self.run.call_count, 1)
+        self.assertEqual(self.saved_job()["transcript"], saved["transcript"])
+        self.assertEqual(self.saved_job()["subtitles"], saved["subtitles"])
+
+    def test_snapshot_exposes_finder_paths_and_both_artifact_links(self):
+        self.enable_transcription()
+        self.run.side_effect = self.transcription_command
+        pipeline._process(self.job, self.config)
+        job = pipeline.job_snapshot()["jobs"][0]
+        self.assertIsNone(job["compressedUrl"])
+        self.assertTrue(job["compressedPath"].endswith(".compressed.mp4"))
+        self.assertTrue(job["transcriptUrl"].startswith("/transcripts/"))
+        self.assertTrue(job["subtitlesUrl"].startswith("/transcripts/"))
+        self.assertFalse(job["canRetry"])
 
 
 if __name__ == "__main__":

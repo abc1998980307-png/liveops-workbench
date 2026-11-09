@@ -858,6 +858,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(error)}, 502)
             return
         if path == "/api/media/jobs":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机操盘台访问处理队列"}, 403)
+                return
             self.send_json(MEDIA_PIPELINE.job_snapshot() if MEDIA_PIPELINE else {"enabled": False, "ready": False, "jobs": []})
             return
         if path.startswith("/transcripts/"):
@@ -922,6 +925,26 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.read_json()
         except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
             self.send_json({"error": str(error)}, 400)
+            return
+
+        if path == "/api/media/retry":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机操盘台重试任务"}, 403)
+                return
+            if not isinstance(payload, dict):
+                self.send_json({"error": "请求必须是 JSON 对象"}, 400)
+                return
+            if not MEDIA_PIPELINE:
+                self.send_json({"error": "后处理组件未就绪"}, 503)
+                return
+            try:
+                self.send_json(MEDIA_PIPELINE.retry_job(payload.get("id"), payload.get("recoverTail", False)))
+            except FileNotFoundError as error:
+                self.send_json({"error": str(error)}, 404)
+            except ValueError as error:
+                self.send_json({"error": str(error)}, 400)
+            except OSError as error:
+                self.send_json({"error": "无法保存重试任务：" + str(error)}, 500)
             return
 
         if path == "/api/recordings/reveal":

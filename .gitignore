@@ -14,6 +14,7 @@
 !/rpa_bridge.py
 !/runtime_config.py
 !/media_pipeline.py
+!/flv_recovery.py
 !/recorder_service.py
 !/直播操盘台.html
 !/启动直播操盘台.command
