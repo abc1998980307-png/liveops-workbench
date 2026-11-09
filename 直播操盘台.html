@@ -216,6 +216,9 @@
     .session-hit-actions .source-link { margin: 0; }
     .session-score { font-weight: 650; color: #3e645a; }
     .session-note { color: #7b8883; font-size: 10px; }
+    #recordingSessionRows .tag { align-self: start; }
+    #recordingSessionRows details { margin-top: 7px; font-size: 11px; line-height: 1.7; }
+    #recordingSessionRows summary { cursor: pointer; }
     .clip-list { display: grid; gap: 0; }
     .clip-row { padding: 11px 0; border-bottom: 1px solid #edf1ef; }
     .clip-row:last-child { border-bottom: 0; }
@@ -439,6 +442,10 @@
         <section class="view" id="view-sessions">
           <div class="page-head"><div><div class="eyebrow">SESSION REVIEW</div><h1>场次复盘</h1><p class="page-desc">查看 bililive-go 保存到本机的直播录屏文件。</p></div><div class="button-row"><button class="btn" id="refreshSessions">刷新录屏</button><button class="btn" id="exportSessions">导出清单</button></div></div>
           <div class="notice"><div><strong>录制状态：</strong>此处仅列出本机录制目录中的实际文件。bililive-go 只会对已绑定的直播间链接启动监测和录制。</div></div>
+          <section class="panel session-search">
+            <div class="panel-head"><div><div class="panel-title">长录制场次</div><div class="panel-subtitle">按录制器场次追踪文件切换与已观察到的视频时长</div></div><button class="btn small" id="refreshRecordingSessions" type="button">刷新场次</button></div>
+            <div class="panel-body"><div class="session-search-meta" id="recordingSessionStatus" role="status" aria-live="polite">正在检查录制场次</div><div id="recordingSessionRows"></div></div>
+          </section>
           <section class="panel session-search">
             <div class="panel-head"><div><div class="panel-title">转写字幕搜索</div><div class="panel-subtitle">查找录屏中的原话、字幕时间和对应文件</div></div><button class="btn small" id="exportSessionSearch" type="button" disabled>导出结果</button></div>
             <div class="panel-body">
@@ -1144,5 +1151,6 @@
   <script src="/rpa-ui.js"></script>
   <script src="/feishu-ui.js"></script>
   <script src="/dependency-ui.js"></script>
+  <script src="/recording-sessions-ui.js"></script>
 </body>
 </html>

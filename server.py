@@ -24,6 +24,7 @@ from rpa_bridge import COLLECTOR
 from recorder_service import RecorderManager, RecorderError
 from runtime_config import DATA_ROOT
 from dependency_service import DependencyManager
+from recording_sessions import RecordingSessions
 
 
 ROOT = Path(__file__).resolve().parent
@@ -46,6 +47,8 @@ PORT = int(os.environ.get("LIVEOPS_PORT", "8765"))
 DOUYIN_HOSTS = {"live.douyin.com", "v.douyin.com"}
 RECORDER = RecorderManager(DATA_ROOT, BGO)
 DEPENDENCIES = DependencyManager(DATA_ROOT, ROOT)
+RECORDING_SESSIONS = RecordingSessions(DATA_ROOT, lambda path: service_request(BGO, path=path, timeout=3),
+                                      lambda: read_settings()["recordingDirectory"])
 ACCOUNT_LOCK = threading.RLock()
 PROFILE_MONITOR_LOCK = threading.Lock()
 PROFILE_MONITOR_WAKE = threading.Event()
@@ -871,6 +874,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json(MEDIA_PIPELINE.job_snapshot() if MEDIA_PIPELINE else {"enabled": False, "ready": False, "jobs": []})
             return
+        if path == "/api/recording-sessions":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台读取录制场次"}, 403)
+                return
+            self.send_json(RECORDING_SESSIONS.snapshot())
+            return
         if path.startswith("/transcripts/"):
             self.serve_transcript(path[len("/transcripts/"):])
             return
@@ -1364,10 +1373,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def serve_static(self, url_path, head_only=False):
         requested = urllib.parse.unquote(url_path)
-        if requested not in ("", "/", "/直播操盘台.html", "/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/dependency-ui.js"):
+        if requested not in ("", "/", "/直播操盘台.html", "/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/dependency-ui.js", "/recording-sessions-ui.js"):
             self.send_json({"error": "not found"}, 404)
             return
-        candidate = ROOT / (requested.lstrip("/") if requested in ("/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/dependency-ui.js") else "直播操盘台.html")
+        candidate = ROOT / (requested.lstrip("/") if requested in ("/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/dependency-ui.js", "/recording-sessions-ui.js") else "直播操盘台.html")
         if not candidate.is_file():
             self.send_json({"error": "not found"}, 404)
             return
@@ -1443,6 +1452,7 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, stop_on_signal)
     server = LocalHTTPServer(("127.0.0.1", PORT), Handler)
     media_worker = MEDIA_PIPELINE.start_worker() if MEDIA_PIPELINE else None
+    RECORDING_SESSIONS.start()
     profile_stop = threading.Event()
     profile_worker = threading.Thread(target=profile_monitor_worker, args=(profile_stop,), name="douyin-profile-monitor", daemon=True)
     profile_worker.start()
@@ -1452,6 +1462,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         pass
     finally:
+        RECORDING_SESSIONS.close()
         profile_stop.set()
         PROFILE_MONITOR_WAKE.set()
         profile_worker.join(timeout=12)
