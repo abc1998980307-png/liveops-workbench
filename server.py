@@ -27,6 +27,7 @@ from dependency_service import DependencyManager
 from recording_sessions import RecordingSessions
 from recording_archives import RecordingArchiveManager
 from keyword_service import KeywordService
+from hot_service import HotService, HotServiceError
 
 
 ROOT = Path(__file__).resolve().parent
@@ -37,7 +38,7 @@ SETTINGS_FILE = DATA_ROOT / "dashboard-settings.json"
 EGO_SETUP_FILE = DATA_ROOT / "ego-setup.json"
 BGO_SETTINGS_FILE = DATA_ROOT / "plugin-settings" / "bililive-go.json"
 DAILYHOT_DIR = DATA_ROOT / "plugins" / "dailyhot-api"
-DAILYHOT_ENV_FILE = DAILYHOT_DIR / ".env"
+DAILYHOT_ENV_FILE = DATA_ROOT / "plugin-settings" / "dailyhot.env"
 MEDIA_PIPELINE_DIR = DATA_ROOT / "plugins" / "media-pipeline"
 MEDIA_PIPELINE_FILE = ROOT / "media_pipeline.py"
 if not MEDIA_PIPELINE_FILE.is_file():
@@ -50,6 +51,7 @@ PORT = int(os.environ.get("LIVEOPS_PORT", "8765"))
 DOUYIN_HOSTS = {"live.douyin.com", "v.douyin.com"}
 RECORDER = RecorderManager(DATA_ROOT, BGO)
 DEPENDENCIES = DependencyManager(DATA_ROOT, ROOT)
+HOTWORDS = HotService(DATA_ROOT, ROOT, HOT_API)
 RECORDING_SESSIONS = RecordingSessions(DATA_ROOT, lambda path: service_request(BGO, path=path, timeout=3),
                                       lambda: read_settings()["recordingDirectory"])
 ACCOUNT_LOCK = threading.RLock()
@@ -221,7 +223,7 @@ def settings_snapshot():
         pending = json.loads(BGO_SETTINGS_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         pass
-    env = parse_env_file(DAILYHOT_ENV_FILE)
+    env = parse_env_file(DAILYHOT_ENV_FILE if DAILYHOT_ENV_FILE.exists() else DAILYHOT_DIR / ".env")
     media = MEDIA_PIPELINE.read_config() if MEDIA_PIPELINE else {}
     dailyhot = {
         "cacheTTL": int(env.get("CACHE_TTL", "3600") or 3600),
@@ -245,7 +247,7 @@ def settings_snapshot():
         },
         "dailyhot": {
             **dailyhot,
-            "pendingRestart": bool(env),
+            "pendingRestart": None,
             "envFile": str(DAILYHOT_ENV_FILE),
         },
         "mediaPipeline": {
@@ -814,6 +816,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json(DEPENDENCIES.state())
             return
+        if path == "/api/hotwords/state":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台管理热点服务"}, 403)
+                return
+            self.send_json(HOTWORDS.state())
+            return
         if path == "/api/recorder/state":
             if not self.rpa_request_allowed():
                 self.send_json({"error": "仅允许从本机工作台管理录制器"}, 403)
@@ -851,14 +859,11 @@ class Handler(BaseHTTPRequestHandler):
                 bgo, bgo_error = service_request(BGO, path="/api/info", timeout=3), None
             except (OSError, ValueError, urllib.error.URLError) as error:
                 bgo, bgo_error = None, str(error)
-            try:
-                hot, hot_error = service_request(HOT_API, path="/douyin?limit=1", timeout=8), None
-            except (OSError, ValueError, urllib.error.URLError) as error:
-                hot, hot_error = None, str(error)
+            hot = HOTWORDS.state()
             self.send_json({
                 "services": {
                     "bililive": {"connected": bgo is not None, "version": bgo.get("app_version") if bgo else None, "error": bgo_error},
-                    "dailyhot": {"connected": hot is not None and hot.get("code") == 200, "updatedAt": hot.get("updateTime") if hot else None, "error": hot_error},
+                    "dailyhot": {key: hot[key] for key in ("connected", "installed", "dataReady", "updatedAt", "error", "dataError")},
                     "buzz": {"connected": bool(MEDIA_PIPELINE and MEDIA_PIPELINE.job_snapshot().get("transcriptionReady")), "engine": "whisper.cpp", "note": "本地中文离线转写"},
                     "keybert": {"connected": KEYWORDS.state()["installed"], "engine": "KeyBERT", "note": "本机中文语料分析；热词洞察可安装、分析及导出"},
                     "playwright": rpa_service,
@@ -904,11 +909,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"connected": False, "error": str(error), "accounts": read_accounts()}, 503)
             return
         if path == "/api/hotwords":
-            limit = min(max(int((query.get("limit") or ["50"])[0]), 1), 100)
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台读取榜单"}, 403)
+                return
             try:
-                payload = service_request(HOT_API, path=f"/douyin?cache=false&limit={limit}", timeout=15)
-                self.send_json(payload)
-            except (OSError, ValueError, urllib.error.URLError) as error:
+                limit = int((query.get("limit") or ["50"])[0])
+                self.send_json(HOTWORDS.hotwords(limit))
+            except ValueError as error:
+                self.send_json({"code": 400, "error": str(error), "data": []}, 400)
+            except (OSError, HotServiceError) as error:
                 self.send_json({"code": 503, "error": str(error), "data": []}, 503)
             return
         if path == "/api/transcript-keywords":
@@ -991,6 +1000,23 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(error)}, 400)
             except (OSError, RuntimeError) as error:
                 self.send_json({"error": "无法启动安装：" + str(error)}, 503)
+            return
+
+        if path in ("/api/hotwords/install", "/api/hotwords/start", "/api/hotwords/stop", "/api/hotwords/restart"):
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台管理热点服务"}, 403)
+                return
+            if not isinstance(payload, dict) or payload:
+                self.send_json({"error": "只接受空对象，服务地址及组件版本由工作台确定"}, 400)
+                return
+            try:
+                action = path.rsplit("/", 1)[-1]
+                result = DEPENDENCIES.install(hotwords_only=True) if action == "install" else getattr(HOTWORDS, action)()
+                self.send_json(result)
+            except ValueError as error:
+                self.send_json({"error": str(error)}, 400)
+            except (OSError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, getattr(error, "status", 503))
             return
 
         if path == "/api/media/retry":
@@ -1424,10 +1450,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def serve_static(self, url_path, head_only=False):
         requested = urllib.parse.unquote(url_path)
-        if requested not in ("", "/", "/直播操盘台.html", "/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/dependency-ui.js", "/recording-sessions-ui.js", "/keyword-ui.js"):
+        if requested not in ("", "/", "/直播操盘台.html", "/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/dependency-ui.js", "/recording-sessions-ui.js", "/keyword-ui.js", "/hot-service-ui.js"):
             self.send_json({"error": "not found"}, 404)
             return
-        candidate = ROOT / (requested.lstrip("/") if requested in ("/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/dependency-ui.js", "/recording-sessions-ui.js", "/keyword-ui.js") else "直播操盘台.html")
+        candidate = ROOT / (requested.lstrip("/") if requested in ("/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/dependency-ui.js", "/recording-sessions-ui.js", "/keyword-ui.js", "/hot-service-ui.js") else "直播操盘台.html")
         if not candidate.is_file():
             self.send_json({"error": "not found"}, 404)
             return

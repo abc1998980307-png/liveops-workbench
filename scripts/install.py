@@ -23,7 +23,7 @@ from pathlib import Path, PurePosixPath
 
 PROJECT = Path(__file__).resolve().parents[1]
 MANIFEST = json.loads((Path(__file__).with_name("dependencies.json")).read_text())
-COMPONENTS = ("node", "collector", "ffmpeg", "recorder", "cmake", "whisper", "model")
+COMPONENTS = ("node", "collector", "ffmpeg", "recorder", "cmake", "whisper", "model", "dailyhot")
 
 
 class InstallError(RuntimeError):
@@ -227,6 +227,8 @@ class Installer:
     def install(self, name):
         if name == "collector":
             return self.collector()
+        if name == "dailyhot":
+            return self.dailyhot()
         if self.present(name):
             return
         spec = MANIFEST[name]
@@ -263,6 +265,44 @@ class Installer:
             (content / ".liveops-install.json").write_text(json.dumps({"component": name, **spec}, indent=2))
             content.rename(target)
         print(f"[完成] {name}", flush=True)
+
+    def validate_dailyhot(self, target):
+        node = self.root / "tools/node/bin/node"
+        package = json.loads((target / "package.json").read_text())
+        if package.get("name") != "dailyhot-api" or package.get("version") != MANIFEST["dailyhot"]["version"]:
+            raise InstallError("已有热点服务版本不匹配，未覆盖")
+        env = dict(os.environ, NODE_ENV="production", USE_LOG_FILE="false")
+        self.run([node, "--input-type=module", "-e",
+                  "const {default:app}=await import('./dist/app.js'); const {config}=await import('./dist/config.js'); "
+                  "if(typeof app.fetch!=='function' || typeof config.FILTER_WEIBO_ADVERTISEMENT!=='boolean') process.exit(1);"],
+                 "dailyhot-check.log", cwd=target, env=env, timeout=30)
+
+    def dailyhot(self):
+        spec = MANIFEST["dailyhot"]
+        target = self.root / spec["target"]
+        if target.exists():
+            self.validate_dailyhot(target)
+            print("[已存在] dailyhot，保留现有安装和配置", flush=True)
+            return
+        print(f"[安装] dailyhot {spec['version']}", flush=True)
+        archive = download(spec, self.cache, self.rate_kib)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".liveops-hot-", dir=target.parent) as directory:
+            stage = Path(directory)
+            unpack(archive, stage, spec["format"])
+            content = stage / spec["prefix"]
+            shutil.copyfile(PROJECT / "scripts/dailyhot-package-lock.json", content / "package-lock.json")
+            node = self.root / "tools/node/bin/node"
+            npm = self.root / "tools/node/lib/node_modules/npm/bin/npm-cli.js"
+            env = dict(os.environ, PATH=str(node.parent) + os.pathsep + os.environ.get("PATH", ""))
+            self.run([node, npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+                     "dailyhot-install.log", cwd=content, env=env, timeout=900)
+            self.run([node, content / "node_modules/typescript/bin/tsc", "--project", "tsconfig.json"],
+                     "dailyhot-build.log", cwd=content, env=env, timeout=120)
+            self.validate_dailyhot(content)
+            (content / ".liveops-install.json").write_text(json.dumps({"component": "dailyhot", **spec}, indent=2))
+            content.rename(target)
+        print("[完成] dailyhot；可在网页启动热点服务", flush=True)
 
     def collector(self):
         target = self.root / "tools/collector"
@@ -301,6 +341,8 @@ def expand_components(selected):
         raise InstallError("未知组件：" + ",".join(sorted(requested - set(COMPONENTS))))
     if "collector" in requested:
         requested.add("node")
+    if "dailyhot" in requested:
+        requested.add("node")
     if "whisper" in requested:
         requested.add("cmake")
     if "model" in requested:
@@ -311,7 +353,7 @@ def expand_components(selected):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="执行安装；缺省只预览")
-    parser.add_argument("--components", default="node,collector,ffmpeg,recorder,whisper,model")
+    parser.add_argument("--components", default="node,collector,ffmpeg,recorder,whisper,model,dailyhot")
     parser.add_argument("--data-root", type=Path, default=Path(os.environ.get("LIVEOPS_DATA_ROOT", str(Path.home() / "Library/Application Support/LiveOps"))))
     parser.add_argument("--cache", type=Path, help="已校验下载包缓存，可用于离线重试")
     parser.add_argument("--rate-kib", type=int, default=1024, help="下载限速 KiB/s，默认 1024")

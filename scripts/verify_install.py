@@ -37,6 +37,7 @@ def main():
     os.environ["LIVEOPS_RPA_DATA"] = str(root / "rpa")
     sys.path.insert(0, str(PROJECT))
     from recorder_service import RecorderManager
+    from hot_service import HotService
     import media_pipeline as pipeline
 
     report = {"root": str(root), "syntheticOnly": True, "checks": {}}
@@ -45,9 +46,15 @@ def main():
     checks["dependencyReport"] = True
     recorder_url = "http://127.0.0.1:" + str(vacant_port())
     manager = RecorderManager(root, recorder_url)
+    hot_url = "http://127.0.0.1:" + str(vacant_port())
+    hot = HotService(root, PROJECT, hot_url)
     dashboard = None
     log = None
     try:
+        print("验证本机热点服务启动与健康检查（不请求上游榜单）…", flush=True)
+        hot_state = hot.start()
+        assert hot_state["ownedConnection"] and not hot_state["pendingRestart"]
+        checks["hotspotService"] = {"version": hot_state["version"], "localHealth": True, "upstreamRequested": False}
         print("验证空录制器启动与停止…", flush=True)
         recorder = manager.start()
         assert recorder["connected"] and recorder["recordingCount"] == 0 and recorder["roomCount"] == 0
@@ -77,7 +84,7 @@ def main():
         checks["media"]["subtitleText"] = Path(finished["transcript"]).read_text().strip()
         port = vacant_port()
         env = dict(os.environ, LIVEOPS_PORT=str(port), LIVEOPS_BGO_URL=recorder_url,
-                   LIVEOPS_HOT_API_URL="http://127.0.0.1:" + str(vacant_port()))
+                   LIVEOPS_HOT_API_URL=hot_url)
         log = (root / "logs/install/dashboard-check.log").open("ab")
         dashboard = subprocess.Popen([sys.executable, str(PROJECT / "server.py")], cwd=PROJECT,
                                      env=env, stdout=log, stderr=log)
@@ -115,6 +122,8 @@ def main():
             log.close()
         if manager.state()["managed"]:
             manager.stop()
+        if hot.state()["managed"]:
+            hot.stop()
 
 
 if __name__ == "__main__":

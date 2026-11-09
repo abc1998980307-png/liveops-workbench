@@ -54,5 +54,15 @@
     "sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
     "format": "file",
     "target": "plugins/buzz/whisper.cpp/models/ggml-small-q5_1.bin"
+  },
+  "dailyhot": {
+    "version": "2.0.8",
+    "commit": "36c77e3bd891c11642d314cfb229bf31646704de",
+    "url": "https://codeload.github.com/imsyy/DailyHotApi/tar.gz/36c77e3bd891c11642d314cfb229bf31646704de",
+    "sha256": "aa4b4b89e62f2939afcd42c3c76827529e59652decee006c73f7933d7e82f54b",
+    "format": "tar",
+    "prefix": "DailyHotApi-36c77e3bd891c11642d314cfb229bf31646704de",
+    "target": "plugins/dailyhot-api",
+    "binary": "dist/app.js"
   }
 }

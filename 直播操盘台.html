@@ -485,7 +485,7 @@
               <div class="panel-head"><div><div class="panel-title">本机组件安装</div><div class="panel-subtitle">为录制、压缩、离线字幕和罗盘采集准备运行工具</div></div><span class="tag" id="dependencyBadge" role="status">检查中</span></div>
               <div class="panel-body">
                 <div id="dependencyItems" class="button-row" style="flex-wrap:wrap"></div>
-                <p class="recorder-description">支持 Apple Silicon Mac。首次下载约 350 MB，并编译离线转写工具；需要 Apple 命令行工具。已有工具与保存设置会保留，安装完成后再连接账号和录制器。</p>
+                <p class="recorder-description">支持 Apple Silicon Mac。首次下载数百 MB，并编译离线转写工具；需要 Apple 命令行工具。已有工具与保存设置会保留，安装完成后再连接账号和录制器。</p>
                 <div class="button-row" style="flex-wrap:wrap"><button class="btn primary" id="installDependencies" type="button" disabled>安装缺少的组件</button><button class="btn" id="checkDependencies" type="button">检查安装状态</button><a class="source-link" href="https://www.google.com/chrome/" target="_blank" rel="noopener noreferrer">安装 Google Chrome ↗</a></div>
                 <p class="settings-status" id="dependencyMessage" role="status" aria-live="polite"></p>
                 <details id="dependencyLogWrap" hidden><summary>查看安装日志</summary><pre id="dependencyLog" style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:240px;overflow:auto"></pre></details>
@@ -537,8 +537,14 @@
               </div>
               <div class="settings-actions"><span class="settings-status" id="bgoSettingsStatus">正在读取插件配置</span></div>
             </section>
-            <section class="panel">
-              <div class="panel-head"><div><div class="panel-title">DailyHotApi</div><div class="panel-subtitle">热点榜缓存和请求行为</div></div><span class="tag" id="dailyhotSettingsBadge">读取中</span></div>
+            <section class="panel" id="hotServicePanel">
+              <div class="panel-head"><div><div class="panel-title">热点榜服务 · DailyHotApi</div><div class="panel-subtitle">安装、启动与检查抖音热点服务</div></div><span class="tag" id="dailyhotSettingsBadge" role="status">读取中</span></div>
+              <div style="padding:16px 20px">
+                <div class="button-row" style="flex-wrap:wrap"><button class="btn" data-hot-action="install">安装热点组件</button><button class="btn primary" data-hot-action="start">启动</button><button class="btn" data-hot-action="check">检查状态</button><button class="btn" data-hot-action="read">读取榜单</button><button class="btn" data-hot-action="restart">重启并应用</button><button class="btn" data-hot-action="stop">停止</button></div>
+                <p class="settings-status" id="hotServiceMessage" role="status" aria-live="polite"></p>
+                <p class="setting-help" id="hotServiceDataStatus"></p>
+                <details id="hotServiceLogWrap" hidden><summary>查看服务与安装日志</summary><pre id="hotServiceLog" style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:200px;overflow:auto"></pre></details>
+              </div>
               <div class="settings-grid">
                 <div class="setting-field"><label for="cacheTTL">热点缓存时间（秒）</label><input id="cacheTTL" type="number" min="60" max="86400" step="60"></div>
                 <div class="setting-field"><label for="requestTimeout">上游请求超时（毫秒）</label><input id="requestTimeout" type="number" min="1000" max="60000" step="500"></div>
@@ -677,7 +683,7 @@
     function applyServiceStatuses() {
       const statusMap = {
         bililive: (recorderState?.connected ?? serviceState.bililive?.connected) ? ["已连接", "ready"] : ["未运行", ""],
-        dailyhot: serviceState.dailyhot?.connected ? ["已连接", "ready"] : ["不可用", ""],
+        dailyhot: !serviceState.dailyhot?.connected ? ["未启动", ""] : serviceState.dailyhot?.dataReady === false ? ["榜单读取失败", ""] : serviceState.dailyhot?.dataReady ? ["榜单可用", "ready"] : ["服务已启动", "ready"],
         buzz: serviceState.buzz?.connected ? ["已连接", "ready"] : ["未安装", ""],
         keybert: serviceState.keybert?.connected ? ["已安装", "ready"] : ["未安装", ""],
         playwright: serviceState.playwright?.connected ? ["已配置", "ready"] : ["待授权", ""],
@@ -719,11 +725,13 @@
         if (result.code !== 200) throw new Error(result.message || "热点榜暂不可用");
         keywordResults = result.data || [];
         hotUpdateTime = result.updateTime || null;
+        serviceState.dailyhot = {...serviceState.dailyhot, connected:true, dataReady:true};
+        applyServiceStatuses();
       } catch (error) {
         console.error("DailyHotApi request failed", error);
         keywordResults = [];
         hotUpdateTime = null;
-        serviceState.dailyhot = {connected:false, error:error.message};
+        serviceState.dailyhot = {...serviceState.dailyhot, dataReady:false, dataError:error.message};
         applyServiceStatuses();
       } finally {
         hotLoaded = true;
@@ -861,9 +869,8 @@
       renderRecorder();
       const dailyStatus = document.getElementById("dailyhotSettingsStatus");
       const dailyBadge = document.getElementById("dailyhotSettingsBadge");
-      dailyBadge.textContent = serviceState.dailyhot?.connected ? "已连接" : "已保存 / 检查服务";
-      dailyStatus.textContent = dailyhot.pendingRestart ? `已写入 ${dailyhot.envFile}；重启 DailyHotApi 后生效。` : `当前使用默认参数；保存后写入 ${dailyhot.envFile}，重启 DailyHotApi 后生效。`;
-      dailyStatus.className = dailyhot.pendingRestart ? "settings-status pending" : "settings-status";
+      dailyStatus.textContent = "修改后先保存设置，再点击热点服务的“重启并应用”。";
+      window.dispatchEvent(new Event('liveops-hot-settings'));
     }
     async function refreshSettings() {
       try {
@@ -1092,6 +1099,7 @@
     }
     function showSourceInfo(i) {
       if (sources[i]?.id === "keybert") { switchView("keywords"); document.getElementById("keywordWorkspace").scrollIntoView({behavior:"smooth"}); return; }
+      if (sources[i]?.id === "dailyhot") { switchView("settings"); document.getElementById("hotServicePanel").scrollIntoView({behavior:"smooth"}); return; }
       if (sources[i]?.id === "bililive") { switchView("settings"); return; }
       if (["playwright", "compass"].includes(sources[i]?.id)) { switchView("business"); return; }
       const s=sources[i];
@@ -1163,6 +1171,7 @@
   <script src="/rpa-ui.js"></script>
   <script src="/feishu-ui.js"></script>
   <script src="/dependency-ui.js"></script>
+  <script src="/hot-service-ui.js"></script>
   <script src="/recording-sessions-ui.js"></script>
   <script src="/keyword-ui.js"></script>
 </body>

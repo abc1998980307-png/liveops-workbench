@@ -64,6 +64,9 @@ def main():
     report("Whisper 模型", model.is_file(), "已找到" if model.is_file() else "尚未配置本地模型", required=args.full)
     template = data / "plugins/bililive-go/v0.8.3-darwin-arm64.tar.gz"
     report("录制器配置模板", template.is_file(), "已找到" if template.is_file() else "缺少安装包中的配置模板", required=args.full)
+    from hot_service import HotService
+    hot = HotService(data, ROOT)
+    report("热点榜 DailyHotApi", hot.installed(), "组件已找到；未请求榜单或启动服务" if hot.installed() else "运行安装器或在网页安装热点组件", required=args.full)
     if not all(available for available, _ in checks):
         print("缺少组件时运行：python3 scripts/install.py --apply；Chrome 请从 Google 官网安装。")
     print("此检查仅确认本机依赖存在；账号权限、接口连接和真实采集需另行验收。")

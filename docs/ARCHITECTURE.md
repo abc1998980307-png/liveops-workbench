@@ -156,3 +156,9 @@ Obsidian 保存功能进度和交接说明；写进同步目录不等于另一�
 同目录 TXT/SRT 优先读取 SRT，重转写任务只读最新尝试；不同来源文件不按相同文字去重。最多扫描 10,000 个目录条目、500 份文件，单份 4 MiB、合计 32 MiB、文本 50 万字。超过范围、非法字幕段落或不可读文件均显示不完整说明。语料按模型 token 上限分块，所有入选文本参与文档向量；候选词最多 3,000 个，语义排序后取前 200 个做 MMR，返回最多 50 个。词频按原话实际出现次数统计，文件数是完整匹配文件数，最多保存 3 处可核对出处。
 
 `GET /api/transcript-keywords` 仅返回状态和上次结果；`POST /api/transcript-keywords/install|analyze|cancel` 接受空对象启动或停止固定任务，均检查 Host / Origin。前端筛选结果并导出带出处的 CSV。文本的相关度是余弦相似度，不是热点热度、搜索量、准确率或转化。
+
+### 本机热点服务
+
+`hot_service.py` 管理固定安装的 DailyHotApi，`scripts/dailyhot_runner.mjs` 以本机回环地址启动上游 app，并提供带进程实例标识和实际配置的健康接口。工作台保存 PID、开始时间 / 命令身份及随机实例，停止前重新核验。命令行和并发网页请求通过文件锁串行化。
+
+`GET /api/hotwords/state` 不访问抖音；`GET /api/hotwords` 才读取榜单并更新最近数据状态。安装 / 启动 / 停止 / 重启仅接受本机同源的空对象 POST。新设置在 `plugin-settings/dailyhot.env`，不占用待安装目录；旧 `.env` 只作兼容来源。npm 锁文件纳入仓库，第三方源码、node_modules、运行配置和日志留在本机。
