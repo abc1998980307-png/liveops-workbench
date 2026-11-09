@@ -223,7 +223,10 @@ def _signature(source):
 def _candidate_files(recording_root=None):
     root = Path(recording_root or RECORDINGS).expanduser()
     for source in root.rglob("*"):
-        if source.is_symlink() or not source.is_file() or source.suffix.lower() not in {".flv", ".mkv", ".ts", ".mov", ".mp4", ".m4v"} or ".compressed" in source.stem:
+        if (source.is_symlink() or not source.is_file()
+                or ".liveops-archives" in source.parts
+                or source.suffix.lower() not in {".flv", ".mkv", ".ts", ".mov", ".mp4", ".m4v"}
+                or ".compressed" in source.stem):
             continue
         try:
             stat = source.stat()

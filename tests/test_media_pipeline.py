@@ -165,6 +165,13 @@ class MediaPipelineTests(unittest.TestCase):
         self.assertEqual(list(pipeline._candidate_files(self.recordings)), [])
         self.assertEqual(list(pipeline._candidate_files(self.recordings)), [unprocessed])
 
+    def test_generated_archive_is_not_reenqueued_as_a_source(self):
+        archive = self.recordings / ".liveops-archives" / "long-session.mp4"
+        archive.parent.mkdir()
+        archive.write_bytes(b"already merged")
+        os.utime(archive, (1, 1))
+        self.assertEqual(list(pipeline._candidate_files(self.recordings)), [])
+
     def test_setting_changed_during_compression_can_prevent_deletion(self):
         started_config = dict(self.config)
 
