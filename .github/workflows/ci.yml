@@ -12,10 +12,10 @@ jobs:
   test:
     runs-on: macos-15
     timeout-minutes: 10
-    env:
-      LIVEOPS_DATA_ROOT: ${{ runner.temp }}/liveops-test-data
     steps:
       - uses: actions/checkout@v4
+      - name: Configure isolated test data
+        run: echo "LIVEOPS_DATA_ROOT=$RUNNER_TEMP/liveops-test-data" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
