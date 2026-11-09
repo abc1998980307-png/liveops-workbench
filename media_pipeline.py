@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from flv_recovery import inspect_tail
+from mp4_metadata import inspect_mp4
 from runtime_config import DATA_ROOT
 
 
@@ -130,6 +131,11 @@ def media_duration_ms(path):
         raise RuntimeError("无法读取压缩视频的实际时长")
     fraction = (match.group(4) or "0")[:3].ljust(3, "0")
     return ((int(match.group(1)) * 60 + int(match.group(2))) * 60 + int(match.group(3))) * 1000 + int(fraction)
+
+
+def inspect_media(path):
+    """Inspect a finalized MP4 using bounded local metadata only."""
+    return inspect_mp4(path)
 
 
 def _relative_file(value, root):

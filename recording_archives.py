@@ -171,6 +171,9 @@ class RecordingArchiveManager:
         validator(path)
 
     def _duration(self, path, fallback=None):
+        inspect = getattr(self.pipeline, "inspect_media", None)
+        if inspect is not None:
+            return int(inspect(path)["durationMs"])
         probe = getattr(self.pipeline, "media_duration_ms", None)
         if probe is not None:
             return int(probe(path))
@@ -209,21 +212,41 @@ class RecordingArchiveManager:
                 runner(command)
 
         try:
+            inspect = getattr(self.pipeline, "inspect_media", None)
+            compatible = True
+            if inspect is not None:
+                metadata = [inspect(path) for path in inputs]
+                first = metadata[0]
+                compatible = all(item["tracks"] == first["tracks"] and item["width"] == first["width"]
+                                 and item["height"] == first["height"] for item in metadata[1:])
             command = [str(ffmpeg), "-hide_banner", "-nostdin", "-v", "error", "-xerror", "-y",
                        "-f", "concat", "-safe", "0", "-i", str(list_path),
                        "-map", "0:v:0", "-map", "0:a?", "-c", "copy", "-movflags", "+faststart", str(output)]
-            try:
-                run(command)
-                return {"mode": "stream_copy", "audioPreserved": True}
-            except Exception as first_error:
+            first_error = None
+            if compatible:
+                try:
+                    run(command)
+                    return {"mode": "stream_copy", "audioPreserved": True}
+                except Exception as error:
+                    first_error = error
+            else:
+                first_error = RuntimeError("片段编码或轨道布局不一致")
+            if first_error is not None:
                 output.unlink(missing_ok=True)
                 inputs_args = []
                 filters = []
                 labels = []
+                target_width = metadata[0]["width"] if inspect is not None else None
+                target_height = metadata[0]["height"] if inspect is not None else None
                 for index, path in enumerate(inputs):
                     inputs_args.extend(["-i", str(path)])
-                    filters.extend([f"[{index}:v:0]setpts=PTS-STARTPTS[v{index}]",
-                                    f"[{index}:a:0]asetpts=PTS-STARTPTS[a{index}]"])
+                    video = f"[{index}:v:0]setpts=PTS-STARTPTS"
+                    if target_width and target_height:
+                        video += (f",scale={target_width}:{target_height}:force_original_aspect_ratio=decrease"
+                                  f",pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2,format=yuv420p")
+                    filters.extend([video + f"[v{index}]",
+                                    f"[{index}:a:0]aresample=48000,aformat=channel_layouts=stereo,"
+                                    f"asetpts=PTS-STARTPTS[a{index}]"])
                     labels.extend([f"[v{index}]", f"[a{index}]"])
                 filters.append("".join(labels) + f"concat=n={len(inputs)}:v=1:a=1[v][a]")
                 reencode = [str(ffmpeg), "-hide_banner", "-nostdin", "-v", "error", "-xerror", "-y",

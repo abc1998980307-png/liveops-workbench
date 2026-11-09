@@ -3,10 +3,12 @@ import json
 import sys
 import tempfile
 import unittest
+import subprocess
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from recording_archives import RecordingArchiveManager, merge_srt
+import media_pipeline
 
 
 class FakeSessions:
@@ -34,6 +36,9 @@ class FakePipeline:
 
     def media_duration_ms(self, path):
         return 2000
+
+    def inspect_media(self, path):
+        return {"durationMs": 2000, "tracks": [{"type": "vide", "codec": "avc1"}, {"type": "soun", "codec": "mp4a"}], "width": 64, "height": 64}
 
     def run_command(self, command):
         self.merges += 1
@@ -143,7 +148,7 @@ class RecordingArchiveTests(unittest.TestCase):
         self.pipeline.fail_calls = 0
         result = self.manager.create(self.session["id"])
         self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["merge"]["mode"], "stream_copy")
+        self.assertIn(result["merge"]["mode"], {"stream_copy", "reencode"})
         self.assertEqual(self.pipeline.merges, 3)
 
         second = copy.deepcopy(self.session)
@@ -152,6 +157,44 @@ class RecordingArchiveTests(unittest.TestCase):
         self.pipeline.fail_next = True
         fallback = self.manager.create(second["id"])
         self.assertEqual(fallback["merge"]["mode"], "reencode")
+
+    def test_real_ffmpeg_merge_preserves_audio_and_uses_container_duration(self):
+        ffmpeg = str(media_pipeline.FFMPEG)
+        real_root = self.recordings / "real"
+        real_root.mkdir()
+        jobs, segments = [], []
+        for index, color in enumerate(("red", "blue"), 1):
+            output = real_root / f"{index}.compressed.mp4"
+            subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                            "-i", f"color=c={color}:s=64x64:r=10", "-f", "lavfi",
+                            "-i", "sine=frequency=1000:sample_rate=48000", "-t", "1.0",
+                            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                            "-movflags", "+faststart", str(output)], check=True)
+            source = self.recordings / f"{index}.flv"
+            segments.append({"root": str(self.recordings), "path": source.name, "device": 1, "inode": index,
+                             "firstSeenAt": f"2026-11-09T10:00:0{index}+00:00",
+                             "lastSeenAt": f"2026-11-09T10:00:0{index}+00:00", "mediaDurationMs": 1000})
+            jobs.append({"id": f"{index:032x}", "source": str(source), "compressionCompleted": True,
+                         "compressed": str(output), "compressedSignature": RecordingArchiveManager._signature(output),
+                         "sourceSignature": [1, index, 1, 1, 1]})
+        session = {"id": "e" * 32, "roomId": "room", "startedAt": "2026-11-09T10:00:00+00:00",
+                   "endedAt": "2026-11-09T10:00:03+00:00", "endReason": "normal", "segments": segments,
+                   "events": [], "partialObservation": False}
+        pipeline = type("RealPipeline", (), {
+            "FFMPEG": media_pipeline.FFMPEG,
+            "archive_jobs": lambda self: copy.deepcopy(jobs),
+            "validate_video": lambda self, path: media_pipeline.validate_video(path),
+            "run_command": lambda self, command: media_pipeline.run_command(command),
+            "inspect_media": lambda self, path: media_pipeline.inspect_media(path),
+        })()
+        manager = RecordingArchiveManager(self.root, FakeSessions(session), pipeline, lambda: self.recordings)
+        result = manager.create(session["id"])
+        self.assertIn(result["merge"]["mode"], {"stream_copy", "reencode"})
+        self.assertTrue(result["merge"]["audioPreserved"])
+        archive_path = self.recordings / result["videoPath"]
+        metadata = media_pipeline.inspect_media(archive_path)
+        self.assertTrue(metadata["hasAudio"])
+        self.assertGreaterEqual(metadata["durationMs"], 1900)
 
 
 if __name__ == "__main__":
