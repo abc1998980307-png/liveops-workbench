@@ -162,7 +162,10 @@ HTTPServer(('127.0.0.1',int(sys.argv[3])),Handler).serve_forever()
         self.service.node.chmod(0o755)
 
     def test_real_process_lifecycle_and_restored_ownership(self):
-        first = self.service.start()
+        try:
+            first = self.service.start()
+        except HotServiceError as error:
+            self.fail(f"Synthetic child startup failed: {error}; state={self.service.state()}")
         self.assertTrue(first['ownedConnection'])
         self.assertFalse(first['pendingRestart'])
         self.assertEqual(self.service.start()['pid'], first['pid'])
