@@ -111,14 +111,14 @@ def archive_jobs():
         return json.loads(json.dumps(_read_jobs()))
 
 
-def validate_video(path):
+def validate_video(path, cancel_event=None):
     """Public adapter used by the session archive module."""
-    _validate_video(Path(path))
+    _validate_video(Path(path), cancel_event=cancel_event)
 
 
-def run_command(command):
+def run_command(command, cancel_event=None):
     """Run an archive-owned FFmpeg command under the worker's stop boundary."""
-    _run(command)
+    _run(command, cancel_event=cancel_event)
 
 
 def media_duration_ms(path):
@@ -267,9 +267,10 @@ def _candidate_files(recording_root=None):
                 continue
 
 
-def _run(command, input_path=None, input_limit=None):
+def _run(command, input_path=None, input_limit=None, cancel_event=None):
     """Bound shutdown to our own child process; never signal the recorder."""
-    if _stop.is_set():
+    stop = cancel_event if cancel_event is not None else _stop
+    if stop.is_set():
         raise InterruptedError("处理已暂停，重启后继续")
     feeder_errors = []
     with tempfile.TemporaryFile() as log:
@@ -279,7 +280,7 @@ def _run(command, input_path=None, input_limit=None):
             try:
                 with Path(input_path).open("rb") as source:
                     remaining = input_limit
-                    while remaining > 0 and not _stop.is_set():
+                    while remaining > 0 and not stop.is_set():
                         chunk = source.read(min(remaining, 1024 * 1024))
                         if not chunk:
                             raise RuntimeError("原录屏提前结束，未生成恢复视频")
@@ -300,7 +301,7 @@ def _run(command, input_path=None, input_limit=None):
         interrupted = False
         try:
             while child.poll() is None:
-                if _stop.wait(.2):
+                if stop.wait(.2):
                     interrupted = True
                     try:
                         os.killpg(child.pid, signal.SIGTERM)
@@ -331,9 +332,10 @@ def _run(command, input_path=None, input_limit=None):
             raise RuntimeError(detail[-1800:] or "处理命令失败")
 
 
-def _validate_video(path):
+def _validate_video(path, cancel_event=None):
     _run([str(FFMPEG), "-hide_banner", "-nostdin", "-v", "error", "-xerror", "-err_detect", "explode",
-          "-i", str(path), "-map", "0:v:0", "-map", "0:a?", "-f", "null", "-"])
+          "-i", str(path), "-map", "0:v:0", "-map", "0:a?", "-f", "null", "-"],
+         **({"cancel_event": cancel_event} if cancel_event is not None else {}))
 
 
 def _audio_duration_ms(path):

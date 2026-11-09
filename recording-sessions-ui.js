@@ -1,6 +1,7 @@
 (() => {
   const $ = id => document.getElementById(id);
   let loading = false;
+  const submitting = new Set();
   const duration = value => {
     if (!Number.isFinite(value)) return '等待进度';
     const seconds = Math.floor(value / 1000);
@@ -21,20 +22,25 @@
         const switches = (session.events || []).filter(e => e.type === 'file_changed').length;
         const gaps = (session.events || []).filter(e => e.type === 'observation_gap').length;
         const archive = archives.find(item => item.sessionId === session.id);
-        const archiveButton = session.endedAt && segments.length && (!archive || archive.status !== 'completed') ? `<button class="btn small" type="button" data-archive-session="${esc(session.id)}">${archive?.status === 'processing' ? '重试长录制归档' : '生成长录制归档'}</button>` : '';
-        const archiveInfo = archive ? `<div class="session-note">${archive.status === 'completed' ? `已生成归档${archive.unknownGaps ? '，仍有无法确认的间断' : ''}。` : '上次归档没有完成，可重试。'}${archive.videoPath ? ` <button class="table-action" type="button" data-recording-path="${esc(archive.videoPath)}">打开合并视频位置</button>` : ''}${archive.transcriptPath ? ` <button class="table-action" type="button" data-recording-path="${esc(archive.transcriptPath)}">打开合并文本位置</button>` : ''}${archive.subtitlesPath ? ` <button class="table-action" type="button" data-recording-path="${esc(archive.subtitlesPath)}">打开合并字幕位置</button>` : ''}</div>` : '';
+        const busy = submitting.has(session.id) || ['queued', 'processing'].includes(archive?.status);
+        const archiveButton = session.endedAt && segments.length && (!archive || archive.status !== 'completed') ? `<button class="btn small" type="button" data-archive-session="${esc(session.id)}" ${busy ? 'disabled' : ''}>${busy ? esc(archive?.stage || '提交归档中…') : archive?.canRetry ? '重试长录制归档' : '生成长录制归档'}</button>` : '';
+        const archiveInfo = archive ? `<div class="session-note">${archive.status === 'completed' ? `已生成归档${archive.unknownGaps ? '，仍有无法确认的间断' : ''}。${archive.merge?.mode === 'single_segment' ? '单片段使用现有压缩视频，不另存一份。' : ''}` : ['queued', 'processing'].includes(archive.status) ? esc(archive.stage || '归档处理中') + '；可以离开本页，任务继续在后台运行。' : '归档失败，可查看原因后重试。'}${archive.missingArtifacts?.length ? ` 缺少：${esc(archive.missingArtifacts.join('、'))}。` : ''}${archive.error ? `<details><summary>查看归档失败原因</summary><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(archive.error)}</p></details>` : ''}${archive.videoPath ? ` <button class="table-action" type="button" data-recording-path="${esc(archive.videoPath)}">打开归档视频位置</button>` : ''}${archive.transcriptPath ? ` <button class="table-action" type="button" data-recording-path="${esc(archive.transcriptPath)}">打开归档文本位置</button>` : ''}${archive.subtitlesPath ? ` <button class="table-action" type="button" data-recording-path="${esc(archive.subtitlesPath)}">打开归档字幕位置</button>` : ''}${archive.manifestPath ? ` <button class="table-action" type="button" data-recording-path="${esc(archive.manifestPath)}">打开归档清单位置</button>` : ''}</div>` : '';
         return `<article class="session-hit"><div><div class="session-hit-title">${esc(session.account || '未命名直播间')} · ${esc(states[session.state] || '状态待确认')}</div><div class="session-hit-file">开始 ${esc(formatTime(session.startedAt))}${session.endedAt ? ' · 结束 ' + esc(formatTime(session.endedAt)) : ''}</div><p class="session-hit-text">${current ? `最近片段 ${duration(current.mediaDurationMs)} · ${formatBytes(current.bytes)}` : '尚未观察到片段文件'} · 已观察 ${segments.length} 个片段 · ${switches} 次文件切换</p><div class="session-note">${session.endedAt ? esc(reasons[session.endReason] || '结束原因：' + (session.endReason || '未知')) + '。' : ''}历史片段可能缺失；文件切换的原因和准确缺口待确认。${gaps ? ` 有 ${gaps} 次观察中断。` : ''}</div><div class="button-row">${archiveButton}</div>${archiveInfo}${segments.length ? `<details><summary>查看片段与观察记录</summary>${segments.map(s => `<div class="session-hit-file">${esc(s.path)} · ${duration(s.mediaDurationMs)}${s.closedObservedAt ? ' · 观察结束' : ''}${s.recordingPath ? ` <button class="table-action" type="button" data-recording-path="${esc(s.recordingPath)}">打开文件位置</button>` : ' · 文件已移走或目录已更改'}</div>`).join('')}${(session.events || []).map(e => `<div class="session-hit-file">${esc(formatTime(e.from))} → ${esc(formatTime(e.to))}：${esc(e.note)}</div>`).join('')}</details>` : ''}</div><span class="tag">本机录制场次</span></article>`;
       }).join('') : '<p class="session-note">尚未取得录制场次记录。正在录制时会自动记录；未启动录制器不会自动启动录制。</p>';
       document.querySelectorAll('[data-archive-session]').forEach(button => button.addEventListener('click', async () => {
+        const id = button.dataset.archiveSession;
+        if (submitting.has(id)) return;
+        submitting.add(id);
         button.disabled = true;
-        button.textContent = '归档处理中…';
+        button.textContent = '提交归档中…';
         try {
-          await apiRequest('/api/recording-sessions/archive', {method: 'POST', body: JSON.stringify({sessionId: button.dataset.archiveSession})});
-          await refresh();
+          const result = await apiRequest('/api/recording-sessions/archive', {method: 'POST', body: JSON.stringify({sessionId: id})});
+          toast(result.status === 'completed' ? '归档已完成' : '已加入归档队列，可离开本页');
         } catch (error) {
-          button.disabled = false;
-          button.textContent = '生成长录制归档';
-          $('recordingSessionStatus').textContent = '归档失败：' + error.message;
+          toast('归档提交未确认：' + error.message + '；请查看任务状态');
+        } finally {
+          submitting.delete(id);
+          await refresh();
         }
       }));
     } catch (error) {

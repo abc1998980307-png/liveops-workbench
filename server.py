@@ -535,7 +535,8 @@ def recording_files():
     results = []
     root = recording_directory()
     for path in root.rglob("*"):
-        if path.suffix.lower() not in allowed or ".tmp." in path.name or path.is_symlink():
+        if (path.suffix.lower() not in allowed or ".tmp." in path.name or path.is_symlink()
+                or any(part.endswith(".tmp") for part in path.relative_to(root).parts[:-1])):
             continue
         try:
             if not path.is_file() or not path.resolve().is_relative_to(root.resolve()):
@@ -890,7 +891,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "仅允许从本机工作台读取录制场次"}, 403)
                 return
             snapshot = RECORDING_SESSIONS.snapshot()
-            snapshot["archives"] = RECORDING_ARCHIVES.snapshot().get("archives", [])
+            archives = RECORDING_ARCHIVES.snapshot()
+            snapshot["archives"] = archives.get("archives", [])
+            if archives.get("error"):
+                snapshot["error"] = "；".join(filter(None, [snapshot.get("error"), archives["error"]]))
             self.send_json(snapshot)
             return
         if path == "/api/recording-archives":
@@ -1047,7 +1051,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "请求必须是 JSON 对象"}, 400)
                 return
             try:
-                self.send_json(RECORDING_ARCHIVES.create(payload.get("sessionId")))
+                result = RECORDING_ARCHIVES.submit(payload.get("sessionId"))
+                self.send_json(result, 202 if result.get("status") in {"queued", "processing"} else 200)
             except FileNotFoundError as error:
                 self.send_json({"error": str(error)}, 404)
             except ValueError as error:
@@ -1530,6 +1535,7 @@ if __name__ == "__main__":
     server = LocalHTTPServer(("127.0.0.1", PORT), Handler)
     media_worker = MEDIA_PIPELINE.start_worker() if MEDIA_PIPELINE else None
     RECORDING_SESSIONS.start()
+    RECORDING_ARCHIVES.start()
     profile_stop = threading.Event()
     profile_worker = threading.Thread(target=profile_monitor_worker, args=(profile_stop,), name="douyin-profile-monitor", daemon=True)
     profile_worker.start()
@@ -1540,6 +1546,7 @@ if __name__ == "__main__":
         pass
     finally:
         RECORDING_SESSIONS.close()
+        RECORDING_ARCHIVES.close()
         profile_stop.set()
         PROFILE_MONITOR_WAKE.set()
         profile_worker.join(timeout=12)

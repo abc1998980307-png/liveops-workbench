@@ -59,6 +59,17 @@ class RecordingRevealTests(unittest.TestCase):
             {"Content-Type": "application/json", **(headers or {})},
         )
 
+    def test_recording_list_hides_unpublished_archive_directory(self):
+        directory = self.root / ".liveops-archives" / ".pending.tmp"
+        directory.mkdir(parents=True)
+        (directory / "video.mp4").write_bytes(b"unpublished")
+        published = self.root / ".liveops-archives" / "completed"
+        published.mkdir()
+        (published / "video.mp4").write_bytes(b"published")
+        paths = [item["path"] for item in server.recording_files()]
+        self.assertNotIn(".liveops-archives/.pending.tmp/video.mp4", paths)
+        self.assertIn(".liveops-archives/completed/video.mp4", paths)
+
     def test_reveals_existing_unicode_file_inside_recording_directory(self):
         server.reveal_recording("主播 名称/2026-11-09 直播.mp4")
 

@@ -217,7 +217,7 @@ class RecordingSessionHTTPTests(unittest.TestCase):
         try:
             with mock.patch.object(server, "PORT", port), mock.patch.object(server, "RECORDING_ARCHIVES") as archives:
                 archives.snapshot.return_value = {"archives": [], "error": None}
-                archives.create.return_value = {"status": "completed", "sessionId": "a" * 32}
+                archives.submit.return_value = {"status": "queued", "sessionId": "a" * 32}
                 client = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
                 client.request("GET", "/api/recording-archives")
                 response = client.getresponse()
@@ -229,10 +229,10 @@ class RecordingSessionHTTPTests(unittest.TestCase):
                 client.request("POST", "/api/recording-sessions/archive", json.dumps({"sessionId": "a" * 32}),
                                {"Content-Type": "application/json"})
                 response = client.getresponse()
-                self.assertEqual(response.status, 200)
+                self.assertEqual(response.status, 202)
                 response.read()
                 client.close()
-                archives.create.assert_called_once_with("a" * 32)
+                archives.submit.assert_called_once_with("a" * 32)
 
                 client = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
                 client.request("POST", "/api/recording-sessions/archive", json.dumps({"sessionId": "a" * 32}),

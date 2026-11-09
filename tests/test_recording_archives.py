@@ -4,6 +4,9 @@ import sys
 import tempfile
 import unittest
 import subprocess
+import threading
+import time
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -31,7 +34,7 @@ class FakePipeline:
     def archive_jobs(self):
         return copy.deepcopy(self.jobs)
 
-    def validate_video(self, path):
+    def validate_video(self, path, cancel_event=None):
         self.validated.append(Path(path).name)
 
     def media_duration_ms(self, path):
@@ -40,7 +43,7 @@ class FakePipeline:
     def inspect_media(self, path):
         return {"durationMs": 2000, "tracks": [{"type": "vide", "codec": "avc1"}, {"type": "soun", "codec": "mp4a"}], "width": 64, "height": 64}
 
-    def run_command(self, command):
+    def run_command(self, command, cancel_event=None):
         self.merges += 1
         if self.merges <= self.fail_calls or self.fail_next:
             self.fail_next = False
@@ -95,6 +98,7 @@ class RecordingArchiveTests(unittest.TestCase):
         self.sessions = FakeSessions(self.session)
         self.manager = RecordingArchiveManager(self.root, self.sessions, self.pipeline,
                                                lambda: self.recordings, now=lambda: 1794218430)
+        self.addCleanup(self.manager.close)
 
     def test_srt_offsets_and_hour_timecodes(self):
         result = merge_srt([
@@ -117,7 +121,7 @@ class RecordingArchiveTests(unittest.TestCase):
         self.assertEqual(transcript.read_text(), "片段1\n\n片段2\n")
         self.assertIn("00:00:02,500 --> 00:00:03,000", subtitle.read_text())
         self.assertTrue(result["unknownGaps"])
-        manifest = json.loads(video.with_suffix(".manifest.json").read_text())
+        manifest = json.loads((self.recordings / result["manifestPath"]).read_text())
         self.assertEqual(manifest["gaps"][0]["status"], "unknown")
         self.assertIn("没有被补回", manifest["note"])
 
@@ -144,7 +148,7 @@ class RecordingArchiveTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "音频布局不兼容"):
             self.manager.create(self.session["id"])
         pending = self.manager.snapshot()["archives"][0]
-        self.assertEqual(pending["status"], "processing")
+        self.assertEqual(pending["status"], "failed")
         self.pipeline.fail_calls = 0
         result = self.manager.create(self.session["id"])
         self.assertEqual(result["status"], "completed")
@@ -157,6 +161,146 @@ class RecordingArchiveTests(unittest.TestCase):
         self.pipeline.fail_next = True
         fallback = self.manager.create(second["id"])
         self.assertEqual(fallback["merge"]["mode"], "reencode")
+
+    def wait_complete(self, manager=None):
+        manager = manager or self.manager
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            items = manager.snapshot()["archives"]
+            if items and items[0]["status"] in {"completed", "failed"}:
+                return items[0]
+            threading.Event().wait(.01)
+        self.fail("archive did not reach a terminal state")
+
+    def test_background_submission_is_nonblocking_and_duplicate_clicks_share_job(self):
+        entered, release = threading.Event(), threading.Event()
+        original = self.pipeline.validate_video
+        def block(path, cancel_event=None):
+            entered.set()
+            if not release.wait(3):
+                raise RuntimeError("test release missing")
+            original(path, cancel_event)
+        self.pipeline.validate_video = block
+        try:
+            started = time.monotonic()
+            first = self.manager.submit(self.session["id"])
+            self.assertLess(time.monotonic() - started, 1)
+            self.assertEqual(first["status"], "queued")
+            self.assertTrue(entered.wait(2))
+            state = self.manager.snapshot()["archives"][0]
+            self.assertEqual(state["status"], "processing")
+            self.assertIn("校验片段", state["stage"])
+            self.assertFalse(state["canRetry"])
+            second = self.manager.submit(self.session["id"])
+            self.assertEqual(first["id"], second["id"])
+            self.assertEqual(self.pipeline.merges, 0)
+        finally:
+            release.set()
+        self.assertEqual(self.wait_complete()["status"], "completed")
+        self.assertEqual(self.pipeline.merges, 1)
+
+    def test_shutdown_requeues_active_task_and_next_start_recovers_without_recorder_signals(self):
+        entered = threading.Event()
+        original = self.pipeline.validate_video
+        def block(path, cancel_event=None):
+            entered.set()
+            self.assertTrue(cancel_event.wait(3))
+            raise InterruptedError("test shutdown")
+        self.pipeline.validate_video = block
+        first = self.manager.submit(self.session["id"])
+        self.assertTrue(entered.wait(2))
+        with mock.patch.object(media_pipeline, "_stop", threading.Event()):
+            self.assertTrue(self.manager.close(2))
+            self.assertFalse(media_pipeline._stop.is_set())
+        self.assertEqual(self.manager.snapshot()["archives"][0]["status"], "queued")
+        self.pipeline.validate_video = original
+        resumed = RecordingArchiveManager(self.root, self.sessions, self.pipeline, lambda: self.recordings)
+        self.addCleanup(resumed.close)
+        resumed.start()
+        result = self.wait_complete(resumed)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["id"], first["id"])
+        self.assertEqual(self.pipeline.merges, 1)
+
+    def test_single_segment_reuses_compressed_video_without_copy_or_input_identity_change(self):
+        self.session["segments"] = self.session["segments"][:1]
+        before = self.manager._signature(self.inputs[0])
+        result = self.manager.create(self.session["id"])
+        self.assertEqual(self.pipeline.merges, 0)
+        self.assertEqual(result["merge"]["mode"], "single_segment")
+        self.assertEqual(self.recordings / result["videoPath"], self.inputs[0])
+        self.assertEqual(self.manager._signature(self.inputs[0]), before)
+        self.assertTrue((self.recordings / result["transcriptPath"]).is_file())
+        self.assertTrue((self.recordings / result["subtitlesPath"]).is_file())
+        self.assertTrue((self.recordings / result["manifestPath"]).is_file())
+        self.assertEqual(list((self.recordings / '.liveops-archives').rglob('*.mp4')), [])
+
+    def test_input_mutation_during_merge_never_publishes_archive(self):
+        original = self.pipeline.run_command
+        def mutate(command, cancel_event=None):
+            original(command, cancel_event)
+            self.inputs[0].write_bytes(b"externally changed during processing")
+        self.pipeline.run_command = mutate
+        with self.assertRaisesRegex(ValueError, "输入文件发生变化"):
+            self.manager.create(self.session["id"])
+        result = self.manager.snapshot()["archives"][0]
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(result["canRetry"])
+        self.assertNotIn("videoPath", result)
+        self.assertEqual(list((self.recordings / '.liveops-archives').iterdir()), [])
+        self.assertTrue(self.inputs[0].exists())
+
+    def test_publish_before_checkpoint_failure_is_recovered_without_remerge(self):
+        original = self.manager._put
+        failed = False
+        def crash(item):
+            nonlocal failed
+            if item["status"] == "completed" and not failed:
+                failed = True
+                raise OSError("synthetic checkpoint failure")
+            return original(item)
+        with mock.patch.object(self.manager, '_put', side_effect=crash):
+            with self.assertRaisesRegex(OSError, "checkpoint failure"):
+                self.manager.create(self.session["id"])
+        first = self.manager.snapshot()["archives"][0]
+        self.assertEqual(first["status"], "failed")
+        self.manager.submit(self.session["id"])
+        recovered = self.wait_complete()
+        self.assertEqual(recovered["status"], "completed")
+        self.assertEqual(recovered["id"], first["id"])
+        self.assertEqual(self.pipeline.merges, 1)
+
+    def test_active_transcription_blocks_submission_and_missing_outputs_allow_rebuild(self):
+        self.pipeline.jobs[0]["status"] = "processing"
+        with self.assertRaisesRegex(ValueError, "仍在压缩或转写"):
+            self.manager.submit(self.session["id"])
+        self.assertEqual(self.manager.snapshot()["archives"], [])
+        self.pipeline.jobs[0]["status"] = "completed"
+        first = self.manager.submit(self.session["id"])
+        done = self.wait_complete()
+        (self.recordings / done["subtitlesPath"]).unlink()
+        state = self.manager.snapshot()["archives"][0]
+        self.assertEqual(state["status"], "failed")
+        self.assertTrue(state["canRetry"])
+        second = self.manager.submit(self.session["id"])
+        self.assertNotEqual(second["id"], first["id"])
+        self.assertEqual(self.wait_complete()["status"], "completed")
+
+    def test_stale_temp_path_never_deletes_an_unrelated_recording(self):
+        self.manager._put({"version": 1, "id": "f" * 32, "sessionId": self.session["id"],
+                           "status": "processing", "temp": str(self.inputs[0])})
+        before = self.inputs[0].read_bytes()
+        self.manager.start()
+        self.assertEqual(self.wait_complete()["status"], "completed")
+        self.assertEqual(self.inputs[0].read_bytes(), before)
+
+    def test_corrupt_queue_does_not_prevent_dashboard_start_or_overwrite_evidence(self):
+        self.manager.file.parent.mkdir(parents=True)
+        self.manager.file.write_text("broken queue")
+        self.manager.start()
+        self.assertIsNone(self.manager.thread)
+        self.assertIsNotNone(self.manager.snapshot()["error"])
+        self.assertEqual(self.manager.file.read_text(), "broken queue")
 
     def test_real_ffmpeg_merge_preserves_audio_and_uses_container_duration(self):
         ffmpeg = str(media_pipeline.FFMPEG)
@@ -183,8 +327,8 @@ class RecordingArchiveTests(unittest.TestCase):
         pipeline = type("RealPipeline", (), {
             "FFMPEG": media_pipeline.FFMPEG,
             "archive_jobs": lambda self: copy.deepcopy(jobs),
-            "validate_video": lambda self, path: media_pipeline.validate_video(path),
-            "run_command": lambda self, command: media_pipeline.run_command(command),
+            "validate_video": lambda self, path, **kwargs: media_pipeline.validate_video(path, **kwargs),
+            "run_command": lambda self, command, **kwargs: media_pipeline.run_command(command, **kwargs),
             "inspect_media": lambda self, path: media_pipeline.inspect_media(path),
         })()
         manager = RecordingArchiveManager(self.root, FakeSessions(session), pipeline, lambda: self.recordings)

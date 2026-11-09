@@ -11,7 +11,7 @@ import copy
 import json
 import os
 import re
-import subprocess
+import shutil
 import tempfile
 import threading
 import uuid
@@ -89,6 +89,12 @@ class RecordingArchiveManager:
         self.recording_root = recording_root
         self.now = now or (lambda: datetime.now(timezone.utc).timestamp())
         self.lock = threading.RLock()
+        self.execution_lock = threading.Lock()
+        self.stop = threading.Event()
+        self.wake = threading.Event()
+        self.thread = None
+        self.closed = False
+        self.error = None
 
     def _read(self):
         try:
@@ -97,7 +103,9 @@ class RecordingArchiveManager:
             return {"version": ARCHIVES_VERSION, "archives": []}
         if (not isinstance(value, dict) or value.get("version") != ARCHIVES_VERSION
                 or not isinstance(value.get("archives"), list)
-                or any(not isinstance(item, dict) or not isinstance(item.get("id"), str)
+                or any(not isinstance(item, dict)
+                       or not re.fullmatch(r"[a-f0-9]{32}", str(item.get("id", "")))
+                       or not re.fullmatch(r"[a-f0-9]{32}", str(item.get("sessionId", "")))
                        for item in value["archives"])):
             raise ValueError("录制归档记录格式异常，原记录未覆盖")
         return value
@@ -168,7 +176,7 @@ class RecordingArchiveManager:
         validator = getattr(self.pipeline, "validate_video", None)
         if validator is None:
             raise RuntimeError("后处理组件不支持视频校验")
-        validator(path)
+        validator(path, cancel_event=self.stop)
 
     def _duration(self, path, fallback=None):
         inspect = getattr(self.pipeline, "inspect_media", None)
@@ -206,10 +214,10 @@ class RecordingArchiveManager:
         runner = getattr(self.pipeline, "run_command", None)
 
         def run(command):
+            self._cancelled()
             if runner is None:
-                subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            else:
-                runner(command)
+                raise RuntimeError("后处理组件不支持可停止的归档命令")
+            runner(command, cancel_event=self.stop)
 
         try:
             inspect = getattr(self.pipeline, "inspect_media", None)
@@ -227,6 +235,8 @@ class RecordingArchiveManager:
                 try:
                     run(command)
                     return {"mode": "stream_copy", "audioPreserved": True}
+                except InterruptedError:
+                    raise
                 except Exception as error:
                     first_error = error
             else:
@@ -256,157 +266,311 @@ class RecordingArchiveManager:
                 try:
                     run(reencode)
                     return {"mode": "reencode", "audioPreserved": True}
+                except InterruptedError:
+                    raise
                 except Exception:
                     output.unlink(missing_ok=True)
                     raise RuntimeError("片段音频布局不兼容，未生成丢失音频的归档") from first_error
         finally:
             list_path.unlink(missing_ok=True)
 
+    def _stamp_now(self):
+        return datetime.fromtimestamp(self.now(), timezone.utc).isoformat()
+
+    def _session(self, session_id):
+        if not isinstance(session_id, str) or not re.fullmatch(r"[a-f0-9]{32}", session_id):
+            raise ValueError("录制场次 ID 格式不正确")
+        session = next((item for item in self.sessions._read()["sessions"] if item.get("id") == session_id), None)
+        if session is None:
+            raise FileNotFoundError("找不到录制场次")
+        if not session.get("endedAt"):
+            raise ValueError("当前录制尚未收到录制器结束事件，暂不合并")
+        if not session.get("segments"):
+            raise ValueError("录制场次没有已观察到的片段")
+        return copy.deepcopy(session)
+
+    def _inputs(self, session):
+        jobs = self._jobs()
+        resolved = [self._find_job(segment, jobs) for segment in session["segments"]]
+        if any(job.get("status") in {"processing", "queued"} for job, _path in resolved):
+            raise ValueError("片段仍在压缩或转写，请等待后处理完成再归档")
+        return resolved
+
+    def _put(self, item):
+        with self.lock:
+            data = self._read()
+            data["archives"] = [old for old in data["archives"] if old.get("sessionId") != item["sessionId"]]
+            data["archives"].append(copy.deepcopy(item))
+            self._write(data)
+
+    def _update(self, archive_id, **changes):
+        with self.lock:
+            data = self._read()
+            item = next(item for item in data["archives"] if item["id"] == archive_id)
+            item.update(changes, updatedAt=self._stamp_now())
+            self._write(data)
+
+    def _cancelled(self):
+        if self.stop.is_set():
+            raise InterruptedError("归档已暂停，启动后继续")
+
+    def _existing_complete(self, item):
+        if not item or item.get("status", "completed") != "completed":
+            return False
+        try:
+            for key in ("video", "transcript", "subtitles", "manifest"):
+                if item.get(key):
+                    path = self._safe_file(item[key], self.recording_root())
+                    saved = (item.get("outputSignatures") or {}).get(key)
+                    if saved and self._signature(path) != saved:
+                        return False
+            return bool(item.get("video"))
+        except (OSError, ValueError):
+            return False
+
+    def start(self):
+        with self.lock:
+            if self.thread and self.thread.is_alive():
+                return
+            if self.closed:
+                raise RuntimeError("归档服务正在停止，请稍后重试")
+            try:
+                data = self._read()
+            except (OSError, ValueError) as error:
+                self.error = "无法启动归档后台服务：" + str(error)[:400]
+                return
+            for item in data["archives"]:
+                if item.get("status") == "processing":
+                    item.update(status="queued", stage="等待恢复中断归档", error=None)
+            if self.file.exists():
+                self._write(data)
+            self.error = None
+            self.thread = threading.Thread(target=self._worker, name="liveops-recording-archives", daemon=True)
+            self.thread.start()
+
+    def submit(self, session_id):
+        # Validate and persist quickly; no decoding runs in an HTTP request.
+        with self.lock:
+            self.start()
+            session = self._session(session_id)
+            existing = next((item for item in self._read()["archives"] if item.get("sessionId") == session_id), None)
+            if existing and existing.get("status") in {"queued", "processing"}:
+                return self._public(existing)
+            if self._existing_complete(existing):
+                return self._public(existing)
+            self._inputs(session)
+            retry_id = existing["id"] if existing and existing.get("status") == "failed" else uuid.uuid4().hex
+            item = {"version": 1, "id": retry_id, "sessionId": session_id, "status": "queued",
+                    "stage": "等待归档", "createdAt": self._stamp_now(), "updatedAt": self._stamp_now(), "error": None}
+            self._put(item)
+            self.wake.set()
+            return self._public(item)
+
+    def _worker(self):
+        try:
+            self._work_loop()
+        except Exception as error:
+            self.error = "归档后台服务停止：" + str(error)[:400]
+
+    def _work_loop(self):
+        while not self.stop.is_set():
+            with self.lock:
+                item = next((item for item in self._read()["archives"] if item.get("status") == "queued"), None)
+                if item:
+                    self._update(item["id"], status="processing", stage="准备归档", startedAt=self._stamp_now(), error=None)
+            if item:
+                try:
+                    self.create(item["sessionId"], item["id"])
+                except Exception:
+                    # If saving the failure also failed, surface the worker error
+                    # instead of leaving an apparently live processing task forever.
+                    saved = next((saved for saved in self._read()["archives"] if saved["id"] == item["id"]), None)
+                    if saved and saved.get("status") == "processing":
+                        raise
+                continue
+            self.wake.wait(1)
+            self.wake.clear()
+
+    def close(self, timeout=12):
+        with self.lock:
+            self.closed = True
+            self.stop.set()
+            self.wake.set()
+            thread = self.thread
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout)
+        return not (thread and thread.is_alive())
+
     def _archive_dir(self):
         root = Path(self.recording_root()).expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
-        return root / ".liveops-archives"
+        directory = root / ".liveops-archives"
+        if directory.is_symlink():
+            raise ValueError("归档目录不能是符号链接")
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
 
-    def create(self, session_id):
-        if not isinstance(session_id, str) or not re.fullmatch(r"[a-f0-9]{32}", session_id):
-            raise ValueError("录制场次 ID 格式不正确")
-        with self.lock:
-            data = self.sessions._read()
-            session = next((item for item in data["sessions"] if item.get("id") == session_id), None)
-            if session is None:
-                raise FileNotFoundError("找不到录制场次")
-            if not session.get("endedAt"):
-                raise ValueError("当前录制尚未收到录制器结束事件，暂不合并")
-            segments = session.get("segments") or []
-            if not segments:
-                raise ValueError("录制场次没有已观察到的片段")
-            archive_store = self._read()
-            existing = next((item for item in archive_store["archives"] if item.get("sessionId") == session_id), None)
-            if existing and existing.get("status", "completed") == "completed" and existing.get("video"):
-                try:
-                    existing_video = self._safe_file(existing["video"], self.recording_root())
-                    if existing_video.is_file() and existing_video.stat().st_size > 0:
-                        return self._public(existing)
-                except (OSError, ValueError):
-                    pass
-            if existing:
-                temp_path = existing.get("temp")
-                if temp_path:
-                    try:
-                        self._safe_file(temp_path, self.recording_root()).unlink(missing_ok=True)
-                    except (OSError, ValueError):
-                        pass
-                archive_store["archives"] = [item for item in archive_store["archives"] if item.get("id") != existing.get("id")]
-                self._write(archive_store)
-            jobs = self._jobs()
-            resolved = [self._find_job(segment, jobs) for segment in segments]
-            for _job, path in resolved:
-                self._validate(path)
-            archive_id = uuid.uuid4().hex
-            directory = self._archive_dir()
-            directory.mkdir(parents=True, exist_ok=True)
-            output = directory / f"{session_id}.mp4"
-            temp_output = directory / f".{session_id}.{archive_id}.tmp.mp4"
-            processing = {"version": 1, "id": archive_id, "sessionId": session_id, "status": "processing",
-                          "createdAt": datetime.fromtimestamp(self.now(), timezone.utc).isoformat(),
-                          "temp": str(temp_output), "video": None, "transcript": None, "subtitles": None,
-                          "note": "合并任务尚未完成；再次点击将清理临时文件并重试。"}
-            archive_store["archives"].append(processing)
-            self._write(archive_store)
+    def create(self, session_id, archive_id=None):
+        """Synchronous worker body; the HTTP endpoint always uses submit()."""
+        if archive_id is not None and not re.fullmatch(r"[a-f0-9]{32}", str(archive_id)):
+            raise ValueError("归档任务 ID 格式不正确")
+        with self.execution_lock:
             try:
-                merge_report = self._merge_video([path for _job, path in resolved], temp_output)
-                if not temp_output.is_file() or temp_output.stat().st_size == 0:
+                self._cancelled()
+                session = self._session(session_id)
+                existing = next((item for item in self._read()["archives"] if item.get("sessionId") == session_id), None)
+                if archive_id is None:
+                    if self._existing_complete(existing):
+                        return self._public(existing)
+                    archive_id = uuid.uuid4().hex
+                    self._put({"version": 1, "id": archive_id, "sessionId": session_id, "status": "processing",
+                               "stage": "准备归档", "createdAt": self._stamp_now(), "startedAt": self._stamp_now()})
+                elif not existing or existing["id"] != archive_id or existing.get("status") != "processing":
+                    raise RuntimeError("归档任务状态已变化，请重新检查")
+                return self._build(session, archive_id)
+            except InterruptedError:
+                if archive_id:
+                    self._update(archive_id, status="queued", stage="等待恢复中断归档", error=None)
+                raise
+            except Exception as error:
+                if archive_id:
+                    self._update(archive_id, status="failed", stage="归档失败", error=str(error)[:1200])
+                raise
+
+    def _build(self, session, archive_id):
+        segments = session["segments"]
+        resolved = self._inputs(session)
+        source_signatures = [(path, job["compressedSignature"]) for job, path in resolved]
+        root = Path(self.recording_root()).expanduser().resolve()
+        directory = self._archive_dir()
+        # Each attempt publishes one complete directory, never overwrites another
+        # artifact, and only cleans its own known temporary directory on restart.
+        staging = directory / f".{session['id']}.{archive_id}.tmp"
+        target = directory / f"{session['id']}.{archive_id}"
+        if target.exists() or target.is_symlink():
+            if target.is_symlink() or not target.is_dir():
+                raise ValueError("已发布归档目录格式异常，原文件未修改")
+            saved = json.loads((target / "video.manifest.json").read_text(encoding="utf-8"))
+            expected_video = resolved[0][1] if len(resolved) == 1 else target / "video.mp4"
+            if (saved.get("id") != archive_id or saved.get("sessionId") != session["id"]
+                    or saved.get("video") != str(expected_video) or not saved.get("outputSignatures")
+                    or saved.get("manifest") != str(target / "video.manifest.json")
+                    or any(saved.get(k) and saved[k] != str(target / name)
+                           for k, name in (("transcript", "video.txt"), ("subtitles", "video.srt")))
+                    or not self._existing_complete(saved)):
+                raise ValueError("已发布归档与任务不一致，原文件未修改")
+            self._put(saved)
+            return self._public(saved)
+        for index, (_job, path) in enumerate(resolved, 1):
+            self._cancelled()
+            self._update(archive_id, stage=f"校验片段 {index}/{len(resolved)}")
+            self._validate(path)
+        if staging.exists() or staging.is_symlink():
+            if staging.is_symlink() or not staging.is_dir():
+                raise ValueError("归档临时目录格式异常，原文件未删除")
+            shutil.rmtree(staging)
+        staging.mkdir()
+        try:
+            if len(resolved) == 1:
+                video = resolved[0][1]
+                merge_report = {"mode": "single_segment", "audioPreserved": True}
+            else:
+                self._update(archive_id, stage="合并视频")
+                temp_video = staging / "video.tmp.mp4"
+                merge_report = self._merge_video([path for _job, path in resolved], temp_video)
+                if not temp_video.is_file() or temp_video.stat().st_size == 0:
                     raise RuntimeError("FFmpeg 没有生成合并视频")
-                self._validate(temp_output)
-                temp_output.replace(output)
-            finally:
-                temp_output.unlink(missing_ok=True)
+                self._update(archive_id, stage="校验合并视频")
+                self._validate(temp_video)
+                temp_video.rename(staging / "video.mp4")
+                video = target / "video.mp4"
 
-            offsets = []
-            transcript_contents = []
-            subtitle_contents = []
-            can_publish_text = True
-            can_publish_subtitles = True
+            self._cancelled()
+            self._update(archive_id, stage="整理文本、字幕与归档清单")
+            offsets, durations, texts, subtitles, text_signatures = [], [], [], [], []
             offset = 0
-            for segment, (job, _path) in zip(segments, resolved):
+            for segment, (job, path) in zip(segments, resolved):
+                self._cancelled()
+                duration = self._duration(path, segment.get("mediaDurationMs"))
+                if not isinstance(duration, int) or duration <= 0:
+                    raise ValueError("压缩视频时长无效，未发布归档")
                 offsets.append(offset)
-                bounds = job.get("subtitleBounds") or {}
-                duration = self._duration(_path, segment.get("mediaDurationMs"))
-                if not isinstance(duration, int) or duration < 0:
-                    can_publish_subtitles = False
-                    duration = 0
+                durations.append(duration)
                 offset += duration
-                transcript = Path(job["transcript"]).expanduser() if job.get("transcript") else None
-                subtitles = Path(job["subtitles"]).expanduser() if job.get("subtitles") else None
-                if transcript and transcript.is_file():
-                    transcript_contents.append(transcript.read_text(encoding="utf-8"))
-                else:
-                    can_publish_text = False
-                if subtitles and subtitles.is_file():
-                    subtitle_contents.append(subtitles.read_text(encoding="utf-8"))
-                else:
-                    can_publish_subtitles = False
-
-            transcript_path = None
-            subtitles_path = None
-            if can_publish_text and len(transcript_contents) == len(resolved):
-                transcript_path = output.with_suffix(".txt")
-                self._atomic_text(transcript_path, merge_text(transcript_contents))
-            if can_publish_subtitles and len(subtitle_contents) == len(resolved) and len(offsets) == len(subtitle_contents):
-                subtitles_path = output.with_suffix(".srt")
-                self._atomic_text(subtitles_path, merge_srt(subtitle_contents, offsets))
+                for key, contents in (("transcript", texts), ("subtitles", subtitles)):
+                    if job.get(key):
+                        artifact = self._safe_file(job[key])
+                        text_signatures.append((artifact, self._signature(artifact)))
+                        contents.append(artifact.read_text(encoding="utf-8"))
+                    else:
+                        contents.append(None)
+            transcript = target / "video.txt" if all(t is not None for t in texts) else None
+            subtitle = target / "video.srt" if all(s is not None for s in subtitles) else None
+            if transcript:
+                self._atomic_text(staging / transcript.name, merge_text(texts))
+            if subtitle:
+                self._atomic_text(staging / subtitle.name, merge_srt(subtitles, offsets))
 
             gaps = []
             for before, after in zip(segments, segments[1:]):
-                first = after.get("firstSeenAt")
-                last = before.get("lastSeenAt")
                 gap_ms = None
                 try:
-                    from datetime import datetime as _datetime
-                    gap_ms = max(0, int((_datetime.fromisoformat(first.replace("Z", "+00:00")).timestamp()
-                                         - _datetime.fromisoformat(last.replace("Z", "+00:00")).timestamp()) * 1000))
-                except (AttributeError, TypeError, ValueError):
+                    gap_ms = max(0, int((datetime.fromisoformat(after["firstSeenAt"].replace("Z", "+00:00")).timestamp()
+                                         - datetime.fromisoformat(before["lastSeenAt"].replace("Z", "+00:00")).timestamp()) * 1000))
+                except (KeyError, AttributeError, TypeError, ValueError):
                     pass
-                gaps.append({"from": before.get("path"), "to": after.get("path"),
-                             "observedGapMs": gap_ms, "status": "unknown",
-                             "note": "文件切换时间只能说明观察到的边界，不能恢复或精确计算未接收画面"})
+                gaps.append({"from": before.get("path"), "to": after.get("path"), "observedGapMs": gap_ms,
+                             "status": "unknown", "note": "文件切换时间只能说明观察到的边界，不能恢复或精确计算未接收画面"})
             manifest = {
-                "version": 1, "id": archive_id, "sessionId": session_id, "status": "completed",
-                "createdAt": datetime.fromtimestamp(self.now(), timezone.utc).isoformat(),
+                "version": 1, "id": archive_id, "sessionId": session["id"], "status": "completed", "stage": "归档完成",
+                "createdAt": self._stamp_now(), "updatedAt": self._stamp_now(), "error": None,
                 "endedAt": session.get("endedAt"), "endReason": session.get("endReason"),
-                "segments": [{"path": segment.get("path"), "compressed": str(path),
-                              "durationMs": self._duration(path, segment.get("mediaDurationMs")),
-                              "compressedSignature": job.get("compressedSignature")} for segment, (job, path) in zip(segments, resolved)],
+                "segments": [{"path": segment.get("path"), "compressed": str(path), "durationMs": duration,
+                              "compressedSignature": job.get("compressedSignature")} for segment, (job, path), duration in zip(segments, resolved, durations)],
                 "gaps": gaps, "partialObservation": bool(session.get("partialObservation", True)),
-                "unknownGaps": bool(gaps) or bool(session.get("partialObservation", True)),
-                "merge": merge_report,
-                "video": str(output), "transcript": str(transcript_path) if transcript_path else None,
-                "subtitles": str(subtitles_path) if subtitles_path else None,
-                "note": "归档只合并已收到且已校验的片段；未知间断中的画面没有被补回。",
+                "unknownGaps": bool(gaps) or bool(session.get("partialObservation", True)), "merge": merge_report,
+                "video": str(video), "transcript": str(transcript) if transcript else None,
+                "subtitles": str(subtitle) if subtitle else None, "manifest": str(target / "video.manifest.json"),
+                "missingArtifacts": [name for name, artifact in (("转写文本", transcript), ("字幕", subtitle)) if artifact is None],
+                "note": "归档只包含已收到且已校验的片段；未知间断中的画面没有被补回。" +
+                        ("单片段直接使用压缩视频，不另存一份。" if len(resolved) == 1 else ""),
             }
-            manifest_path = output.with_suffix(".manifest.json")
-            self._atomic_text(manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2))
-            archive_store = self._read()
-            archive_store["archives"] = [item for item in archive_store["archives"] if item.get("id") != archive_id]
-            archive_store["archives"].append(manifest)
-            self._write(archive_store)
+            manifest["outputSignatures"] = {"video": self._signature(video if len(resolved) == 1 else staging / "video.mp4")}
+            for key, path in (("transcript", transcript), ("subtitles", subtitle)):
+                if path:
+                    manifest["outputSignatures"][key] = self._signature(staging / path.name)
+            self._atomic_text(staging / "video.manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+            self._cancelled()
+            for path, signature in source_signatures + text_signatures:
+                if not path.is_file() or path.is_symlink() or self._signature(path) != signature:
+                    raise ValueError("归档期间输入文件发生变化，未发布结果")
+            if Path(self.recording_root()).expanduser().resolve() != root:
+                raise ValueError("录制目录已更改，未发布归档")
+            staging.rename(target)
+            self._put(manifest)
             return self._public(manifest)
+        finally:
+            if staging.is_dir() and not staging.is_symlink():
+                shutil.rmtree(staging)
 
     def _public(self, item):
         value = copy.deepcopy(item)
         value.setdefault("status", "completed")
+        if value["status"] == "completed" and not self._existing_complete(item):
+            value.update(status="failed", stage="归档文件不可用", error="归档文件已被移动、删除或修改，请检查后重试")
         root = Path(self.recording_root()).expanduser().resolve()
-        for key in ("video", "transcript", "subtitles"):
-            path = value.get(key)
-            if not path:
-                continue
-            try:
-                value[key + "Path"] = str(Path(path).resolve().relative_to(root))
-            except (OSError, ValueError):
-                value[key + "Path"] = None
-            value[key] = None
-        value.pop("segments", None)
-        value.pop("temp", None)
+        for key in ("video", "transcript", "subtitles", "manifest"):
+            path = value.pop(key, None)
+            if path:
+                try:
+                    value[key + "Path"] = str(self._safe_file(path, root).relative_to(root))
+                except (OSError, ValueError):
+                    value[key + "Path"] = None
+        for key in ("segments", "temp", "outputSignatures"):
+            value.pop(key, None)
+        if self.error and value["status"] in {"queued", "processing"}:
+            value.update(status="failed", stage="归档后台服务停止", error=self.error)
+        value["canRetry"] = value["status"] == "failed"
         return value
 
     def snapshot(self):
@@ -414,4 +578,4 @@ class RecordingArchiveManager:
             data = self._read()
         except (OSError, ValueError):
             return {"archives": [], "error": "录制归档记录无法读取，原记录已保留"}
-        return {"archives": [self._public(item) for item in reversed(data["archives"][-50:])], "error": None}
+        return {"archives": [self._public(item) for item in reversed(data["archives"][-50:])], "error": self.error}

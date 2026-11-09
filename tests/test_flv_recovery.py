@@ -155,6 +155,36 @@ class CommandLifecycleTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertIsInstance(results[0], InterruptedError)
 
+    def test_archive_cancellation_has_its_own_event_and_child_process(self):
+        global_stop, archive_stop, started = threading.Event(), threading.Event(), threading.Event()
+        errors, children = [], []
+        real_popen = pipeline.subprocess.Popen
+        def popen(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            children.append(child)
+            started.set()
+            return child
+        def work():
+            try:
+                pipeline.run_command([sys.executable, "-c", "import time; time.sleep(60)"], cancel_event=archive_stop)
+            except Exception as error:
+                errors.append(error)
+        with mock.patch.object(pipeline, "_stop", global_stop), mock.patch.object(pipeline.subprocess, "Popen", side_effect=popen):
+            thread = threading.Thread(target=work)
+            thread.start()
+            try:
+                self.assertTrue(started.wait(3))
+                archive_stop.set()
+                thread.join(8)
+                self.assertFalse(thread.is_alive())
+                self.assertFalse(global_stop.is_set())
+                self.assertIsNotNone(children[0].poll())
+                self.assertEqual(len(errors), 1)
+                self.assertIsInstance(errors[0], InterruptedError)
+            finally:
+                archive_stop.set()
+                thread.join(8)
+
     def test_prefix_feeding_does_not_copy_tail(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.object(pipeline, "_stop", threading.Event()):
             source = Path(d) / "source"
