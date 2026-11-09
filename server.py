@@ -26,6 +26,7 @@ from runtime_config import DATA_ROOT
 from dependency_service import DependencyManager
 from recording_sessions import RecordingSessions
 from recording_archives import RecordingArchiveManager
+from keyword_service import KeywordService
 
 
 ROOT = Path(__file__).resolve().parent
@@ -42,6 +43,7 @@ MEDIA_PIPELINE_FILE = ROOT / "media_pipeline.py"
 if not MEDIA_PIPELINE_FILE.is_file():
     MEDIA_PIPELINE_FILE = MEDIA_PIPELINE_DIR / "media_pipeline.py"
 MEDIA_SETTINGS_FILE = DATA_ROOT / "plugin-settings" / "media-pipeline.json"
+KEYWORDS = KeywordService(DATA_ROOT, ROOT)
 BGO = os.environ.get("LIVEOPS_BGO_URL", "http://127.0.0.1:18080").rstrip("/")
 HOT_API = os.environ.get("LIVEOPS_HOT_API_URL", "http://127.0.0.1:16688").rstrip("/")
 PORT = int(os.environ.get("LIVEOPS_PORT", "8765"))
@@ -858,7 +860,7 @@ class Handler(BaseHTTPRequestHandler):
                     "bililive": {"connected": bgo is not None, "version": bgo.get("app_version") if bgo else None, "error": bgo_error},
                     "dailyhot": {"connected": hot is not None and hot.get("code") == 200, "updatedAt": hot.get("updateTime") if hot else None, "error": hot_error},
                     "buzz": {"connected": bool(MEDIA_PIPELINE and MEDIA_PIPELINE.job_snapshot().get("transcriptionReady")), "engine": "whisper.cpp", "note": "本地中文离线转写"},
-                    "keybert": {"connected": False, "note": "可在转写语料积累后安装配置"},
+                    "keybert": {"connected": KEYWORDS.state()["installed"], "engine": "KeyBERT", "note": "本机中文语料分析；热词洞察可安装、分析及导出"},
                     "playwright": rpa_service,
                     "compass": {"connected": bool(rpa_service.get("authenticated")), "note": "本机罗盘登录会话"},
                 },
@@ -909,6 +911,12 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, ValueError, urllib.error.URLError) as error:
                 self.send_json({"code": 503, "error": str(error), "data": []}, 503)
             return
+        if path == "/api/transcript-keywords":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台分析转写语料"}, 403)
+                return
+            self.send_json(KEYWORDS.state())
+            return
         if path == "/api/sessions":
             self.send_json({"recordings": recording_files(), "directory": str(recording_directory())})
             return
@@ -956,6 +964,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": str(error)}, 400)
             return
 
+        if path in ("/api/transcript-keywords/install", "/api/transcript-keywords/analyze", "/api/transcript-keywords/cancel"):
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台管理关键词任务"}, 403)
+                return
+            if not isinstance(payload, dict) or payload:
+                self.send_json({"error": "只接受空对象，语料范围固定为本机转写目录"}, 400)
+                return
+            try:
+                self.send_json(KEYWORDS.start(path.rsplit("/", 1)[-1]))
+            except ValueError as error:
+                self.send_json({"error": str(error)}, 400)
+            except (OSError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, 503)
+            return
         if path == "/api/dependencies/install":
             if not self.rpa_request_allowed():
                 self.send_json({"error": "仅允许从本机工作台安装组件"}, 403)
@@ -1402,10 +1424,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def serve_static(self, url_path, head_only=False):
         requested = urllib.parse.unquote(url_path)
-        if requested not in ("", "/", "/直播操盘台.html", "/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/dependency-ui.js", "/recording-sessions-ui.js"):
+        if requested not in ("", "/", "/直播操盘台.html", "/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/dependency-ui.js", "/recording-sessions-ui.js", "/keyword-ui.js"):
             self.send_json({"error": "not found"}, 404)
             return
-        candidate = ROOT / (requested.lstrip("/") if requested in ("/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/dependency-ui.js", "/recording-sessions-ui.js") else "直播操盘台.html")
+        candidate = ROOT / (requested.lstrip("/") if requested in ("/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/dependency-ui.js", "/recording-sessions-ui.js", "/keyword-ui.js") else "直播操盘台.html")
         if not candidate.is_file():
             self.send_json({"error": "not found"}, 404)
             return
@@ -1495,6 +1517,7 @@ if __name__ == "__main__":
         profile_stop.set()
         PROFILE_MONITOR_WAKE.set()
         profile_worker.join(timeout=12)
+        KEYWORDS.close()
         COLLECTOR.close()
         if MEDIA_PIPELINE:
             MEDIA_PIPELINE.stop_worker()

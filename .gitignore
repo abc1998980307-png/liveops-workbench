@@ -13,6 +13,9 @@
 !/start_dashboard.py
 !/rpa_bridge.py
 !/runtime_config.py
+!/keyword_service.py
+!/keyword_worker.py
+!/keyword-ui.js
 !/dependency_service.py
 !/dependency-ui.js
 !/media_pipeline.py

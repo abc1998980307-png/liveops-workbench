@@ -8,7 +8,7 @@
 
 首次会安装专用 Node.js、Playwright Core、FFmpeg、bililive-go、CMake、Whisper CLI 和 small-q5_1 多语言模型。下载约 350 MB，建议至少留出 2 GB 临时空间。默认下载限速 1 MiB/s，Whisper 使用两个构建任务。安装不启动录制器、不添加直播间、不启动账号采集、不更改现有录屏后处理设置。
 
-“已找到”表示指定目录存在文件，不等于平台账号已经登录或业务接口可访问。安装器会执行工具检查，正式连接仍在录制器卡片和经营数据页面完成。**DailyHotApi、KeyBERT、Ego 和第三方平台不包含在此安装器中**，其安装 / 运行流程仍在路线图中。
+“已找到”表示指定目录存在文件，不等于平台账号已经登录或业务接口可访问。安装器会执行工具检查，正式连接仍在录制器卡片和经营数据页面完成。**DailyHotApi、Ego 和第三方平台不包含在此安装器中**（KeyBERT 提供下述独立安装入口），其安装 / 运行流程仍在路线图中。
 
 ## 命令行安装
 
@@ -55,3 +55,20 @@ python3 scripts/verify_install.py --data-root /tmp/liveops-install-check
 `LIVEOPS_DATA_ROOT` 可统一设置网页、录制管理、媒体处理及采集默认数据目录；必须为绝对路径。不要在运行中切换已有工作台的目录。使用独立目录直接运行网页时也应通过 `LIVEOPS_PORT`、`LIVEOPS_BGO_URL` 和 `LIVEOPS_HOT_API_URL` 配置独立端口，避免连接到日常服务。
 
 2026-11-09：本机独立目录安装、二次运行幂等、空录制器启动 / 停止、真实 FFmpeg / Whisper 合成媒体闭环、网页 / 空采集器检查通过；网页安装按钮与 390px 布局验证通过。**第二台物理 Mac、全新系统前置工具安装、中文语音准确性仍未由这次验收证明。**
+
+## KeyBERT 中文关键词
+
+热词洞察 → 本机转写语料关键词 → 安装 KeyBERT 与中文模型。需要 macOS Apple Silicon 与 Python 3.9—3.11；不修改系统 Python。首次下载多语言模型约 480 MB，Python 包与模型合计需要约 2 GB 空间。
+
+```sh
+python3 scripts/install_keywords.py
+python3 scripts/install_keywords.py --apply
+# 也可使用独立目录做安装验收
+python3 scripts/install_keywords.py --apply --data-root /tmp/liveops-keyword-check
+```
+
+包版本及 PyPI SHA-256 记录在 `scripts/requirements-keywords.lock`；构建工具单独引导，模型固定提交和文件 SHA-256 记录在 `scripts/keyword-model.json`。安装会验证本地模型实际编码中文文本。已有环境检查失败时保留原目录，查看日志后移走失效目录再重试。取消或下载失败不会覆盖已有模型；已校验下载缓存可复用。
+
+安装完点击“分析语料”。分析是本机后台任务，保留上次结果并显示时间；关闭网页不影响运行，停止工作台会结束任务，重新打开后可重试。分析阶段只读取本机模型，不访问网络。来源为 `transcripts/`，TXT/SRT 同份内容不重复计数；有字数 / 文件数上限，界面会报告部分结果。
+
+结果和日志位于本机 `keywords/`，Python 环境在 `tools/keywords-env`，模型在 `tools/keyword-model`；这些运行文件不提交到 GitHub。

@@ -179,6 +179,15 @@
     .view { display: none; }
     .view.active { display: block; }
     .research-layout { display: grid; grid-template-columns: minmax(0, 1fr) 265px; gap: 16px; align-items: start; }
+    .transcript-keywords-panel { margin-top: 16px; min-width: 0; }
+    .keyword-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:12px 0; }
+    .keyword-toolbar input { min-width:0; flex:1 1 180px; padding:9px; border:1px solid var(--line); border-radius:4px; }
+    .keyword-results { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr)); gap:12px; }
+    .keyword-result { min-width:0; padding:14px; border:1px solid var(--line); border-radius:5px; }
+    .keyword-result p, .keyword-result small { overflow-wrap:anywhere; line-height:1.7; }
+    .keyword-result summary { cursor:pointer; color:var(--teal); margin-top:10px; }
+    .keyword-result blockquote { margin:8px 0; padding-left:10px; border-left:2px solid var(--line); line-height:1.7; }
+    .keyword-log { max-height:160px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
     .research-toolbar { display: flex; gap: 8px; margin-bottom: 13px; }
     .research-toolbar input { flex: 1; min-width: 0; min-height: 37px; border: 1px solid var(--line); border-radius: 4px; outline: 0; padding: 0 11px; font-size: 12px; }
     .seed-chip-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 14px; }
@@ -436,7 +445,8 @@
               <section class="panel"><div class="panel-head"><div><div class="panel-title">观察方法</div><div class="panel-subtitle">词热不等于成交</div></div></div><div class="panel-body"><div class="boundary-copy"><strong>趋势：</strong>巨量算数观察平台内容热度。<br><strong>联想：</strong>抖音搜索补充用户问法。<br><strong>竞品：</strong>飞瓜、蝉妈妈观察内容与直播动向。<br><strong>转化：</strong>电商罗盘验证自家搜索流量和成交。<br><br>建议将“相关度”“趋势指数”“搜索来源”和“转化结果”作为不同字段展示。</div><a class="source-link" href="https://www.5118.com/ci/douyin" target="_blank" rel="noreferrer">打开 5118 抖音关键词工具 →</a></div></section>
             </div>
           </div>
-          <div class="footer-note">长尾词仅作为选题线索。真实搜索需求以平台授权数据为准，第三方趋势不能替代店铺转化结果。</div>
+          <section id="keywordWorkspace" class="panel transcript-keywords-panel" aria-label="本机转写关键词"></section>
+          <div class="footer-note">长尾词仅作为选题线索。热点热度、语料相关度、搜索量和成交结果保持独立口径；本机关键词不会冒充抖音搜索量。</div>
         </section>
 
         <section class="view" id="view-sessions">
@@ -465,7 +475,7 @@
           <div class="page-head"><div><div class="eyebrow">DATA CONNECTORS</div><h1>数据源接入</h1><p class="page-desc">将官方经营数据、第三方竞品数据与本地录制分层采集。</p></div></div>
           <div class="notice"><div><strong>本机服务：</strong>状态和热点数据通过回环地址转发，服务仅监听本机。罗盘请到“经营数据”登录；其他经营报表和第三方数据源需各自授权或接口，未接入项会明确显示状态。</div></div>
           <div class="data-source-grid" id="sourceCards"></div>
-          <div class="footer-note">bililive-go、DailyHotApi、FFmpeg 与 whisper.cpp 的连接状态可在本页或运行设置中查看；罗盘采集请在“经营数据”中登录并管理。KeyBERT、巨量算数、飞瓜和蝉妈妈尚未接入。</div>
+          <div class="footer-note">bililive-go、DailyHotApi、FFmpeg 与 whisper.cpp 的连接状态可在本页或运行设置中查看；罗盘采集请在“经营数据”中登录并管理。KeyBERT 可在热词洞察安装并分析本机转写语料；巨量算数、飞瓜和蝉妈妈尚未接入。</div>
         </section>
 
         <section class="view" id="view-settings">
@@ -554,7 +564,7 @@
       {id:"bililive", name:"bililive-go", short:"录", desc:"抖音开播监测与本地录制", status:"检查中", cls:"", note:"本机状态", detail:"读取本机 bililive-go 的监控列表、直播状态和录制状态；不会提供观看人数或成交额。"},
       {id:"dailyhot", name:"DailyHotApi", short:"热", desc:"抖音当前热点榜", status:"检查中", cls:"", note:"公开热点榜", detail:"读取公开热点榜及热度值；不提供关键词搜索量、长尾词扩展或关联度。"},
       {id:"buzz", name:"whisper.cpp", short:"转", desc:"Apple Silicon 本地语音转写", status:"安装中", cls:"", note:"离线中文转写", detail:"本地运行多语言 Whisper 模型；录屏先压缩，再从压缩视频提取音轨转写为 TXT 和 SRT。"},
-      {id:"keybert", name:"KeyBERT", short:"词", desc:"语料关键词提取", status:"待语料", cls:"", note:"文本分析", detail:"从转写、评论等已有语料抽取关键词；不会提供抖音实时热搜或真实搜索量。"},
+      {id:"keybert", name:"KeyBERT", short:"词", desc:"转写语料关键词提取", status:"检查中", cls:"", note:"本地文本分析", detail:"从本机 TXT / SRT 转写语料抽取关键词并保留出处；不会提供抖音实时热搜或真实搜索量。"},
       {id:"playwright", name:"本机采集器", short:"RPA", desc:"罗盘后台自动同步", status:"检查中", cls:"", note:"数据保存在本机", detail:"在独立浏览器窗口登录罗盘后，自动采集直播场次和经营指标。在“经营数据”中管理连接与同步频率。"},
       {id:"compass", name:"电商罗盘", short:"罗", desc:"自己账号的直播经营数据", status:"待登录", cls:"", note:"第一方实绩", detail:"使用你在本机登录的罗盘会话，采集该账号可查看的直播指标、商品表现和场次状态。"},
       {id:"feigua", name:"飞瓜数据", short:"飞", desc:"竞品内容与直播数据", status:"待授权", cls:"estimate", note:"第三方估算", detail:"需有效产品账号和授权方式；第三方估算不能当作自家真实成交。"},
@@ -669,7 +679,7 @@
         bililive: (recorderState?.connected ?? serviceState.bililive?.connected) ? ["已连接", "ready"] : ["未运行", ""],
         dailyhot: serviceState.dailyhot?.connected ? ["已连接", "ready"] : ["不可用", ""],
         buzz: serviceState.buzz?.connected ? ["已连接", "ready"] : ["未安装", ""],
-        keybert: serviceState.keybert?.connected ? ["已连接", "ready"] : ["待语料", ""],
+        keybert: serviceState.keybert?.connected ? ["已安装", "ready"] : ["未安装", ""],
         playwright: serviceState.playwright?.connected ? ["已配置", "ready"] : ["待授权", ""],
         compass: serviceState.compass?.connected ? ["已连接", "ready"] : ["待登录", ""], feigua: ["待授权", "estimate"], chanmama: ["待授权", "estimate"], juliang: ["待连接", ""]
       };
@@ -1045,6 +1055,7 @@
       document.getElementById("breadcrumbTitle").textContent = labels[name];
       document.getElementById("sidebar").classList.remove("mobile-open");
       if (name === "sessions") refreshSessions();
+      if (name === "keywords") window.LiveKeywords?.refresh();
       if (name === "settings") refreshSettings();
       if (["monitor", "settings"].includes(name)) refreshRecorder();
       if (name === "business") { window.LiveRpa?.refresh(); window.LiveFeishu?.refresh(); }
@@ -1080,6 +1091,7 @@
       });
     }
     function showSourceInfo(i) {
+      if (sources[i]?.id === "keybert") { switchView("keywords"); document.getElementById("keywordWorkspace").scrollIntoView({behavior:"smooth"}); return; }
       if (sources[i]?.id === "bililive") { switchView("settings"); return; }
       if (["playwright", "compass"].includes(sources[i]?.id)) { switchView("business"); return; }
       const s=sources[i];
@@ -1152,5 +1164,6 @@
   <script src="/feishu-ui.js"></script>
   <script src="/dependency-ui.js"></script>
   <script src="/recording-sessions-ui.js"></script>
+  <script src="/keyword-ui.js"></script>
 </body>
 </html>
