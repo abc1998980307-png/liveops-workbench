@@ -317,7 +317,7 @@ def _clip_subtitles(path, duration_ms):
         hours, minutes = divmod(minutes, 60)
         return f"{hours:02}:{minutes:02}:{seconds:02},{millis:03}"
     pattern = re.compile(r"^(\d{2,}:\d{2}:\d{2}[,.]\d{3})\s+-->\s+(\d{2,}:\d{2}:\d{2}[,.]\d{3})$")
-    output, clipped, dropped = [], 0, 0
+    output, clipped, dropped, zero_duration = [], 0, 0, 0
     raw = Path(path).read_text(encoding="utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
     for block in re.split(r"\n\s*\n", raw.strip()) if raw.strip() else []:
         lines = block.splitlines()
@@ -325,8 +325,13 @@ def _clip_subtitles(path, duration_ms):
         if not match:
             raise ValueError("字幕内容格式异常，未发布转写结果")
         start, end = map(milliseconds, match.groups())
-        if end <= start:
+        if end < start:
             raise ValueError("字幕结束时间不晚于开始时间")
+        if end == start:
+            # Whisper can emit instantaneous tokens; keep their text in TXT,
+            # but do not invent an on-screen duration for these SRT entries.
+            zero_duration += 1
+            continue
         if start >= duration_ms:
             dropped += 1
             continue
@@ -335,7 +340,8 @@ def _clip_subtitles(path, duration_ms):
             clipped += 1
         output.append(str(len(output) + 1) + "\n" + stamp(start) + " --> " + stamp(end) + "\n" + "\n".join(lines[2:]))
     Path(path).write_text("\n\n".join(output) + ("\n" if output else ""), encoding="utf-8")
-    return {"audioDurationMs": duration_ms, "clippedCues": clipped, "droppedCues": dropped}
+    return {"audioDurationMs": duration_ms, "clippedCues": clipped, "droppedCues": dropped,
+            "zeroDurationCues": zero_duration}
 
 
 def _finish_cleanup(job, config):

@@ -359,7 +359,7 @@ class SubtitleBoundsTests(unittest.TestCase):
     def test_clips_whisper_padded_tail_and_drops_cues_after_audio(self):
         self.path.write_text("1\n00:00:25,000 --> 00:00:30,000\nfinal words\n\n2\n00:00:30,000 --> 00:00:31,000\npadding\n")
         result = pipeline._clip_subtitles(self.path, 28800)
-        self.assertEqual(result, {"audioDurationMs": 28800, "clippedCues": 1, "droppedCues": 1})
+        self.assertEqual(result, {"audioDurationMs": 28800, "clippedCues": 1, "droppedCues": 1, "zeroDurationCues": 0})
         self.assertEqual(self.path.read_text(), "1\n00:00:25,000 --> 00:00:28,800\nfinal words\n")
 
     def test_keeps_hour_long_offsets_and_empty_silence_output(self):
@@ -375,6 +375,13 @@ class SubtitleBoundsTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 pipeline._clip_subtitles(self.path, 10000)
             self.assertEqual(self.path.read_text(), data)
+
+    def test_instantaneous_whisper_tokens_have_no_invented_duration(self):
+        self.path.write_text("1\n00:00:01,000 --> 00:00:01,000\ninstant\n\n2\n00:00:01,000 --> 00:00:02,000\nwords\n")
+        report = pipeline._clip_subtitles(self.path, 3000)
+        self.assertEqual(report["zeroDurationCues"], 1)
+        self.assertNotIn("instant", self.path.read_text())
+        self.assertTrue(self.path.read_text().startswith("1\n"))
 
 
 if __name__ == "__main__":
