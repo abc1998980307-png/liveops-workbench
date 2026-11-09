@@ -33,6 +33,8 @@ class HotService:
             raise ValueError("热点服务只能绑定本机地址")
         self.port = parsed.port or 80
         self.base_url = "http://127.0.0.1:" + str(self.port)
+        # This URL is validated loopback traffic, regardless of system proxies.
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         self.plugin = self.root / "plugins/dailyhot-api"
         self.node = self.root / "tools/node/bin/node"
         self.runner = self.project / "scripts/dailyhot_runner.mjs"
@@ -73,7 +75,7 @@ class HotService:
                 "filterWeiboAds": values.get("FILTER_WEIBO_ADVERTISEMENT", "false").lower() == "true"}
 
     def _request(self, path, timeout=2):
-        with urllib.request.urlopen(self.base_url + path, timeout=timeout) as response:
+        with self.opener.open(self.base_url + path, timeout=timeout) as response:
             raw = response.read(2 * 1024 * 1024 + 1)
         if len(raw) > 2 * 1024 * 1024:
             raise ValueError("热点服务响应过大")

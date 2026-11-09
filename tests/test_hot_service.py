@@ -187,6 +187,16 @@ HTTPServer(('127.0.0.1',int(sys.argv[3])),Handler).serve_forever()
                 other.start()
         self.assertFalse(self.service.owner_file.exists())
 
+    def test_loopback_health_ignores_environment_proxy(self):
+        self.assertTrue(self.service.start()['ownedConnection'])
+        proxy = 'http://127.0.0.1:1'
+        with mock.patch.dict(os.environ, {'http_proxy':proxy, 'HTTP_PROXY':proxy,
+                'https_proxy':proxy, 'HTTPS_PROXY':proxy, 'no_proxy':'', 'NO_PROXY':''}), \
+                mock.patch('urllib.request._opener', None):
+            observer = HotService(self.service.root,self.service.project,self.service.base_url)
+            self.assertTrue(observer.state()['connected'])
+            self.assertTrue(observer.state()['ownedConnection'])
+
 
 class HotHTTPTests(unittest.TestCase):
     @classmethod
