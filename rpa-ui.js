@@ -2,6 +2,7 @@
   let state = null, selected = localStorage.getItem('rpaAccount') || '', room = '', metric = 'online_user_cnt';
   let loading = null, detailVersion = 0, currentDetail = null, actionBusy = false, renderedAccount = '';
   let roomPage = 0, roomList = null, roomListVersion = 0;
+  let historySummary = null, summaryKey = '', summaryVersion = 0;
   let egoLoading = null;
   const $ = id => document.getElementById(id);
   const labels = { ready:'同步正常', needs_login:'等待登录', paused:'已暂停', partial:'部分数据失败', error:'同步失败', rate_limited:'等待重试', account_changed:'账号已切换' };
@@ -31,13 +32,14 @@
       const startDate = a.history?.startDate || bounds.earliest, endDate = a.history?.endDate || bounds.latest;
       $('rpaWorkspace').innerHTML = `<div class="rpa-layout"><aside class="panel"><div class="panel-head"><div class="panel-title">已连接账号</div><span class="panel-subtitle">本机保存</span></div><div id="rpaAccountList"></div></aside><div class="rpa-main"><section class="panel"><div class="rpa-toolbar"><button class="btn" data-rpa-action="login">打开罗盘 / 登录</button><button class="btn primary" data-rpa-action="sync" id="rpaSync">立即同步</button><button class="btn" data-rpa-action="monitor" id="rpaToggle">暂停同步</button><label for="rpaInterval">同步间隔</label><select id="rpaInterval" aria-label="同步间隔"><option value="30">30 秒</option><option value="60">1 分钟</option><option value="120">2 分钟</option><option value="300">5 分钟</option><option value="600">10 分钟</option></select></div><div id="rpaAccountError"></div><div class="rpa-meta" id="rpaMeta"></div></section><section class="panel"><div class="panel-head"><div><div class="panel-title">历史场次目录</div><div class="panel-subtitle">罗盘近 90 天 · 每次读取 10 场</div></div><button class="btn small" data-rpa-action="history" id="rpaHistory">导入历史场次</button></div><div class="panel-body"><div class="rpa-history-dates"><label for="rpaHistoryStart">开始日期<input id="rpaHistoryStart" type="date" min="${esc(bounds.earliest)}" max="${esc(bounds.latest)}" value="${esc(startDate)}"></label><label for="rpaHistoryEnd">结束日期<input id="rpaHistoryEnd" type="date" min="${esc(bounds.earliest)}" max="${esc(bounds.latest)}" value="${esc(endDate)}"></label></div><div class="rpa-note" id="rpaHistoryStatus"></div><p class="rpa-note">此处只导入场次目录。选择已结束场次后，可单独读取历史指标；两项操作均不写入飞书。</p></div></section><section class="panel"><div class="panel-head"><div><div class="panel-title">直播场次</div><div class="panel-subtitle">今日发现与本机历史记录</div></div><button class="btn small" data-rpa-action="export" id="rpaExport" disabled>导出本场数据</button></div><div class="panel-body"><label for="rpaRoom" class="sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden">选择直播场次</label><select id="rpaRoom" class="rpa-room-picker"></select><div class="review-link-page"><button class="btn small" id="rpaRoomsPrev" type="button">上一页</button><span class="rpa-note" id="rpaRoomsPage"></span><button class="btn small" id="rpaRoomsNext" type="button">下一页</button></div><div id="rpaDetail"></div></div></section><section class="panel"><div class="panel-head"><div class="panel-title">同步记录</div><div class="panel-subtitle">最近 30 条</div></div><div class="rpa-events" id="rpaEvents"></div></section></div></div>`;
       $('rpaHistoryStatus').closest('section').insertAdjacentHTML('afterend', `<section class="panel"><div class="panel-head"><div><div class="panel-title">历史报表批量回填</div><div class="panel-subtitle">已保存的结束场次</div></div><div class="rpa-batch-actions"><button class="btn small" id="rpaBatchStart" data-rpa-action="history-batch-start" type="button">开始回填</button><button class="btn small" id="rpaBatchPause" data-rpa-action="history-batch-pause" type="button" hidden>暂停</button></div></div><div class="panel-body"><div class="rpa-note" id="rpaBatchStatus"></div></div></section>`);
+      $('rpaBatchStatus').closest('section').insertAdjacentHTML('afterend', '<section class="panel"><div class="panel-head"><div class="panel-title">历史经营汇总</div><div class="panel-subtitle">本机已保存报表</div></div><div class="panel-body" id="rpaHistorySummary">读取中…</div></section>');
       renderedAccount = selected; room = ''; currentDetail = null;
       $('rpaInterval').addEventListener('change', () => act('settings', { interval: Number($('rpaInterval').value) }));
       $('rpaRoom').addEventListener('change', () => { room = $('rpaRoom').value; loadDetail(); });
       $('rpaRoomsPrev').addEventListener('click', () => { if (roomPage > 0) { roomPage--; loadRooms(); } });
       $('rpaRoomsNext').addEventListener('click', () => { if (roomList?.hasMore) { roomPage++; loadRooms(); } });
-      $('rpaHistoryStart').addEventListener('change', render);
-      $('rpaHistoryEnd').addEventListener('change', render);
+      $('rpaHistoryStart').addEventListener('change', () => { render(); loadSummary(); });
+      $('rpaHistoryEnd').addEventListener('change', () => { render(); loadSummary(); });
     }
     $('rpaAccountList').innerHTML = state.accounts.map(item => `<button class="rpa-account ${item.id === selected ? 'selected' : ''}" data-rpa-account="${esc(item.id)}"><strong>${esc(item.name || item.label)}</strong>${chip(item)}<small>${item.uid ? '账号 ' + esc(item.uid) : '尚未识别账号'}<br>最近同步 ${date(item.lastSync)}</small></button>`).join('');
     const limitedUntil = retryAfter(a);
@@ -71,6 +73,7 @@
     $('rpaBatchPause').disabled = actionBusy;
     $('rpaBatchStatus').textContent = batch ?
       `${batch.startDate} 至 ${batch.endDate}：已处理 ${batch.nextIndex}/${batch.roomIds.length} 场，成功 ${batch.succeeded} 场，部分 ${batch.partial} 场，失败 ${batch.failed} 场，跳过已有完整报表 ${batch.skippedExisting + batch.skippedOnResume} 场。${batch.status === 'running' ? '正在后台读取。' : batch.status === 'completed' ? '本轮完成。' : '已暂停。'}${batch.retryAfter ? `可重试时间：${date(batch.retryAfter)}。` : ''}${batch.error ? `原因：${batch.error}` : ''}` : '尚未开始批量回填。只读取已保存在本机且已结束的场次。';
+    renderSummary();
     const visibleRooms = roomList?.account?.id === selected ? roomList.rooms : a.rooms.slice(0, 50);
     if (!visibleRooms.some(r => r.id === room)) room = visibleRooms[0]?.id || '';
     const options = visibleRooms.map(r => `<option value="${esc(r.id)}">${esc(r.title)} · ${roomState(r)} · ${esc(r.id)}</option>`).join('') || '<option value="">暂无场次</option>';
@@ -85,6 +88,33 @@
       const title = a.uid ? '今日暂无可展示的直播场次' : '完成罗盘登录，即可开始采集';
       $('rpaDetail').innerHTML = `<div class="rpa-login-hint"><strong>${title}</strong>${a.uid ? '采集器会按设定间隔检查新场次。账号需要拥有对应直播数据的查看权限。' : '点击“打开罗盘 / 登录”，在弹出的 Chrome 窗口扫码或登录。登录成功后，本页面会自动更新。'}<br>采集期间请保留罗盘窗口；关闭窗口会暂停自动同步。</div>`;
       $('rpaExport').disabled = true;
+    }
+  }
+
+  function renderSummary() {
+    const host = $('rpaHistorySummary');
+    if (!host) return;
+    const start = $('rpaHistoryStart').value, end = $('rpaHistoryEnd').value;
+    if (!start || !end || start > end) { host.textContent = '请选择有效日期范围。'; return; }
+    const data = historySummary;
+    if (!data || data.account.id !== selected || data.startDate !== start || data.endDate !== end) {
+      host.textContent = '正在读取本机历史报表…'; return;
+    }
+    host.innerHTML = `<p class="rpa-note">${data.selectedRooms} 场已结束直播 · ${data.reportedRooms} 场有报表 · ${data.completeRooms} 场接口完整。人数为各场进入人数之和，不代表去重人数。</p><div class="table-wrap"><table><thead><tr><th>指标</th><th>合计</th><th>覆盖场次</th></tr></thead><tbody>${data.metrics.map(item => `<tr><td>${esc(item.label)}</td><td>${esc(item.display)}${item.display === '—' ? '' : ` ${esc(item.unit)}`}${item.complete ? '' : item.coveredRooms ? ' · 部分数据' : ' · 暂无数据'}</td><td>${item.coveredRooms}/${data.selectedRooms}${item.reusedRooms ? ` · ${item.reusedRooms} 场沿用旧结果` : ''}${item.overflow ? ' · 超出安全数值范围' : ''}</td></tr>`).join('')}</tbody></table></div><p class="rpa-note">仅汇总罗盘历史详情中已返回且原始单位一致的值；缺失不按零计算。该汇总不写入飞书。</p>`;
+  }
+
+  async function loadSummary() {
+    if (!state || !account() || !$('rpaHistorySummary')) return;
+    const start = $('rpaHistoryStart').value, end = $('rpaHistoryEnd').value;
+    const key = `${selected}:${start}:${end}:${account().historyBatch?.nextIndex ?? 0}:${account().historyBatch?.status ?? ''}`;
+    if (!start || !end || start > end || key === summaryKey) return;
+    summaryKey = key;
+    const version = ++summaryVersion;
+    try {
+      const data = await apiRequest(`/api/rpa/history-summary?account=${encodeURIComponent(selected)}&startDate=${encodeURIComponent(start)}&endDate=${encodeURIComponent(end)}`);
+      if (version === summaryVersion) { historySummary = data; renderSummary(); }
+    } catch (error) {
+      if (version === summaryVersion) { summaryKey = ''; $('rpaHistorySummary').textContent = error.message; }
     }
   }
 
@@ -178,7 +208,7 @@
     try {
       state = await apiRequest('/api/rpa/state'); render();
       status(`本机采集服务已连接 · ${state.accounts.length} 个账号 · 历史采样最多保留 ${state.retentionDays} 天`);
-      if (account()) await loadRooms();
+      if (account()) { await loadRooms(); await loadSummary(); }
     } catch (e) { status(e.message, true); }
     finally { loading = null; }
     })();
@@ -230,7 +260,7 @@
   $('rpaConnect').onclick = connect;
   $('view-business').addEventListener('click', event => {
     const item = event.target.closest('[data-rpa-account]');
-    if (item) { selected = item.dataset.rpaAccount; room = ''; roomPage = 0; roomList = null; detailVersion++; roomListVersion++; render(); loadRooms(); return; }
+    if (item) { selected = item.dataset.rpaAccount; room = ''; roomPage = 0; roomList = null; detailVersion++; roomListVersion++; summaryVersion++; summaryKey = ''; render(); loadRooms(); loadSummary(); return; }
     const action = event.target.closest('[data-rpa-action]')?.dataset.rpaAction;
     if (action === 'connect') connect(); else if (action === 'export') exportData(); else if (action) act(action);
   });

@@ -853,6 +853,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.rpa_call("rooms.list", {"account": (query.get("account") or [""])[0],
                                              "offset": (query.get("offset") or ["0"])[0],
                                              "limit": (query.get("limit") or ["50"])[0]})
+            elif path == "/api/rpa/history-summary":
+                self.rpa_call("history.summary", {"account": (query.get("account") or [""])[0],
+                                                  "startDate": (query.get("startDate") or [""])[0],
+                                                  "endDate": (query.get("endDate") or [""])[0]})
             else:
                 self.send_json({"error": "not found"}, 404)
             return

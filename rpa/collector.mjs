@@ -9,6 +9,12 @@ import { BrowserEngine } from './engine.mjs';
 import { roomList, historyBounds, historyWindow, historyRange, historyStartDate, historyRoomPage, validateHistoryEndpoint, normalizeHistoryReport, normalizeSnapshot, CollectError } from './model.mjs';
 import { FeishuSync } from './feishu.mjs';
 
+const HISTORY_SUMMARY_FIELDS = [
+  { key: 't7payin8d_predstl_ord_amt', label: '结算有效成交金额', source: 'historyTrade', rawUnit: 'price', unit: '元' },
+  { key: 't7payin8d_predstl_ord_cnt', label: '结算有效成交订单量', source: 'historyTrade', rawUnit: 'number', unit: '单' },
+  { key: 'watch_ucnt', label: '进入直播间人数（按场相加）', source: 'historyCore', rawUnit: 'number', unit: '人次' },
+];
+
 export function acquireCollectorGuard(root) {
   const guard = new DatabaseSync(path.join(root, 'collector-instance.sqlite'));
   try {
@@ -323,6 +329,39 @@ export class Collector {
     const report = this.store.historyReport(id, roomId);
     return !!report && ['historyBasic', 'historyCore', 'historyTrade'].every(name => report.endpoints?.[name]?.ok);
   }
+  historySummary(id, startDate, endDate) {
+    const account = this.store.account(id);
+    historyRange(startDate, endDate);
+    const rooms = this.store.allRooms(id).filter(room => room.state === 'ended' &&
+      historyStartDate(room.startedAt) >= startDate && historyStartDate(room.startedAt) <= endDate);
+    const totals = HISTORY_SUMMARY_FIELDS.map(field => ({ ...field, rawTotal: 0, coveredRooms: 0, reusedRooms: 0, overflow: false }));
+    let reportedRooms = 0, completeRooms = 0;
+    for (const room of rooms) {
+      const report = this.store.historyReport(id, room.id);
+      if (!report) continue;
+      reportedRooms++;
+      if (['historyBasic', 'historyCore', 'historyTrade'].every(name => report.endpoints?.[name]?.ok)) completeRooms++;
+      for (const total of totals) {
+        const endpoint = report.endpoints?.[total.source];
+        const metric = report.metrics?.find(item => item.key === total.key && item.source === total.source);
+        if (!endpoint?.ok || metric?.rawUnit !== total.rawUnit || !Number.isSafeInteger(metric.value)) continue;
+        const next = total.rawTotal + metric.value;
+        if (!Number.isSafeInteger(next)) { total.overflow = true; continue; }
+        total.rawTotal = next;
+        total.coveredRooms++;
+        if (endpoint.reused) total.reusedRooms++;
+      }
+    }
+    return { account: { id, uid: account.uid, label: account.name || account.label }, startDate, endDate,
+      selectedRooms: rooms.length, reportedRooms, completeRooms,
+      metrics: totals.map(({ rawTotal, overflow, ...total }) => ({ ...total,
+        display: overflow || !total.coveredRooms ? '—' : total.rawUnit === 'price' ?
+          (rawTotal / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) :
+          rawTotal.toLocaleString('zh-CN'),
+        complete: !overflow && total.coveredRooms === rooms.length && rooms.length > 0,
+        overflow,
+      })) };
+  }
   pauseHistoryBatch(id) {
     this.store.account(id);
     const progress = this.store.historyBatch(id);
@@ -418,6 +457,7 @@ export class Collector {
       case 'history.page': return this.historyPage(String(args.id || ''), args.reset === true,
         args.startDate ?? null, args.endDate ?? null);
       case 'history.report': return this.historyReport(String(args.id || ''), String(args.room || ''));
+      case 'history.summary': return this.historySummary(String(args.account || ''), args.startDate, args.endDate);
       case 'history.batch.start': return this.startHistoryBatch(String(args.id || ''), args.startDate, args.endDate);
       case 'history.batch.resume': return this.startHistoryBatch(String(args.id || ''), null, null, true);
       case 'history.batch.pause': return this.pauseHistoryBatch(String(args.id || ''));

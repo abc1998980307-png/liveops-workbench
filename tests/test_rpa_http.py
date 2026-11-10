@@ -54,6 +54,10 @@ class RpaHttpTests(unittest.TestCase):
         self.assertEqual(json.loads(data)["method"], "state")
         status, data = self.request("GET", "/api/rpa/session?account=a&room=123&raw=1")
         self.assertTrue(json.loads(data)["args"]["raw"])
+        status, data = self.request("GET", "/api/rpa/history-summary?account=a&startDate=2026-08-13&endDate=2026-11-10")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data)["method"], "history.summary")
+        self.assertEqual(json.loads(data)["args"], {"account": "a", "startDate": "2026-08-13", "endDate": "2026-11-10"})
 
     def test_cross_site_and_untrusted_host_rejected(self):
         status, _ = self.request("GET", "/api/rpa/state", headers={"Host": "attacker.example"})

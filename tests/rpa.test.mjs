@@ -644,3 +644,40 @@ test('saved rooms can be paged and inspected while collection stays paused', asy
     await assert.rejects(t.collector.command('rooms.list', { account: t.id, offset: -1 }));
   } finally { await t.cleanup(); }
 });
+
+test('historical summary counts only matching, safe values and reports coverage', async () => {
+  const t = setup();
+  try {
+    const { earliest, latest } = historyBounds();
+    t.store.save({ ...t.store.account(t.id), uid: '99887766', enabled: false, state: 'paused' });
+    for (const [id, date] of [['100001', latest], ['100002', latest], ['100003', earliest]]) {
+      t.store.saveRoom(t.id, { id, state: 'ended', startedAt: `${date}T10:00:00+08:00` });
+    }
+    t.store.saveRoom(t.id, { id: '100004', state: 'live', startedAt: `${latest}T11:00:00+08:00` });
+    const endpoints = { historyBasic: { ok: true }, historyCore: { ok: true }, historyTrade: { ok: true } };
+    const metric = (key, value, rawUnit, source) => ({ key, value, rawUnit, source });
+    t.store.saveHistoryReport(t.id, '100001', { endpoints, metrics: [
+      metric('t7payin8d_predstl_ord_amt', 12345, 'price', 'historyTrade'),
+      metric('t7payin8d_predstl_ord_cnt', 0, 'number', 'historyTrade'),
+      metric('watch_ucnt', 10, 'number', 'historyCore'),
+    ] }, {});
+    t.store.saveHistoryReport(t.id, '100002', { endpoints: { ...endpoints, historyTrade: { ok: false } }, metrics: [
+      metric('t7payin8d_predstl_ord_amt', 99999, 'price', 'historyTrade'),
+      metric('watch_ucnt', 5, 'number', 'historyCore'),
+    ] }, {});
+    t.store.saveHistoryReport(t.id, '100003', { endpoints, metrics: [
+      metric('t7payin8d_predstl_ord_amt', 7, 'yuan', 'historyTrade'),
+      metric('watch_ucnt', 2, 'number', 'historyCore'),
+    ] }, {});
+    const result = await t.collector.command('history.summary', { account: t.id, startDate: earliest, endDate: latest });
+    assert.equal(result.selectedRooms, 3);
+    assert.equal(result.reportedRooms, 3);
+    assert.equal(result.completeRooms, 2);
+    assert.deepEqual(result.metrics.map(m => [m.display, m.coveredRooms, m.complete]), [
+      ['123.45', 1, false], ['0', 1, false], ['17', 3, true],
+    ]);
+    assert.equal(t.store.account(t.id).enabled, false);
+    assert.equal(t.collector.busy.size, 0);
+    await assert.rejects(t.collector.command('history.summary', { account: t.id, startDate: '2020-01-01', endDate: latest }));
+  } finally { await t.cleanup(); }
+});
