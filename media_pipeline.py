@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Serial post-recording compression and Chinese transcription worker."""
 
+import errno
 import json
 import os
 import re
@@ -37,6 +38,7 @@ _wake = threading.Event()
 _worker_thread = None
 _stable = {}
 _active_source = None
+_worker_error = None
 
 
 def read_config():
@@ -62,9 +64,18 @@ def read_config():
 def _read_jobs():
     try:
         value = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
-        return value if isinstance(value, list) else []
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return []
+    except (OSError, ValueError, UnicodeError) as error:
+        raise RuntimeError("媒体任务记录不可读，已停止处理并保留录屏文件") from error
+    if (not isinstance(value, list) or any(not isinstance(job, dict)
+                                            or not re.fullmatch(r"[a-f0-9]{32}", str(job.get("id", "")))
+                                            or not isinstance(job.get("source"), str)
+                                            or not Path(job["source"]).is_absolute()
+                                            or job.get("status") not in {"queued", "processing", "completed", "failed"}
+                                            for job in value)):
+        raise RuntimeError("媒体任务记录格式异常，已停止处理并保留录屏文件")
+    return value
 
 
 def _write_jobs(jobs):
@@ -72,13 +83,25 @@ def _write_jobs(jobs):
     temp = JOBS_FILE.with_suffix(".tmp")
     # Keep source identities: forgetting a failed/retained job re-enqueues it.
     temp.write_text(json.dumps(jobs, ensure_ascii=False, indent=2), encoding="utf-8")
+    with temp.open("rb") as handle:
+        os.fsync(handle.fileno())
     temp.replace(JOBS_FILE)
+    parent_fd = os.open(JOBS_FILE.parent, os.O_RDONLY)
+    try:
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
 
 
 def job_snapshot():
     config = read_config()
+    storage_error = None
     with _jobs_lock:
-        jobs = _read_jobs()
+        try:
+            jobs = _read_jobs()
+        except (OSError, RuntimeError) as error:
+            jobs = []
+            storage_error = str(error)
     for job in jobs:
         root = Path(config["recordingDirectory"]).expanduser().resolve()
         job["compressedPath"] = _relative_file(job.get("compressed"), root)
@@ -99,6 +122,9 @@ def job_snapshot():
         "keepOriginal": config["keepOriginal"] is not False,
         "enabled": bool(config["enabled"]),
         "workerRunning": _active_source is not None,
+        "workerAlive": bool(_worker_thread and _worker_thread.is_alive()),
+        "workerError": _worker_error,
+        "storageError": storage_error,
         "activeSource": str(_active_source) if _active_source else None,
         "jobs": list(reversed(jobs[-40:])),
         "pluginDirectory": str(PLUGIN_ROOT),
@@ -405,8 +431,36 @@ def _finish_cleanup(job, config):
     _update_job(job["id"], sourceDeleted=True, sourceDeletePending=False, originalBytes=saved_signature[2])
 
 
+def _recover_pending_compression(job, config, source):
+    pending = job.get("compressionPublishPending")
+    if not pending:
+        return None
+    compressed = _checked_path(pending["path"], config["recordingDirectory"])
+    if list(_signature(source)) != pending["sourceSignature"] or _is_open(source):
+        raise RuntimeError("待发布压缩视频对应的原录屏已变化或仍被使用，已保留原文件")
+    if not compressed.exists() and not compressed.is_symlink():
+        return None
+    if list(_signature(compressed)[:4]) != pending["outputSignature"]:
+        raise RuntimeError("待发布压缩视频身份已变化，未使用或删除原件")
+    _update_job(job["id"], status="processing", stage="重新校验已发布视频")
+    _validate_video(compressed)
+    if list(_signature(compressed)[:4]) != pending["outputSignature"]:
+        raise RuntimeError("校验期间压缩视频发生变化，已保留原文件")
+    changes = {"compressed": str(compressed), "compressionCompleted": True,
+               "sourceSignature": pending["sourceSignature"],
+               "compressedSignature": list(_signature(compressed)),
+               "tailRecovery": pending.get("tailRecovery"), "compressionPublishPending": None}
+    _update_job(job["id"], **changes)
+    job.update(changes)
+    _finish_cleanup(job, config)
+    return compressed
+
+
 def _compress(job, config):
     source = _checked_path(job["source"], config["recordingDirectory"])
+    recovered = _recover_pending_compression(job, config, source)
+    if recovered:
+        return recovered
     before = _signature(source)
     if _is_open(source):
         raise RuntimeError("原录屏仍被使用，已保留原文件")
@@ -444,14 +498,19 @@ def _compress(job, config):
             raise RuntimeError("压缩期间原录屏发生变化或仍被使用，已保留原文件")
         with temp.open("rb") as handle:
             os.fsync(handle.fileno())
+        pending = {"path": str(compressed), "sourceSignature": list(before),
+                   "outputSignature": list(_signature(temp)[:4]), "tailRecovery": recovery}
+        _update_job(job["id"], compressionPublishPending=pending)
         # Link atomically without overwriting any file created during encoding.
         os.link(temp, compressed)
     finally:
         temp.unlink(missing_ok=True)
 
     job.update(compressed=str(compressed), compressionCompleted=True, sourceSignature=list(before),
-               compressedSignature=list(_signature(compressed)), tailRecovery=recovery)
-    _update_job(job["id"], **{key: job[key] for key in ("compressed", "compressionCompleted", "sourceSignature", "compressedSignature", "tailRecovery")})
+               compressedSignature=list(_signature(compressed)), tailRecovery=recovery,
+               compressionPublishPending=None)
+    _update_job(job["id"], **{key: job[key] for key in ("compressed", "compressionCompleted", "sourceSignature",
+                                                  "compressedSignature", "tailRecovery", "compressionPublishPending")})
     _finish_cleanup(job, config)
     return compressed
 
@@ -551,35 +610,55 @@ def _next_job():
     return None
 
 
+def _recover_processing_jobs():
+    with _jobs_lock:
+        jobs = _read_jobs()
+        changed = False
+        for job in jobs:
+            if job.get("status") == "processing":
+                job.update(status="queued", stage="等待恢复中断任务", error=None)
+                changed = True
+        if changed:
+            _write_jobs(jobs)
+
+
 def worker_loop():
-    global _active_source
+    global _active_source, _worker_error
     while not _stop.is_set():
-        config = read_config()
-        if config["enabled"] and FFMPEG.is_file():
-            root = Path(config.get("recordingDirectory", str(RECORDINGS))).expanduser()
-            for source in _candidate_files(root):
-                if _stop.is_set():
-                    break
-                _create_job(source)
-            while not _stop.is_set():
-                config = read_config()
-                if not config["enabled"]:
-                    break
-                job = _next_job()
-                if job is None:
-                    break
-                _active_source = Path(job["source"])
-                try:
-                    _process(job, config)
-                except InterruptedError:
-                    _update_job(job["id"], status="queued", stage="处理已暂停，启动后继续", error=None)
-                except Exception as error:
-                    with _jobs_lock:
-                        saved = next((item for item in _read_jobs() if item["id"] == job["id"]), {})
-                    stage = "压缩完成，后续处理失败" if saved.get("compressionCompleted") else "压缩失败，原文件保留"
-                    _update_job(job["id"], status="failed", stage=stage, error=str(error))
-                finally:
-                    _active_source = None
+        try:
+            _recover_processing_jobs()
+            config = read_config()
+            if config["enabled"] and FFMPEG.is_file():
+                root = Path(config.get("recordingDirectory", str(RECORDINGS))).expanduser()
+                for source in _candidate_files(root):
+                    if _stop.is_set():
+                        break
+                    _create_job(source)
+                while not _stop.is_set():
+                    config = read_config()
+                    if not config["enabled"]:
+                        break
+                    job = _next_job()
+                    if job is None:
+                        break
+                    _active_source = Path(job["source"])
+                    try:
+                        _process(job, config)
+                    except InterruptedError:
+                        _update_job(job["id"], status="queued", stage="处理已暂停，启动后继续", error=None)
+                    except OSError:
+                        raise
+                    except Exception as error:
+                        with _jobs_lock:
+                            saved = next((item for item in _read_jobs() if item["id"] == job["id"]), {})
+                        stage = "压缩完成，后续处理失败" if saved.get("compressionCompleted") else "压缩失败，原文件保留"
+                        _update_job(job["id"], status="failed", stage=stage, error=str(error))
+                    finally:
+                        _active_source = None
+            _worker_error = None
+        except Exception as error:
+            _worker_error = ("磁盘空间不足，已暂停处理；清理空间后会自动重试。" if isinstance(error, OSError)
+                             and error.errno == errno.ENOSPC else "媒体任务处理暂不可用：" + str(error)[:250])
         _wake.wait(POLL_SECONDS)
         _wake.clear()
 
@@ -589,12 +668,6 @@ def start_worker():
     with _worker_lock:
         if _worker_thread and _worker_thread.is_alive():
             return _worker_thread
-        with _jobs_lock:
-            jobs = _read_jobs()
-            for job in jobs:
-                if job.get("status") == "processing":
-                    job.update(status="queued", stage="等待恢复中断任务", error=None)
-            _write_jobs(jobs)
         _stop.clear()
         _wake.clear()
         _worker_thread = threading.Thread(target=worker_loop, name="liveops-media-pipeline", daemon=True)

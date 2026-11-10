@@ -937,10 +937,11 @@
       const mediaStatus = document.getElementById("mediaSettingsStatus");
       const mediaBadge = document.getElementById("mediaSettingsBadge");
       if (mediaStatus) {
-        mediaStatus.textContent = !media.compressionReady ? "FFmpeg 不可用，无法压缩录屏。" : media.transcriptionReady ? `压缩与转写已就绪；模型：${media.model}` : `压缩已就绪；转写未就绪，压缩任务仍会执行。模型路径：${media.model || "未设置"}`;
-        mediaStatus.className = media.compressionReady ? "settings-status" : "settings-status pending";
+        const mediaProblem = media.storageError || media.workerError || (media.workerAlive === false ? "后台处理线程已停止，请重启工作台。" : "");
+        mediaStatus.textContent = mediaProblem || (!media.compressionReady ? "FFmpeg 不可用，无法压缩录屏。" : media.transcriptionReady ? `压缩与转写已就绪；模型：${media.model}` : `压缩已就绪；转写未就绪，压缩任务仍会执行。模型路径：${media.model || "未设置"}`);
+        mediaStatus.className = mediaProblem || !media.compressionReady ? "settings-status pending" : "settings-status";
       }
-      if (mediaBadge) mediaBadge.textContent = !media.compressionReady ? "压缩组件未就绪" : media.transcriptionReady ? "已就绪" : "压缩就绪 / 转写未就绪";
+      if (mediaBadge) mediaBadge.textContent = media.storageError || media.workerError || media.workerAlive === false ? "处理已暂停" : !media.compressionReady ? "压缩组件未就绪" : media.transcriptionReady ? "已就绪" : "压缩就绪 / 转写未就绪";
       renderRecorder();
       const dailyStatus = document.getElementById("dailyhotSettingsStatus");
       const dailyBadge = document.getElementById("dailyhotSettingsBadge");
@@ -1096,12 +1097,14 @@
         const status = document.getElementById("mediaPipelineStatus");
         const note = document.getElementById("mediaPipelineNote");
         const badge = document.getElementById("mediaSettingsBadge");
-        if (!data.enabled) { status.textContent = "已关闭"; note.textContent = "自动压缩与转写已关闭。"; }
+        const problem = data.storageError || data.workerError || (data.workerAlive === false ? "后台处理线程已停止，请重启工作台。" : "");
+        if (problem) { status.textContent = "处理已暂停"; note.textContent = problem; }
+        else if (!data.enabled) { status.textContent = "已关闭"; note.textContent = "自动压缩与转写已关闭。"; }
         else if (!data.compressionReady) { status.textContent = "压缩工具未就绪"; note.textContent = "FFmpeg 当前不可用，无法压缩录屏。"; }
         else { status.textContent = data.workerRunning ? "处理中" : data.transcriptionReady ? "自动压缩与转写已启用" : "自动压缩已启用"; note.textContent = `处理顺序：录屏完成 → 压缩 MP4${data.keepOriginal ? "（保留原文件）" : " → 校验后删除原文件"}${data.transcriptionReady ? " → 中文语音转写" : "；转写组件未就绪时仍会完成压缩"}。`; }
-        if (badge) badge.textContent = !data.enabled ? "已关闭" : !data.compressionReady ? "压缩组件未就绪" : data.transcriptionReady ? "已就绪" : "压缩就绪 / 转写未就绪";
+        if (badge) badge.textContent = problem ? "处理已暂停" : !data.enabled ? "已关闭" : !data.compressionReady ? "压缩组件未就绪" : data.transcriptionReady ? "已就绪" : "压缩就绪 / 转写未就绪";
         const rows = document.getElementById("mediaJobRows");
-        if (rows) rows.innerHTML = data.jobs?.length ? data.jobs.map(job => `<div class="clip-row"><div class="clip-time">${esc(job.stage || (job.status === "queued" ? "排队中" : job.status))}</div><div class="clip-text">${esc(job.name)}<div class="button-row">${job.compressedPath ? `<button class="btn small" type="button" data-recording-path="${esc(job.compressedPath)}">打开压缩视频位置</button>` : job.sourcePath ? `<button class="btn small" type="button" data-recording-path="${esc(job.sourcePath)}">打开原文件位置</button>` : ""}${job.transcriptUrl ? `<a class="source-link" href="${esc(job.transcriptUrl)}" target="_blank" rel="noreferrer">转写文本</a>` : ""}${job.subtitlesUrl ? `<a class="source-link" href="${esc(job.subtitlesUrl)}" target="_blank" rel="noreferrer">字幕</a>` : ""}${job.canRetry ? `<button class="btn small" type="button" data-media-retry="${esc(job.id)}" ${!data.enabled ? "disabled" : ""}>重试处理</button>` : ""}${job.canRecoverTail ? `<button class="btn small" type="button" data-media-recover="${esc(job.id)}" ${!data.enabled ? "disabled" : ""}>恢复末尾残包</button>` : ""}</div>${job.tailRecovery ? `<div class="settings-status">恢复范围：末尾 ${formatBytes(job.tailRecovery.removedBytes)}，原文件保留。只恢复收到的有效内容，不补回断流画面。</div>` : job.sourceDeleted ? `<div class="settings-status">原录屏已清理，保留压缩视频及已生成的文本、字幕。</div>` : ""}${job.error ? `<details style="color:#b74c47"><summary>查看失败原因</summary><div style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(job.error)}</div></details>` : ""}</div></div>`).join("") : `<div class="table-empty" style="padding:20px 0">${data.ready ? "尚无处理任务；新录屏结束后会自动进入队列。" : "压缩工具就绪后，队列会自动启用。"}</div>`;
+        if (rows) rows.innerHTML = data.jobs?.length ? data.jobs.map(job => `<div class="clip-row"><div class="clip-time">${esc(job.stage || (job.status === "queued" ? "排队中" : job.status))}</div><div class="clip-text">${esc(job.name)}<div class="button-row">${job.compressedPath ? `<button class="btn small" type="button" data-recording-path="${esc(job.compressedPath)}">打开压缩视频位置</button>` : job.sourcePath ? `<button class="btn small" type="button" data-recording-path="${esc(job.sourcePath)}">打开原文件位置</button>` : ""}${job.transcriptUrl ? `<a class="source-link" href="${esc(job.transcriptUrl)}" target="_blank" rel="noreferrer">转写文本</a>` : ""}${job.subtitlesUrl ? `<a class="source-link" href="${esc(job.subtitlesUrl)}" target="_blank" rel="noreferrer">字幕</a>` : ""}${job.canRetry ? `<button class="btn small" type="button" data-media-retry="${esc(job.id)}" ${!data.enabled ? "disabled" : ""}>重试处理</button>` : ""}${job.canRecoverTail ? `<button class="btn small" type="button" data-media-recover="${esc(job.id)}" ${!data.enabled ? "disabled" : ""}>恢复末尾残包</button>` : ""}</div>${job.tailRecovery ? `<div class="settings-status">恢复范围：末尾 ${formatBytes(job.tailRecovery.removedBytes)}，原文件保留。只恢复收到的有效内容，不补回断流画面。</div>` : job.sourceDeleted ? `<div class="settings-status">原录屏已清理，保留压缩视频及已生成的文本、字幕。</div>` : ""}${job.error ? `<details style="color:#b74c47"><summary>查看失败原因</summary><div style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(job.error)}</div></details>` : ""}</div></div>`).join("") : `<div class="table-empty" style="padding:20px 0">${problem ? "任务记录暂不可显示，原录屏保留。" : data.ready ? "尚无处理任务；新录屏结束后会自动进入队列。" : "压缩工具就绪后，队列会自动启用。"}</div>`;
       } catch (error) {
         const status = document.getElementById("mediaPipelineStatus");
         if (status) status.textContent = "队列不可用";

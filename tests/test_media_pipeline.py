@@ -1,4 +1,5 @@
 import os
+import errno
 import json
 import sys
 import subprocess
@@ -35,6 +36,7 @@ class MediaPipelineTests(unittest.TestCase):
             "_stop": threading.Event(),
             "_wake": threading.Event(),
             "_worker_thread": None,
+            "_worker_error": None,
         }.items():
             self.stack.enter_context(mock.patch.object(pipeline, name, value))
         self.config = {
@@ -158,6 +160,191 @@ class MediaPipelineTests(unittest.TestCase):
         self.assertTrue(Path(result["compressed"]).is_file())
         self.assertTrue(result["sourceDeleted"])
         self.assertFalse(self.source.exists())
+
+    def test_corrupt_job_ledger_blocks_processing_without_replacing_it(self):
+        original_jobs = pipeline.JOBS_FILE.read_bytes()
+        damaged = b'{"jobs": broken}'
+        pipeline.JOBS_FILE.write_bytes(damaged)
+        pipeline.FFMPEG.touch()
+        with mock.patch.object(pipeline, "POLL_SECONDS", .02):
+            thread = pipeline.start_worker()
+            for _ in range(100):
+                if pipeline.job_snapshot()["workerError"]:
+                    break
+                threading.Event().wait(.01)
+            snapshot = pipeline.job_snapshot()
+            self.assertTrue(thread.is_alive())
+            self.assertIn("媒体任务记录不可读", snapshot["storageError"])
+            self.assertIn("媒体任务记录不可读", snapshot["workerError"])
+            self.assertEqual(pipeline.JOBS_FILE.read_bytes(), damaged)
+            self.assertEqual(self.source.read_bytes(), self.original)
+            self.run.assert_not_called()
+            pipeline.JOBS_FILE.write_bytes(original_jobs)
+            pipeline._wake.set()
+            for _ in range(200):
+                if pipeline._read_jobs()[0]["status"] == "completed":
+                    break
+                threading.Event().wait(.01)
+        self.assertEqual(pipeline._read_jobs()[0]["status"], "completed")
+        self.assertIsNone(pipeline.job_snapshot()["workerError"])
+
+    def test_malformed_job_ledger_and_partial_write_never_replace_saved_jobs(self):
+        original_jobs = pipeline.JOBS_FILE.read_bytes()
+        for damaged in (b"{}", b"[{}]", b"not json"):
+            with self.subTest(damaged=damaged):
+                pipeline.JOBS_FILE.write_bytes(damaged)
+                with self.assertRaisesRegex(RuntimeError, "媒体任务记录"):
+                    pipeline._create_job(self.source)
+                self.assertEqual(pipeline.JOBS_FILE.read_bytes(), damaged)
+                self.assertEqual(self.source.read_bytes(), self.original)
+        pipeline.JOBS_FILE.write_bytes(original_jobs)
+        original_write = Path.write_text
+
+        def fail_temporary_write(path, content, *args, **kwargs):
+            if path == pipeline.JOBS_FILE.with_suffix(".tmp"):
+                path.write_bytes(b"partial")
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return original_write(path, content, *args, **kwargs)
+
+        with mock.patch.object(Path, "write_text", fail_temporary_write):
+            with self.assertRaises(OSError):
+                pipeline._write_jobs([self.job])
+        self.assertEqual(pipeline.JOBS_FILE.read_bytes(), original_jobs)
+        self.assertEqual(pipeline._read_jobs()[0]["id"], self.job["id"])
+
+    def test_disk_full_keeps_worker_alive_and_retries_after_space_returns(self):
+        pipeline.FFMPEG.touch()
+        saved = pipeline.JOBS_FILE.read_bytes()
+        writable = threading.Event()
+        original_write = pipeline._write_jobs
+
+        def write_when_space_returns(jobs):
+            if not writable.is_set():
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return original_write(jobs)
+
+        with mock.patch.object(pipeline, "POLL_SECONDS", .02), mock.patch.object(pipeline, "_write_jobs", side_effect=write_when_space_returns):
+            thread = pipeline.start_worker()
+            for _ in range(100):
+                if pipeline.job_snapshot()["workerError"]:
+                    break
+                threading.Event().wait(.01)
+            self.assertTrue(thread.is_alive())
+            self.assertIn("磁盘空间不足", pipeline.job_snapshot()["workerError"])
+            self.assertEqual(pipeline.JOBS_FILE.read_bytes(), saved)
+            self.assertEqual(self.source.read_bytes(), self.original)
+            self.run.assert_not_called()
+            writable.set()
+            pipeline._wake.set()
+            for _ in range(200):
+                if pipeline._read_jobs()[0]["status"] == "completed":
+                    break
+                threading.Event().wait(.01)
+        self.assertEqual(pipeline._read_jobs()[0]["status"], "completed")
+        self.assertIsNone(pipeline.job_snapshot()["workerError"])
+
+    def test_published_video_recovers_after_ledger_write_fails_without_reencoding(self):
+        original_update = pipeline._update_job
+        failed = False
+
+        def fail_after_publish(job_id, **changes):
+            nonlocal failed
+            if changes.get("compressionCompleted") and not failed:
+                failed = True
+                self.assertEqual(len(list(self.recordings.glob("*.compressed.mp4"))), 1)
+                self.assertEqual(self.source.read_bytes(), self.original)
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return original_update(job_id, **changes)
+
+        with mock.patch.object(pipeline, "_update_job", side_effect=fail_after_publish):
+            with self.assertRaises(OSError):
+                pipeline._process(self.job, self.config)
+        pending = self.saved_job()["compressionPublishPending"]
+        self.assertEqual(Path(pending["path"]).read_bytes(), b"synthetic compressed video")
+        self.assertTrue(self.source.exists())
+        self.assertEqual(self.run.call_count, 2)
+
+        pipeline._recover_processing_jobs()
+        pipeline._process(pipeline._next_job(), self.config)
+        self.assertEqual(self.run.call_count, 3)  # Only the full validation runs again.
+        self.assertEqual(len(list(self.recordings.glob("*.compressed.mp4"))), 1)
+        self.assertFalse(self.source.exists())
+        self.assertIsNone(self.saved_job().get("compressionPublishPending"))
+        self.assertEqual(self.saved_job()["status"], "completed")
+
+    def test_pending_publish_with_missing_output_reencodes_without_adopting_other_file(self):
+        def fail_before_publish(source, target):
+            raise InterruptedError("simulated restart before link")
+
+        with mock.patch.object(os, "link", side_effect=fail_before_publish):
+            with self.assertRaises(InterruptedError):
+                pipeline._process(self.job, self.config)
+        pending = self.saved_job()["compressionPublishPending"]
+        self.assertFalse(Path(pending["path"]).exists())
+        self.assertTrue(self.source.exists())
+        pipeline._recover_processing_jobs()
+        pipeline._process(pipeline._next_job(), self.config)
+        self.assertFalse(self.source.exists())
+        self.assertEqual(len(list(self.recordings.glob("*.compressed.mp4"))), 1)
+        self.assertEqual(self.saved_job()["status"], "completed")
+
+    def make_pending_publish(self):
+        original_update = pipeline._update_job
+
+        def fail_after_publish(job_id, **changes):
+            if changes.get("compressionCompleted"):
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return original_update(job_id, **changes)
+
+        with mock.patch.object(pipeline, "_update_job", side_effect=fail_after_publish):
+            with self.assertRaises(OSError):
+                pipeline._process(self.job, self.config)
+        return Path(self.saved_job()["compressionPublishPending"]["path"])
+
+    def test_pending_publish_refuses_changed_source(self):
+        self.make_pending_publish()
+        self.source.write_bytes(self.original + b"new frames")
+        with self.assertRaisesRegex(RuntimeError, "原录屏已变化"):
+            pipeline._process(self.saved_job(), self.config)
+        self.assertTrue(self.source.exists())
+
+    def test_pending_publish_refuses_changed_output(self):
+        output = self.make_pending_publish()
+        output.write_bytes(b"externally changed video")
+        with self.assertRaisesRegex(RuntimeError, "压缩视频身份已变化"):
+            pipeline._process(self.saved_job(), self.config)
+        self.assertTrue(self.source.exists())
+        self.assertEqual(self.run.call_count, 2)
+
+    def test_worker_recovers_post_publish_disk_failure_when_space_returns(self):
+        pipeline.FFMPEG.touch()
+        original_write = pipeline._write_jobs
+        writable = threading.Event()
+        published = threading.Event()
+
+        def fail_completion_checkpoint(jobs):
+            if any(job.get("compressionCompleted") for job in jobs) and not writable.is_set():
+                published.set()
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return original_write(jobs)
+
+        with mock.patch.object(pipeline, "POLL_SECONDS", .02), mock.patch.object(
+                pipeline, "_write_jobs", side_effect=fail_completion_checkpoint):
+            thread = pipeline.start_worker()
+            self.assertTrue(published.wait(2))
+            self.assertTrue(thread.is_alive())
+            self.assertTrue(self.source.exists())
+            self.assertEqual(len(list(self.recordings.glob("*.compressed.mp4"))), 1)
+            writable.set()
+            pipeline._wake.set()
+            for _ in range(200):
+                if self.saved_job()["status"] == "completed":
+                    break
+                threading.Event().wait(.01)
+        self.assertEqual(self.saved_job()["status"], "completed")
+        self.assertFalse(self.source.exists())
+        self.assertEqual(len(list(self.recordings.glob("*.compressed.mp4"))), 1)
+        self.assertEqual(self.run.call_count, 3)
 
     def test_old_sub_megabyte_recording_is_discovered_after_stability_check(self):
         unprocessed = self.recordings / "older small recording.mp4"
