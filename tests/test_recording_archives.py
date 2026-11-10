@@ -1,4 +1,5 @@
 import copy
+import errno
 import json
 import os
 import sys
@@ -222,6 +223,37 @@ class RecordingArchiveTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["id"], first["id"])
         self.assertEqual(self.pipeline.merges, 1)
+
+    def test_start_does_not_rewrite_finished_archive_when_storage_is_unwritable(self):
+        self.manager._write({"version": 1, "archives": [{"id": "b" * 32,
+                             "sessionId": self.session["id"], "status": "completed"}]})
+        original = self.manager.file.read_bytes()
+        with mock.patch.object(self.manager, "_write", side_effect=OSError(errno.ENOSPC, "disk full")) as write:
+            self.manager.start()
+            write.assert_not_called()
+        self.assertEqual(self.manager.file.read_bytes(), original)
+        self.assertIsNone(self.manager.snapshot()["error"])
+
+    def test_start_reports_failed_recovery_without_replacing_ledger(self):
+        self.manager._write({"version": 1, "archives": [{"id": "b" * 32,
+                             "sessionId": self.session["id"], "status": "processing"}]})
+        original = self.manager.file.read_bytes()
+        with mock.patch.object(self.manager, "_write", side_effect=OSError(errno.ENOSPC, "disk full")):
+            self.manager.start()
+        self.assertIsNone(self.manager.thread)
+        self.assertEqual(self.manager.file.read_bytes(), original)
+        self.assertIn("无法恢复归档后台任务", self.manager.snapshot()["error"])
+        self.manager.start()
+        self.assertIsNotNone(self.manager.thread)
+
+    def test_failed_archive_ledger_fsync_removes_temporary_file(self):
+        self.manager._write({"version": 1, "archives": []})
+        original = self.manager.file.read_bytes()
+        with mock.patch("recording_archives.os.fsync", side_effect=OSError(errno.ENOSPC, "disk full")):
+            with self.assertRaises(OSError):
+                self.manager._write({"version": 1, "archives": [{"id": "b" * 32}]})
+        self.assertEqual(self.manager.file.read_bytes(), original)
+        self.assertEqual([path.name for path in self.manager.file.parent.iterdir()], [self.manager.file.name])
 
     def test_single_segment_reuses_compressed_video_without_copy_or_input_identity_change(self):
         self.session["segments"] = self.session["segments"][:1]

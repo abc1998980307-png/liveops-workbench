@@ -112,15 +112,17 @@ class RecordingArchiveManager:
 
     def _write(self, value):
         self.file.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.file.parent, delete=False) as handle:
-            temp = Path(handle.name)
-            json.dump(value, handle, ensure_ascii=False, indent=2)
-            handle.flush()
-            os.fsync(handle.fileno())
+        temp = None
         try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.file.parent, delete=False) as handle:
+                temp = Path(handle.name)
+                json.dump(value, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
             temp.replace(self.file)
         finally:
-            temp.unlink(missing_ok=True)
+            if temp is not None:
+                temp.unlink(missing_ok=True)
 
     @staticmethod
     def _safe_file(value, root=None):
@@ -345,11 +347,17 @@ class RecordingArchiveManager:
             except (OSError, ValueError) as error:
                 self.error = "无法启动归档后台服务：" + str(error)[:400]
                 return
+            changed = False
             for item in data["archives"]:
                 if item.get("status") == "processing":
                     item.update(status="queued", stage="等待恢复中断归档", error=None)
-            if self.file.exists():
-                self._write(data)
+                    changed = True
+            if changed:
+                try:
+                    self._write(data)
+                except OSError as error:
+                    self.error = "无法恢复归档后台任务：" + str(error)[:400]
+                    return
             self.error = None
             self.thread = threading.Thread(target=self._worker, name="liveops-recording-archives", daemon=True)
             self.thread.start()
