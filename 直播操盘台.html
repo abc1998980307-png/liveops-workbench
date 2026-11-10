@@ -650,6 +650,12 @@
     let currentView = "monitor";
     let toastTimer;
     let settingsData = null;
+    const dirtySettings = new Set();
+    let settingsLoadVersion = 0, settingsEditVersion = 0, settingsSaving = false;
+    const settingIds = ["accountRefreshSeconds", "hotwordsRefreshSeconds", "bgoInterval", "recordingPath", "ffmpegPath",
+      "outputTemplate", "maxDuration", "maxFileSize", "streamTimeout", "splitOnTitle", "fixFlv", "convertMp4",
+      "danmakuEnable", "cacheTTL", "requestTimeout", "filterWeiboAds", "mediaPipelineEnabled",
+      "deleteOriginalAfterCompression", "mediaCodec", "videoBitrate", "audioBitrate", "transcriptLanguage", "whisperModel"];
     let accountRefreshTimer = null;
     let hotwordsRefreshTimer = null;
     let recorderState = null;
@@ -911,29 +917,35 @@
       const bgo = data.bililive?.desired || {};
       const dailyhot = data.dailyhot || {};
       const media = data.mediaPipeline || {};
-      document.getElementById("accountRefreshSeconds").value = dashboard.accountRefreshSeconds ?? 10;
-      document.getElementById("hotwordsRefreshSeconds").value = dashboard.hotwordsRefreshSeconds ?? 300;
-      document.getElementById("bgoInterval").value = bgo.interval ?? 20;
-      document.getElementById("recordingPath").value = bgo.out_put_path ?? dashboard.recordingDirectory ?? "";
-      document.getElementById("ffmpegPath").value = bgo.ffmpeg_path ?? "";
-      document.getElementById("outputTemplate").value = bgo.out_put_tmpl ?? "";
-      document.getElementById("maxDuration").value = bgo.max_duration ?? 0;
-      document.getElementById("maxFileSize").value = parseInt(bgo.max_file_size ?? "0", 10) || 0;
-      document.getElementById("streamTimeout").value = bgo.timeout_seconds ?? 60;
-      document.getElementById("splitOnTitle").checked = Boolean(bgo.split_on_title);
-      document.getElementById("fixFlv").checked = Boolean(bgo.fix_flv_at_first);
-      document.getElementById("convertMp4").checked = Boolean(bgo.convert_to_mp4);
-      document.getElementById("danmakuEnable").checked = Boolean(bgo.danmaku_enable);
-      document.getElementById("cacheTTL").value = dailyhot.cacheTTL ?? 3600;
-      document.getElementById("requestTimeout").value = dailyhot.requestTimeout ?? 6000;
-      document.getElementById("filterWeiboAds").checked = Boolean(dailyhot.filterWeiboAds);
-      document.getElementById("mediaPipelineEnabled").checked = Boolean(media.enabled);
-      document.getElementById("deleteOriginalAfterCompression").checked = media.keepOriginal === false;
-      document.getElementById("mediaCodec").value = media.codec || "hevc_videotoolbox";
-      document.getElementById("videoBitrate").value = media.videoBitrateKbps ?? 2500;
-      document.getElementById("audioBitrate").value = media.audioBitrateKbps ?? 96;
-      document.getElementById("transcriptLanguage").value = media.language || "zh";
-      document.getElementById("whisperModel").value = media.model || "";
+      const setField = (id, value) => {
+        if (dirtySettings.has(id)) return;
+        const field = document.getElementById(id);
+        if (field.type === "checkbox") field.checked = Boolean(value);
+        else field.value = value;
+      };
+      setField("accountRefreshSeconds", dashboard.accountRefreshSeconds ?? 10);
+      setField("hotwordsRefreshSeconds", dashboard.hotwordsRefreshSeconds ?? 300);
+      setField("bgoInterval", bgo.interval ?? 20);
+      setField("recordingPath", bgo.out_put_path ?? dashboard.recordingDirectory ?? "");
+      setField("ffmpegPath", bgo.ffmpeg_path ?? "");
+      setField("outputTemplate", bgo.out_put_tmpl ?? "");
+      setField("maxDuration", bgo.max_duration ?? 0);
+      setField("maxFileSize", parseInt(bgo.max_file_size ?? "0", 10) || 0);
+      setField("streamTimeout", bgo.timeout_seconds ?? 60);
+      setField("splitOnTitle", bgo.split_on_title);
+      setField("fixFlv", bgo.fix_flv_at_first);
+      setField("convertMp4", bgo.convert_to_mp4);
+      setField("danmakuEnable", bgo.danmaku_enable);
+      setField("cacheTTL", dailyhot.cacheTTL ?? 3600);
+      setField("requestTimeout", dailyhot.requestTimeout ?? 6000);
+      setField("filterWeiboAds", dailyhot.filterWeiboAds);
+      setField("mediaPipelineEnabled", media.enabled);
+      setField("deleteOriginalAfterCompression", media.keepOriginal === false);
+      setField("mediaCodec", media.codec || "hevc_videotoolbox");
+      setField("videoBitrate", media.videoBitrateKbps ?? 2500);
+      setField("audioBitrate", media.audioBitrateKbps ?? 96);
+      setField("transcriptLanguage", media.language || "zh");
+      setField("whisperModel", media.model || "");
       const mediaStatus = document.getElementById("mediaSettingsStatus");
       const mediaBadge = document.getElementById("mediaSettingsBadge");
       if (mediaStatus) {
@@ -948,10 +960,16 @@
       dailyStatus.textContent = "修改后先保存设置，再点击热点服务的“重启并应用”。";
       window.dispatchEvent(new Event('liveops-hot-settings'));
     }
-    async function refreshSettings() {
+    async function refreshSettings(discardDraft = false) {
+      const version = ++settingsLoadVersion;
+      const editsAtRequest = settingsEditVersion;
       try {
-        populateSettings(await apiRequest("/api/settings"));
+        const data = await apiRequest("/api/settings");
+        if (version !== settingsLoadVersion || settingsSaving) return;
+        if (discardDraft && editsAtRequest === settingsEditVersion) dirtySettings.clear();
+        populateSettings(data);
       } catch (error) {
+        if (version !== settingsLoadVersion) return;
         document.getElementById("bgoSettingsStatus").textContent = `设置读取失败：${error.message}`;
         document.getElementById("dailyhotSettingsStatus").textContent = "设置服务不可用";
       }
@@ -961,7 +979,11 @@
       button.disabled = true;
       try {
         const result = await apiRequest("/api/choose-recording-directory", {method:"POST", body:"{}"});
-        if (result.path) document.getElementById("recordingPath").value = result.path;
+        if (result.path) {
+          document.getElementById("recordingPath").value = result.path;
+          dirtySettings.add("recordingPath");
+          settingsEditVersion++;
+        }
       } catch (error) {
         if (error.message !== "已取消选择文件夹") toast(error.message);
       } finally {
@@ -981,6 +1003,7 @@
       }
     }
     async function saveSettings() {
+      if (settingsSaving) return false;
       const number = id => Number(document.getElementById(id).value);
       const text = id => document.getElementById(id).value.trim();
       const checked = id => document.getElementById(id).checked;
@@ -996,16 +1019,22 @@
       };
       const button = document.getElementById("saveSettings");
       button.disabled = true;
+      settingsSaving = true;
+      settingsLoadVersion++;
+      const editsAtSave = settingsEditVersion;
       try {
         const result = await apiRequest("/api/settings", {method:"POST", body:JSON.stringify(payload)});
+        if (editsAtSave === settingsEditVersion) dirtySettings.clear();
         populateSettings(result.settings);
         startPolling();
-        toast(result.settings?.bililive?.pendingRestart ? "设置已保存；录屏后处理立即生效，录制参数待应用" : "设置已保存；录屏后处理立即生效");
-        return true;
+        toast(editsAtSave !== settingsEditVersion ? "设置已保存；保存期间的新修改仍未保存" :
+          result.settings?.bililive?.pendingRestart ? "设置已保存；录屏后处理立即生效，录制参数待应用" : "设置已保存；录屏后处理立即生效");
+        return editsAtSave === settingsEditVersion;
       } catch (error) {
         toast(error.message);
         return false;
       } finally {
+        settingsSaving = false;
         button.disabled = false;
       }
     }
@@ -1252,7 +1281,13 @@
     });
     document.getElementById("refreshBtn").addEventListener("click", refreshAll);
     document.getElementById("refreshSessions").addEventListener("click", refreshSessions);
-    document.getElementById("reloadSettings").addEventListener("click", refreshSettings);
+    for (const id of settingIds) {
+      const field = document.getElementById(id);
+      const markDirty = () => { dirtySettings.add(id); settingsEditVersion++; };
+      field.addEventListener("input", markDirty);
+      field.addEventListener("change", markDirty);
+    }
+    document.getElementById("reloadSettings").addEventListener("click", () => refreshSettings(true));
       document.getElementById("saveSettings").addEventListener("click", saveSettings);
     document.getElementById("chooseRecordingPath").addEventListener("click", chooseRecordingPath);
     document.getElementById("openRecordingPath").addEventListener("click", openRecordingPath);
