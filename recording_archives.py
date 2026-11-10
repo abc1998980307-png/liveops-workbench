@@ -137,6 +137,12 @@ class RecordingArchiveManager:
         stat = path.stat()
         return [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
 
+    @staticmethod
+    def _same_content_identity(current, saved):
+        # macOS metadata updates can change ctime while leaving file content untouched.
+        return (isinstance(saved, list) and len(saved) == 5
+                and current[:4] == saved[:4])
+
     def _jobs(self):
         reader = getattr(self.pipeline, "archive_jobs", None)
         if reader is None:
@@ -168,7 +174,7 @@ class RecordingArchiveManager:
         job = matches[0]
         compressed = self._safe_file(job.get("compressed", ""), self.recording_root())
         saved = job.get("compressedSignature")
-        if not isinstance(saved, list) or self._signature(compressed) != saved:
+        if not self._same_content_identity(self._signature(compressed), saved):
             raise ValueError("压缩片段已被修改，未生成合并归档")
         return job, compressed
 
@@ -322,7 +328,7 @@ class RecordingArchiveManager:
                 if item.get(key):
                     path = self._safe_file(item[key], self.recording_root())
                     saved = (item.get("outputSignatures") or {}).get(key)
-                    if saved and self._signature(path) != saved:
+                    if saved and not self._same_content_identity(self._signature(path), saved):
                         return False
             return bool(item.get("video"))
         except (OSError, ValueError):
@@ -542,7 +548,7 @@ class RecordingArchiveManager:
             self._atomic_text(staging / "video.manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
             self._cancelled()
             for path, signature in source_signatures + text_signatures:
-                if not path.is_file() or path.is_symlink() or self._signature(path) != signature:
+                if not path.is_file() or path.is_symlink() or not self._same_content_identity(self._signature(path), signature):
                     raise ValueError("归档期间输入文件发生变化，未发布结果")
             if Path(self.recording_root()).expanduser().resolve() != root:
                 raise ValueError("录制目录已更改，未发布归档")

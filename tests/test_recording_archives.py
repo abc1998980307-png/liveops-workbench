@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -234,6 +235,35 @@ class RecordingArchiveTests(unittest.TestCase):
         self.assertTrue((self.recordings / result["subtitlesPath"]).is_file())
         self.assertTrue((self.recordings / result["manifestPath"]).is_file())
         self.assertEqual(list((self.recordings / '.liveops-archives').rglob('*.mp4')), [])
+
+    def test_metadata_only_change_before_archive_still_accepts_verified_video(self):
+        self.session["segments"] = self.session["segments"][:1]
+        before = self.manager._signature(self.inputs[0])
+        os.chmod(self.inputs[0], 0o600)
+        after = self.manager._signature(self.inputs[0])
+        self.assertEqual(before[:4], after[:4])
+        self.assertNotEqual(before[4], after[4])
+        self.assertEqual(self.manager.create(self.session["id"])["status"], "completed")
+
+    def test_metadata_only_change_during_validation_and_after_publish_stays_usable(self):
+        self.session["segments"] = self.session["segments"][:1]
+        original = self.pipeline.validate_video
+        def metadata_change(path, cancel_event=None):
+            original(path, cancel_event)
+            os.chmod(path, 0o600)
+        self.pipeline.validate_video = metadata_change
+        result = self.manager.create(self.session["id"])
+        self.assertEqual(result["status"], "completed")
+        os.chmod(self.inputs[0], 0o644)
+        self.assertEqual(self.manager.snapshot()["archives"][0]["status"], "completed")
+        self.assertEqual(self.manager.submit(self.session["id"])["id"], result["id"])
+
+    def test_modified_media_time_still_rejects_verified_video(self):
+        self.session["segments"] = self.session["segments"][:1]
+        stat = self.inputs[0].stat()
+        os.utime(self.inputs[0], ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+        with self.assertRaisesRegex(ValueError, "压缩片段已被修改"):
+            self.manager.create(self.session["id"])
 
     def test_input_mutation_during_merge_never_publishes_archive(self):
         original = self.pipeline.run_command
