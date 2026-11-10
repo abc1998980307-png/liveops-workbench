@@ -151,6 +151,11 @@ class SessionReviews:
                   if isinstance(result, dict) and not result.get("ok")]
         if failed:
             lines.append("- 部分接口未成功：" + self._inline("、".join(failed)))
+        reused = [(name, result.get("retrievedAt")) for name, result in endpoints.items()
+                  if isinstance(result, dict) and result.get("reused")]
+        if reused:
+            lines.append("- 沿用先前接口结果：" + self._inline("、".join(
+                name + "（" + (retrieved_at or "时间未记录") + "）" for name, retrieved_at in reused)))
 
     def export_markdown(self, session_id):
         session = self._session(session_id)

@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
@@ -90,6 +91,67 @@ class RuntimeDiscoveryTests(unittest.TestCase):
     def test_missing_playwright_explains_checkout_install(self):
         with self.assertRaisesRegex(RuntimeError, "npm ci"):
             bridge.discover_playwright()
+
+
+class CollectorInstanceLockTests(unittest.TestCase):
+    def test_a_second_process_cannot_use_the_same_collector_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = ("import sys; from pathlib import Path; "
+                      "sys.path.insert(0, sys.argv[2]); "
+                      "from rpa_bridge import _acquire_instance_lock, _release_instance_lock; "
+                      "lock = _acquire_instance_lock(Path(sys.argv[1])); "
+                      "_release_instance_lock(lock)")
+            command = [sys.executable, "-c", script, str(root), str(Path(__file__).resolve().parents[1])]
+            lock = bridge._acquire_instance_lock(root)
+            try:
+                blocked = subprocess.run(command, capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(blocked.returncode, 0)
+                self.assertIn("同一数据目录已有罗盘采集器", blocked.stderr)
+            finally:
+                bridge._release_instance_lock(lock)
+            released = subprocess.run(command, capture_output=True, text=True, timeout=10)
+            self.assertEqual(released.returncode, 0, released.stderr)
+
+    def test_reader_keeps_lock_until_collector_exits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            entered, release = threading.Event(), threading.Event()
+
+            class CollectorStillExiting:
+                stdout = iter(())
+
+                def wait(self, timeout=None):
+                    entered.set()
+                    if not release.wait(5):
+                        raise AssertionError("collector exit was not released")
+                    return 0
+
+            instance = bridge.CollectorBridge()
+            process = CollectorStillExiting()
+            instance.process = process
+            instance.instance_lock = bridge._acquire_instance_lock(Path(directory))
+            reader = threading.Thread(target=instance._read, args=(process,))
+            reader.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                with self.assertRaisesRegex(RuntimeError, "已有罗盘采集器"):
+                    bridge._acquire_instance_lock(Path(directory))
+            finally:
+                release.set()
+                reader.join(5)
+            self.assertFalse(reader.is_alive())
+            self.assertIsNone(instance.instance_lock)
+            bridge._release_instance_lock(bridge._acquire_instance_lock(Path(directory)))
+
+    def test_forced_shutdown_waits_after_kill(self):
+        process = mock.Mock()
+        process.wait.side_effect = [subprocess.TimeoutExpired("collector", 20),
+                                    subprocess.TimeoutExpired("collector", 5), 0]
+        process.poll.return_value = None
+        bridge._wait_for_collector_exit(process)
+        process.terminate.assert_called_once()
+        process.kill.assert_called_once()
+        self.assertEqual(process.wait.call_count, 3)
 
 
 if __name__ == "__main__":

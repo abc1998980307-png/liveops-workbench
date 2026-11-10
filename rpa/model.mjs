@@ -289,7 +289,8 @@ export function normalizeHistoryReport(results, roomId, retrievedAt = new Date()
     roomState: base?.is_living === true ? 'live' : base?.is_living === false ? 'ended' : 'unknown',
     metrics,
     endpoints: Object.fromEntries(['historyBasic', 'historyCore', 'historyTrade'].map(name =>
-      [name, { ok: results[name]?.ok === true, error: results[name]?.error || null }])),
+      [name, { ok: results[name]?.ok === true, error: results[name]?.error || null,
+        retrievedAt: results[name]?.retrievedAt || retrievedAt, reused: results[name]?.reused === true }])),
   };
 }
 

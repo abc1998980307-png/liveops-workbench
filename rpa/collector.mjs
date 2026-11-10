@@ -2,11 +2,23 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
+import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 import { Store } from './store.mjs';
 import { BrowserEngine } from './engine.mjs';
 import { roomList, historyBounds, historyWindow, historyRange, historyStartDate, historyRoomPage, validateHistoryEndpoint, normalizeHistoryReport, normalizeSnapshot, CollectError } from './model.mjs';
 import { FeishuSync } from './feishu.mjs';
+
+export function acquireCollectorGuard(root) {
+  const guard = new DatabaseSync(path.join(root, 'collector-instance.sqlite'));
+  try {
+    guard.exec('BEGIN EXCLUSIVE');
+    return guard;
+  } catch (error) {
+    guard.close();
+    throw new Error('同一数据目录已有罗盘采集器运行，请使用现有工作台', { cause: error });
+  }
+}
 
 export class Collector {
   constructor(store, engine) {
@@ -25,18 +37,27 @@ export class Collector {
     if (batch?.status === 'running') this.store.saveHistoryBatch(id, { ...batch, status: 'paused', updatedAt: new Date().toISOString() });
     this.store.event(id, message);
   }
+  rateLimitUntil(id) {
+    const batch = this.store.historyBatch(id);
+    return batch?.status === 'rate_limited' && Date.now() < Date.parse(batch.retryAfter) ? batch.retryAfter : null;
+  }
+  assertHistoryRequestAllowed(id) {
+    const retryAfter = this.rateLimitUntil(id);
+    if (retryAfter) throw new CollectError(`罗盘请求受限，请在 ${retryAfter} 后重试。`, 'rate_limited');
+  }
   async login(id) {
     const a = this.store.account(id);
     await this.engine.open(id, true);
     this.store.save({ ...a, enabled: true, state: a.uid ? 'ready' : 'needs_login', error: null });
     this.next.set(id, 0);
     this.store.event(id, '已打开罗盘窗口，完成登录后将自动同步');
-    this.start(id);
-    return { ok: true };
+    return this.start(id);
   }
   start(id) {
     this.store.account(id);
     if (this.stopping) throw new Error('采集器正在停止');
+    const retryAfter = this.rateLimitUntil(id);
+    if (retryAfter) return { ok: true, queued: false, retryAfter, warning: '罗盘请求受限，等待限流结束后再同步' };
     if (this.busy.has(id) || this.historyBusy.has(id)) return { ok: true, queued: false, busy: true };
     const promise = this.sync(id).finally(() => this.busy.delete(id));
     this.busy.set(id, promise);
@@ -110,6 +131,7 @@ export class Collector {
     const account = this.store.account(id);
     if (this.stopping || this.busy.has(id) || this.historyBusy.has(id)) throw new Error('该账号正在执行其他读取任务');
     if (!account.uid) throw new Error('请先完成罗盘账号身份核验');
+    this.assertHistoryRequestAllowed(id);
     const previous = this.store.historyProgress(id);
     const bounds = historyBounds();
     const selection = historyRange(startDate ?? previous?.startDate ?? bounds.earliest,
@@ -174,6 +196,7 @@ export class Collector {
     const account = this.store.account(id);
     if (this.stopping || this.busy.has(id) || (batchVersion === null && this.historyBusy.has(id))) throw new Error('该账号正在执行其他读取任务');
     if (!account.uid) throw new Error('请先完成罗盘账号身份核验');
+    this.assertHistoryRequestAllowed(id);
     if (!/^\d{1,30}$/.test(roomId)) throw new Error('历史场次 ID 无效');
     const room = this.store.room(id, roomId);
     if (!room) throw new Error('请先将历史场次目录导入本机');
@@ -186,10 +209,10 @@ export class Collector {
         if (!current()) return { cancelled: true };
         const names = ['historyBasic', 'historyCore', 'historyTrade'];
         const read = async name => {
-          try { return { ok: true, body: validateHistoryEndpoint(name, await this.engine.request(id, name, roomId)) }; }
+          try { return { ok: true, body: validateHistoryEndpoint(name, await this.engine.request(id, name, roomId)), retrievedAt: new Date().toISOString() }; }
           catch (error) {
             if (['needs_login', 'rate_limited', 'account_changed'].includes(error.kind)) throw error;
-            return { ok: false, error: String(error.message || '读取失败').slice(0, 200) };
+            return { ok: false, error: String(error.message || '读取失败').slice(0, 200), retrievedAt: new Date().toISOString() };
           }
         };
         const values = [];
@@ -205,16 +228,24 @@ export class Collector {
         if (!values.some(value => value.ok)) throw new CollectError('三个历史详情接口均未成功，原报表未覆盖。');
         await this.verifyHistoryIdentity(id, account.uid);
         if (!current()) return { cancelled: true };
-        if (JSON.stringify(results).length > 2 * 1024 * 1024) throw new CollectError('历史详情超过本机保存上限，原报表未覆盖。');
-        const report = normalizeHistoryReport(results, roomId);
-        const previous = this.store.historyReport(id, roomId);
-        if (previous && Object.values(previous.endpoints || {}).every(endpoint => endpoint.ok) && values.some(value => !value.ok)) {
-          this.store.event(id, `历史场次 ${roomId} 本次部分接口失败，保留上次完整报表`);
-          return { report: previous, warning: '部分接口失败，已保留上次完整报表' };
+        const previous = this.store.historyReport(id, roomId, true);
+        const merged = { ...results };
+        let unreadablePrevious = false;
+        for (const name of names) {
+          if (results[name].ok || !previous?.raw?.[name]?.ok) continue;
+          try {
+            validateHistoryEndpoint(name, previous.raw[name].body);
+            merged[name] = { ...previous.raw[name], retrievedAt: previous.endpoints?.[name]?.retrievedAt || previous.retrievedAt, reused: true };
+          } catch { unreadablePrevious = true; }
         }
-        this.store.saveHistoryReport(id, roomId, report, results);
-        this.store.event(id, `历史场次 ${roomId} 报表已读取：${report.metrics.length} 项指标${values.some(value => !value.ok) ? '，部分接口失败' : ''}；未写入飞书`);
-        return { report };
+        if (unreadablePrevious) return { report: (({ raw, ...report }) => report)(previous),
+          warning: '旧报表接口原文不可读，已保留原报表，未覆盖已保存指标' };
+        if (JSON.stringify(merged).length > 2 * 1024 * 1024) throw new CollectError('历史详情超过本机保存上限，原报表未覆盖。');
+        const report = normalizeHistoryReport(merged, roomId);
+        this.store.saveHistoryReport(id, roomId, report, merged);
+        const reused = names.filter(name => merged[name].reused);
+        this.store.event(id, `历史场次 ${roomId} 报表已读取：${report.metrics.length} 项指标${reused.length ? `，${reused.length} 项接口沿用上次结果` : values.some(value => !value.ok) ? '，部分接口失败' : ''}；未写入飞书`);
+        return { report, ...(reused.length ? { warning: '部分接口失败，已沿用上次成功结果' } : {}) };
       } catch (error) {
         if (!current()) return { cancelled: true };
         this.store.event(id, String(error.message || '历史报表读取失败').replace(/https?:\/\/\S+/g, '罗盘页面').slice(0, 250));
@@ -229,6 +260,7 @@ export class Collector {
     const account = this.store.account(id);
     if (this.stopping || this.busy.has(id) || this.historyBusy.has(id)) throw new Error('该账号正在执行其他读取任务');
     if (!account.uid) throw new Error('请先完成罗盘账号身份核验');
+    this.assertHistoryRequestAllowed(id);
     let progress;
     if (resume) {
       progress = this.store.historyBatch(id);
@@ -382,8 +414,8 @@ export class Collector {
       case 'monitor': {
         const id = String(args.id); const a = this.store.account(id);
         if (typeof args.enabled !== 'boolean') throw new Error('同步开关必须为布尔值');
-        if (args.enabled) { this.store.save({ ...a, enabled: true }); this.next.set(id, 0); this.start(id); }
-        else this.pause(id);
+        if (args.enabled) { this.store.save({ ...a, enabled: true }); this.next.set(id, 0); return this.start(id); }
+        this.pause(id);
         return { ok: true };
       }
       case 'settings': {
@@ -409,6 +441,7 @@ export class Collector {
 async function main() {
   const root = process.env.LIVEOPS_RPA_DATA || path.join(os.homedir(), 'Library/Application Support/LiveOps/rpa');
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+  const guard = acquireCollectorGuard(root);
   let collector;
   const store = new Store(root);
   store.recoverHistoryBatches();
@@ -427,7 +460,7 @@ async function main() {
     }
   });
   let closing = false;
-  const close = async () => { if (closing) return; closing = true; clearInterval(timer); await collector.close(); process.exit(0); };
+  const close = async () => { if (closing) return; closing = true; clearInterval(timer); try { await collector.close(); } finally { guard.close(); process.exit(0); } };
   reader.on('close', close); process.on('SIGTERM', close); process.on('SIGINT', close);
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch(error => { process.stderr.write(String(error.message) + '\n'); process.exit(1); });

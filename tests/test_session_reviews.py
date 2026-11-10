@@ -62,6 +62,25 @@ class SessionReviewsTests(unittest.TestCase):
         self.assertIn("不包含成交、消耗等经营指标", exported)
         self.assertNotIn(self.temp.name, exported)
 
+    def test_export_marks_reused_history_endpoint_with_original_read_time(self):
+        class LinkedHistory:
+            def business_snapshot(self, _session_id):
+                return {"linked": True, "status": "ready", "source": "history_report",
+                        "link": {"accountLabel": "测试账号", "accountUid": "9988", "roomId": "123",
+                                 "roomTitle": "历史直播", "linkedAt": "2026-11-10T00:00:00Z"},
+                        "sampledAt": "2026-11-10T03:00:00Z", "roomState": "ended",
+                        "metrics": [{"label": "观看次数", "display": "5", "value": 5, "unit": "次"}],
+                        "endpoints": {"historyCore": {"ok": True, "reused": True,
+                                                       "retrievedAt": "2026-11-09T11:00:00Z"},
+                                      "historyTrade": {"ok": True, "reused": False,
+                                                       "retrievedAt": "2026-11-10T03:00:00Z"}}}
+
+        self.store.links = LinkedHistory()
+        self.store.save({"sessionId": SESSION_ID, "summary": "核对数据", "actions": ""})
+        exported = self.store.export_markdown(SESSION_ID).decode("utf-8")
+        self.assertIn("沿用先前接口结果：historyCore（2026-11-09T11:00:00Z）", exported)
+        self.assertNotIn("沿用先前接口结果：historyTrade", exported)
+
     def test_rejects_unknown_session_invalid_fields_and_empty_review(self):
         valid = {"sessionId": SESSION_ID, "summary": "有效", "actions": ""}
         invalid = [

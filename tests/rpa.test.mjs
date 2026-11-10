@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { taskUrl, validateResponse, measure, findMetric, roomList, historyBounds, historyWindow, historyRange, historyStartDate, historyRoomPage, validateHistoryEndpoint, normalizeHistoryReport, normalizeSnapshot, CollectError } from '../rpa/model.mjs';
 import { Store } from '../rpa/store.mjs';
-import { Collector } from '../rpa/collector.mjs';
+import { Collector, acquireCollectorGuard } from '../rpa/collector.mjs';
 
 // Synthetic fixtures test supported response shapes, not captured production data.
 const roomId = '7612345678901234567';
@@ -50,6 +50,15 @@ test('request targets are fixed and room IDs cannot become URLs or parameters', 
   assert.equal(new URL(taskUrl('core', roomId)).hostname, 'compass.jinritemai.com');
   assert.throws(() => taskUrl('unknown'));
   assert.throws(() => taskUrl('base', '1&room_id=2'));
+});
+test('collector guard stays exclusive until its owning process releases it', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'liveops-collector-guard-'));
+  try {
+    const first = acquireCollectorGuard(root);
+    try { assert.throws(() => acquireCollectorGuard(root), /已有罗盘采集器/); }
+    finally { first.close(); }
+    acquireCollectorGuard(root).close();
+  } finally { fs.rmSync(root, { recursive: true }); }
 });
 test('auth, throttling, malformed and business errors never become empty successful data', () => {
   for (const response of [{ status: 401 }, { status: 403 }, { status: 429 }, { status: 200, body: null }, { status: 200, body: { st: 7, msg: 'error' } }]) assert.throws(() => validateResponse(response), CollectError);
@@ -185,14 +194,42 @@ test('historical detail marks partial failures and retains the last complete rep
       return structuredClone(task === 'identity' ? responses.identity : historyResponses[task]);
     };
     const retained = await t.collector.command('history.report', { id: t.id, room: roomId });
-    assert.match(retained.warning, /保留上次完整报表/);
-    assert.deepEqual(t.store.historyReport(t.id, roomId), complete.report);
+    assert.match(retained.warning, /沿用上次成功结果/);
+    assert.equal(retained.report.endpoints.historyCore.ok, true);
+    assert.equal(retained.report.endpoints.historyCore.reused, true);
+    assert.equal(retained.report.endpoints.historyCore.retrievedAt, complete.report.endpoints.historyCore.retrievedAt);
+    assert.deepEqual(retained.report.metrics.map(item => item.key), complete.report.metrics.map(item => item.key));
     t.collector.engine.request = async (_id, task) => {
       if (task !== 'identity') throw new CollectError('接口全部失败');
       return structuredClone(responses.identity);
     };
     await assert.rejects(t.collector.command('history.report', { id: t.id, room: roomId }), /三个历史详情接口均未成功/);
-    assert.deepEqual(t.store.historyReport(t.id, roomId), complete.report);
+    assert.deepEqual(t.store.historyReport(t.id, roomId), retained.report);
+  } finally { await t.cleanup(); }
+});
+test('disjoint partial history reads accumulate successful endpoints with their source times', async () => {
+  let attempt = 0;
+  const t = setup(task => {
+    if (task === 'identity') return structuredClone(responses.identity);
+    if (task === 'historyBasic') { attempt++; return structuredClone(historyResponses[task]); }
+    if ((attempt === 1 && task === 'historyTrade') || (attempt === 2 && task === 'historyCore'))
+      throw new CollectError('接口临时不可用');
+    return structuredClone(historyResponses[task]);
+  });
+  try {
+    savedHistoryRoom(t);
+    const first = await t.collector.command('history.report', { id: t.id, room: roomId });
+    assert.equal(first.report.endpoints.historyTrade.ok, false);
+    const second = await t.collector.command('history.report', { id: t.id, room: roomId });
+    assert.equal(second.report.endpoints.historyTrade.ok, true);
+    assert.equal(second.report.endpoints.historyCore.ok, true);
+    assert.equal(second.report.endpoints.historyCore.reused, true);
+    assert.equal(second.report.endpoints.historyCore.retrievedAt, first.report.endpoints.historyCore.retrievedAt);
+    assert.equal(second.report.metrics.some(item => item.category === '成交'), true);
+    assert.equal(second.report.metrics.some(item => item.category === '流量/转化'), true);
+    const reopened = new Store(t.root);
+    assert.equal(reopened.historyReport(t.id, roomId).endpoints.historyCore.reused, true);
+    reopened.close();
   } finally { await t.cleanup(); }
 });
 test('manual history pages resume after restart without snapshots or Feishu writes', async () => {
@@ -330,7 +367,13 @@ test('batch rate limit keeps cursor and defers automatic sync', async () => {
     assert.equal(batch.nextIndex, 0);
     assert.ok(Date.parse(batch.retryAfter) > Date.now());
     assert.ok(t.collector.next.get(t.id) > Date.now());
-    await assert.rejects(t.collector.command('history.batch.resume', { id: t.id }), /等待提示时间/);
+    await assert.rejects(t.collector.command('history.batch.resume', { id: t.id }), /请求受限/);
+    await assert.rejects(t.collector.command('history.batch.start', { id: t.id, startDate: date, endDate: date }), /请求受限/);
+    await assert.rejects(t.collector.command('history.page', { id: t.id, reset: true }), /请求受限/);
+    await assert.rejects(t.collector.command('history.report', { id: t.id, room: roomId }), /请求受限/);
+    const manual = await t.collector.command('sync', { id: t.id });
+    assert.equal(manual.queued, false);
+    assert.equal(manual.retryAfter, batch.retryAfter);
     assert.equal(t.store.historyReport(t.id, roomId), null);
   } finally { await t.cleanup(); }
 });

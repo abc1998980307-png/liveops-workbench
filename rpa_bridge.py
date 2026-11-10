@@ -11,9 +11,68 @@ import threading
 import uuid
 from runtime_config import DATA_ROOT, MANAGED_NODE, MANAGED_PLAYWRIGHT
 
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:  # macOS and Linux
+    msvcrt = None
+
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("LIVEOPS_RPA_DATA", str(DATA_ROOT / "rpa")))
 RUNTIME = Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/node"
+
+
+def _acquire_instance_lock(directory):
+    lock = (directory / "collector.instance.lock").open("a+b")
+    try:
+        if fcntl:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        elif msvcrt:
+            lock.seek(0, os.SEEK_END)
+            if lock.tell() == 0:
+                lock.write(b"\0")
+                lock.flush()
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            raise RuntimeError("当前系统不支持采集器单实例锁")
+        return lock
+    except (BlockingIOError, OSError) as error:
+        lock.close()
+        raise RuntimeError("同一数据目录已有罗盘采集器运行，请使用现有工作台") from error
+    except Exception:
+        lock.close()
+        raise
+
+
+def _release_instance_lock(lock):
+    if lock is None:
+        return
+    try:
+        if fcntl:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        elif msvcrt:
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+    finally:
+        lock.close()
+
+
+def _wait_for_collector_exit(process):
+    try:
+        process.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
 
 
 def _node_major(executable):
@@ -64,22 +123,37 @@ class CollectorBridge:
         self.lock = threading.RLock()
         self.pending = {}
         self.log = None
+        self.instance_lock = None
 
     def _start(self):
         if self.process and self.process.poll() is None:
             return
+        if self.process:
+            for target in self.pending.values():
+                target.put({"error": "本机采集器已停止，请刷新页面重试。"})
+            self.pending.clear()
+            self.process = None
+        if self.instance_lock:
+            _release_instance_lock(self.instance_lock)
+            self.instance_lock = None
         node = discover_node()
         module = discover_playwright()
         DATA.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if self.log:
-            self.log.close()
-        self.log = (DATA / "collector.log").open("a", encoding="utf-8")
-        env = dict(os.environ, LIVEOPS_PLAYWRIGHT_MODULE=module, LIVEOPS_RPA_DATA=str(DATA))
-        self.process = subprocess.Popen(
-            [node, str(ROOT / "rpa/collector.mjs")], cwd=ROOT, env=env,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log,
-            text=True, bufsize=1,
-        )
+        instance_lock = _acquire_instance_lock(DATA)
+        try:
+            if self.log:
+                self.log.close()
+            self.log = (DATA / "collector.log").open("a", encoding="utf-8")
+            env = dict(os.environ, LIVEOPS_PLAYWRIGHT_MODULE=module, LIVEOPS_RPA_DATA=str(DATA))
+            self.process = subprocess.Popen(
+                [node, str(ROOT / "rpa/collector.mjs")], cwd=ROOT, env=env,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log,
+                text=True, bufsize=1,
+            )
+        except Exception:
+            _release_instance_lock(instance_lock)
+            raise
+        self.instance_lock = instance_lock
         threading.Thread(target=self._read, args=(self.process,), daemon=True).start()
 
     def _read(self, process):
@@ -94,11 +168,15 @@ class CollectorBridge:
                 if target:
                     target.put(response)
         finally:
+            _wait_for_collector_exit(process)
             with self.lock:
                 if self.process is process:
                     for target in self.pending.values():
                         target.put({"error": "本机采集器已停止，请刷新页面重试。"})
                     self.pending.clear()
+                    self.process = None
+                    _release_instance_lock(self.instance_lock)
+                    self.instance_lock = None
 
     def call(self, method, args=None, timeout=12):
         identifier, target = uuid.uuid4().hex, queue.Queue(maxsize=1)
@@ -127,15 +205,16 @@ class CollectorBridge:
         if process and process.poll() is None:
             try:
                 process.stdin.close()
-                process.wait(timeout=20)
-            except (OSError, subprocess.TimeoutExpired):
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
+            except OSError:
+                pass
+            _wait_for_collector_exit(process)
         if self.log:
             self.log.close()
+        with self.lock:
+            if self.process is process and self.instance_lock:
+                _release_instance_lock(self.instance_lock)
+                self.instance_lock = None
+                self.process = None
 
 
 COLLECTOR = CollectorBridge()
