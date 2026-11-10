@@ -1,4 +1,5 @@
 import io
+import ast
 import json
 import os
 import subprocess
@@ -12,6 +13,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts import install
+from scripts import verify_install
 
 
 class InstallerTests(unittest.TestCase):
@@ -143,3 +145,33 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), [str(root), str(root / "rpa"), str(root)])
         self.assertFalse(root.exists())
+
+    def test_install_verifier_rejects_failures_even_with_python_optimization(self):
+        verifier = install.PROJECT / "scripts/verify_install.py"
+        source = verifier.read_text(encoding="utf-8")
+        self.assertFalse(any(isinstance(node, ast.Assert) for node in ast.walk(ast.parse(source))))
+        command = [sys.executable, "-O", "-c",
+                   "from scripts.verify_install import require; require(False, 'synthetic failure')"]
+        result = subprocess.run(command, cwd=install.PROJECT, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("安装验收失败：synthetic failure", result.stderr)
+
+    def test_install_verifier_creates_fresh_business_root_for_each_attempt(self):
+        installed = self.root / "installed"
+        for relative in verify_install.RUNTIME_COMPONENTS:
+            path = installed / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if relative.endswith(("playwright-core", "dailyhot-api")):
+                path.mkdir()
+            else:
+                path.write_text("pinned tool fixture")
+        first = verify_install.prepare_runtime_root(installed)
+        (first / "recordings").mkdir()
+        (first / "recordings" / "synthetic.flv").write_text("first attempt")
+        second = verify_install.prepare_runtime_root(installed)
+        self.assertNotEqual(first, second)
+        self.assertFalse((second / "recordings").exists())
+        for relative in verify_install.RUNTIME_COMPONENTS:
+            self.assertTrue((second / relative).is_symlink())
+            self.assertEqual((second / relative).resolve(), (installed / relative).resolve())
+        self.assertEqual((first / "recordings" / "synthetic.flv").read_text(), "first attempt")
