@@ -215,8 +215,17 @@ export function historyRoomPage(body, requestedPage) {
     if (typeof id !== 'string' || !/^\d{1,30}$/.test(id)) throw new CollectError('历史场次 ID 无法保持精确字符串，已停止导入。');
     const name = row.live_room;
     const title = typeof name === 'string' ? name : name?.room_title || name?.room_name || name?.title;
-    const rawTime = row.start_time?.start_time ?? row.start_time;
+    let rawTime = row.start_time ?? row.live_start_time ?? null;
+    for (let depth = 0; depth < 3 && rawTime && typeof rawTime === 'object' && !Array.isArray(rawTime); depth++) {
+      rawTime = rawTime.start_time ?? rawTime.value ?? rawTime.value_str ?? rawTime.value_text ?? rawTime.display_value ?? null;
+    }
     let startedAt = rawTime == null ? null : String(rawTime).slice(0, 80);
+    const localTime = /^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2})(?::(\d{2}))?$/.exec(startedAt || '');
+    if (localTime) {
+      const [, year, month, day, hour, minute, second = '00'] = localTime;
+      const zoned = `${year}-${month}-${day}T${hour}:${minute}:${second}+08:00`;
+      startedAt = historyStartDate(zoned) ? zoned : null;
+    }
     if (/^\d{10,13}$/.test(startedAt || '')) {
       const time = Number(startedAt) * (startedAt.length === 10 ? 1000 : 1);
       startedAt = Number.isFinite(time) ? new Date(time).toISOString() : null;

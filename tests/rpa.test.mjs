@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -60,6 +61,41 @@ test('collector guard stays exclusive until its owning process releases it', () 
     acquireCollectorGuard(root).close();
   } finally { fs.rmSync(root, { recursive: true }); }
 });
+test('collector process guard blocks another process until exit', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'liveops-collector-guard-process-'));
+  const moduleUrl = new URL('../rpa/collector.mjs', import.meta.url).href;
+  const holdScript = `import { acquireCollectorGuard } from ${JSON.stringify(moduleUrl)};
+    const guard = acquireCollectorGuard(process.argv[1]);
+    process.stdout.write('ready\\n');
+    process.stdin.resume();
+    process.stdin.on('end', () => guard.close());`;
+  const probeScript = `import { acquireCollectorGuard } from ${JSON.stringify(moduleUrl)};
+    acquireCollectorGuard(process.argv[1]).close();`;
+  const holder = spawn(process.execPath, ['--input-type=module', '-e', holdScript, root],
+    { stdio: ['pipe', 'pipe', 'pipe'] });
+  try {
+    await new Promise((resolve, reject) => {
+      holder.stdout.once('data', resolve);
+      holder.once('error', reject);
+      holder.once('exit', code => reject(new Error(`collector holder exited early (${code})`)));
+    });
+    const probe = () => spawnSync(process.execPath, ['--input-type=module', '-e', probeScript, root],
+      { encoding: 'utf8', timeout: 10000 });
+    const blocked = probe();
+    assert.notEqual(blocked.status, 0);
+    assert.match(blocked.stderr, /已有罗盘采集器/);
+    holder.stdin.end();
+    await new Promise((resolve, reject) => {
+      holder.once('exit', code => code === 0 ? resolve() : reject(new Error(`collector holder exited (${code})`)));
+      holder.once('error', reject);
+    });
+    const released = probe();
+    assert.equal(released.status, 0, released.stderr);
+  } finally {
+    if (holder.exitCode === null) holder.kill();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 test('auth, throttling, malformed and business errors never become empty successful data', () => {
   for (const response of [{ status: 401 }, { status: 403 }, { status: 429 }, { status: 200, body: null }, { status: 200, body: { st: 7, msg: 'error' } }]) assert.throws(() => validateResponse(response), CollectError);
   assert.deepEqual(validateResponse({ status: 200, body: { st: 0, data: {} } }), { st: 0, data: {} });
@@ -101,6 +137,11 @@ test('historical request and response have bounded pagination and exact string I
   assert.deepEqual(historyRoomPage(body, 2).rooms[0], { id: roomId, title: '测试历史直播', state: 'ended', startedAt: '2026-08-23 08:04:00', today: false, source: 'compass_history' });
   const observedShape = { ...body, data: { ...body.data, data_result: [{ ...body.data.data_result[0], start_time: { start_time: '2026-08-23 08:04:00', live_duration: '01:00:00' } }] } };
   assert.equal(historyRoomPage(observedShape, 2).rooms[0].startedAt, '2026-08-23 08:04:00');
+  const measuredTime = { ...body, data: { ...body.data, data_result: [{ ...body.data.data_result[0], start_time: { unit: 'time', value: 1787443200 } }] } };
+  assert.equal(historyRoomPage(measuredTime, 2).rooms[0].startedAt, new Date(1787443200 * 1000).toISOString());
+  const actualTime = { ...body, data: { ...body.data, data_result: [{ ...body.data.data_result[0], start_time: { live_duration: '11小时58分24秒', start_time: '2026/10/29 11:04' } }] } };
+  assert.equal(historyRoomPage(actualTime, 2).rooms[0].startedAt, '2026-10-29T11:04:00+08:00');
+  assert.equal(historyStartDate(historyRoomPage(actualTime, 2).rooms[0].startedAt), '2026-10-29');
   assert.throws(() => historyRoomPage({ data: { ...body.data, data_result: [{ operation: { live_id: Number(roomId) } }] } }, 2), CollectError);
   assert.throws(() => historyRoomPage(body, 1), CollectError);
   assert.throws(() => historyRoomPage({ data: { data_result: [] } }, 1), CollectError);
