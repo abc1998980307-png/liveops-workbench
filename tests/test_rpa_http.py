@@ -91,6 +91,14 @@ class RpaHttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(data)["method"], "history.report")
         self.assertEqual(json.loads(data)["args"], {"room": "7612345678901234567", "id": account})
+        for action, expected in (("history-batch-start", "history.batch.start"),
+                                 ("history-batch-resume", "history.batch.resume"),
+                                 ("history-batch-pause", "history.batch.pause")):
+            status, data = self.request("POST", f"/api/rpa/accounts/{account}/{action}",
+                                        b'{"startDate":"2026-11-01","endDate":"2026-11-10"}',
+                                        {"Content-Type": "application/json"})
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(data)["method"], expected)
         status, _ = self.request("POST", report_route, b"{}",
                                  {"Origin": "https://attacker.example", "Content-Type": "application/json"})
         self.assertEqual(status, 403)

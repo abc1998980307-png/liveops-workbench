@@ -14,6 +14,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS snapshots (id INTEGER PRIMARY KEY, account TEXT NOT NULL, room TEXT NOT NULL, time TEXT NOT NULL, json TEXT NOT NULL, raw TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS snapshot_room ON snapshots(account,room,id DESC);
       CREATE TABLE IF NOT EXISTS history_progress (account TEXT PRIMARY KEY, json TEXT NOT NULL, FOREIGN KEY(account) REFERENCES accounts(id));
+      CREATE TABLE IF NOT EXISTS history_batch (account TEXT PRIMARY KEY, json TEXT NOT NULL, FOREIGN KEY(account) REFERENCES accounts(id));
       CREATE TABLE IF NOT EXISTS history_reports (account TEXT NOT NULL, room TEXT NOT NULL, json TEXT NOT NULL, raw TEXT NOT NULL, PRIMARY KEY(account,room), FOREIGN KEY(account,room) REFERENCES rooms(account,id));
       CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, account TEXT, time TEXT NOT NULL, message TEXT NOT NULL);`);
   }
@@ -38,6 +39,29 @@ export class Store {
     this.account(account);
     this.db.prepare('INSERT INTO history_progress(account,json) VALUES (?,?) ON CONFLICT(account) DO UPDATE SET json=excluded.json').run(account, JSON.stringify(progress));
     return progress;
+  }
+  historyBatch(account) {
+    const row = this.db.prepare('SELECT json FROM history_batch WHERE account=?').get(account);
+    return row ? JSON.parse(row.json) : null;
+  }
+  saveHistoryBatch(account, progress) {
+    this.account(account);
+    this.db.prepare('INSERT INTO history_batch(account,json) VALUES (?,?) ON CONFLICT(account) DO UPDATE SET json=excluded.json').run(account, JSON.stringify(progress));
+    return progress;
+  }
+  recoverHistoryBatches() {
+    for (const row of this.db.prepare('SELECT account,json FROM history_batch').all()) {
+      const progress = JSON.parse(row.json);
+      if (progress.status === 'running') this.saveHistoryBatch(row.account, {
+        ...progress, status: 'paused', error: '工作台已重启，点击继续回填。', updatedAt: new Date().toISOString(),
+      });
+    }
+  }
+  allRooms(account) {
+    this.account(account);
+    const rows = this.db.prepare('SELECT json FROM rooms WHERE account=? ORDER BY id LIMIT 10001').all(account);
+    if (rows.length > 10000) throw new Error('本机保存场次超过批量扫描上限 10000，请先导出并整理历史数据');
+    return rows.map(row => JSON.parse(row.json));
   }
   historyReport(account, room, raw = false) {
     const row = this.db.prepare('SELECT json,raw FROM history_reports WHERE account=? AND room=?').get(account, room);

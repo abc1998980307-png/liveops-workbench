@@ -11,15 +11,18 @@ import { FeishuSync } from './feishu.mjs';
 export class Collector {
   constructor(store, engine) {
     this.store = store; this.engine = engine; this.busy = new Map(); this.historyBusy = new Map(); this.next = new Map(); this.generation = new Map(); this.stopping = false;
+    this.historyRequestSpacingMs = 800;
     this.feishu = new FeishuSync(store);
   }
   state() {
-    return { ready: true, accounts: this.store.accounts().map(a => ({ ...a, busy: this.busy.has(a.id), historyBusy: this.historyBusy.has(a.id), history: this.store.historyProgress(a.id), nextSync: a.enabled ? new Date(this.next.get(a.id) || Date.now()).toISOString() : null, rooms: this.store.rooms(a.id) })), events: this.store.events(), retentionDays: 30, historyBounds: historyBounds() };
+    return { ready: true, accounts: this.store.accounts().map(a => ({ ...a, busy: this.busy.has(a.id), historyBusy: this.historyBusy.has(a.id), history: this.store.historyProgress(a.id), historyBatch: this.store.historyBatch(a.id), nextSync: a.enabled ? new Date(this.next.get(a.id) || Date.now()).toISOString() : null, rooms: this.store.rooms(a.id) })), events: this.store.events(), retentionDays: 30, historyBounds: historyBounds() };
   }
   pause(id, message = '已暂停自动同步') {
     const a = this.store.account(id);
     this.generation.set(id, (this.generation.get(id) || 0) + 1);
     this.store.save({ ...a, enabled: false, state: 'paused', error: null });
+    const batch = this.store.historyBatch(id);
+    if (batch?.status === 'running') this.store.saveHistoryBatch(id, { ...batch, status: 'paused', updatedAt: new Date().toISOString() });
     this.store.event(id, message);
   }
   async login(id) {
@@ -167,28 +170,36 @@ export class Collector {
     this.historyBusy.set(id, task);
     try { return await task; } finally { this.historyBusy.delete(id); }
   }
-  async historyReport(id, roomId) {
+  async historyReport(id, roomId, batchVersion = null) {
     const account = this.store.account(id);
-    if (this.stopping || this.busy.has(id) || this.historyBusy.has(id)) throw new Error('该账号正在执行其他读取任务');
+    if (this.stopping || this.busy.has(id) || (batchVersion === null && this.historyBusy.has(id))) throw new Error('该账号正在执行其他读取任务');
     if (!account.uid) throw new Error('请先完成罗盘账号身份核验');
     if (!/^\d{1,30}$/.test(roomId)) throw new Error('历史场次 ID 无效');
     const room = this.store.room(id, roomId);
     if (!room) throw new Error('请先将历史场次目录导入本机');
     if (room.state === 'live') throw new Error('直播中的场次请使用实时采集');
-    const version = this.generation.get(id) || 0;
+    const version = batchVersion ?? (this.generation.get(id) || 0);
     const current = () => !this.stopping && version === (this.generation.get(id) || 0);
     const task = (async () => {
       try {
         await this.verifyHistoryIdentity(id, account.uid);
         if (!current()) return { cancelled: true };
         const names = ['historyBasic', 'historyCore', 'historyTrade'];
-        const values = await Promise.all(names.map(async name => {
+        const read = async name => {
           try { return { ok: true, body: validateHistoryEndpoint(name, await this.engine.request(id, name, roomId)) }; }
           catch (error) {
             if (['needs_login', 'rate_limited', 'account_changed'].includes(error.kind)) throw error;
             return { ok: false, error: String(error.message || '读取失败').slice(0, 200) };
           }
-        }));
+        };
+        const values = [];
+        if (batchVersion === null) values.push(...await Promise.all(names.map(read)));
+        else for (const name of names) {
+          if (!current()) return { cancelled: true };
+          values.push(await read(name));
+          if (name !== names.at(-1) && this.historyRequestSpacingMs)
+            await new Promise(resolve => setTimeout(resolve, this.historyRequestSpacingMs));
+        }
         if (!current()) return { cancelled: true };
         const results = Object.fromEntries(names.map((name, index) => [name, values[index]]));
         if (!values.some(value => value.ok)) throw new CollectError('三个历史详情接口均未成功，原报表未覆盖。');
@@ -210,13 +221,130 @@ export class Collector {
         throw error;
       }
     })();
+    if (batchVersion !== null) return task;
     this.historyBusy.set(id, task);
     try { return await task; } finally { this.historyBusy.delete(id); }
+  }
+  startHistoryBatch(id, startDate, endDate, resume = false) {
+    const account = this.store.account(id);
+    if (this.stopping || this.busy.has(id) || this.historyBusy.has(id)) throw new Error('该账号正在执行其他读取任务');
+    if (!account.uid) throw new Error('请先完成罗盘账号身份核验');
+    let progress;
+    if (resume) {
+      progress = this.store.historyBatch(id);
+      if (!progress || !['paused', 'error', 'rate_limited'].includes(progress.status)) throw new Error('没有可继续的历史回填任务');
+      if (progress.uid !== account.uid) throw new Error('账号身份已变化，不能继续旧回填任务');
+      if (progress.retryAfter && Date.now() < Date.parse(progress.retryAfter)) throw new Error('罗盘请求受限，请等待提示时间后重试');
+    } else {
+      const selection = historyRange(startDate, endDate);
+      const candidates = this.store.allRooms(id).filter(room => {
+        if (room.state !== 'ended') return false;
+        const date = historyStartDate(room.startedAt);
+        return date && date >= selection.startDate && date <= selection.endDate;
+      });
+      if (candidates.length > 500) throw new Error('所选日期内已有超过 500 场，请缩小范围');
+      const pending = candidates.filter(room => !this.reportComplete(id, room.id));
+      progress = { uid: account.uid, startDate, endDate, roomIds: pending.map(room => room.id),
+        selected: candidates.length, skippedExisting: candidates.length - pending.length,
+        nextIndex: 0, succeeded: 0, partial: 0, failed: 0, consecutiveFailures: 0, skippedOnResume: 0,
+        failures: [], status: pending.length ? 'running' : 'completed', error: null, retryAfter: null,
+        startedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    }
+    if (!resume && !progress.roomIds.length) {
+      this.store.saveHistoryBatch(id, progress);
+      return { batch: progress };
+    }
+    progress = this.store.saveHistoryBatch(id, { ...progress, status: 'running', error: null,
+      retryAfter: null, updatedAt: new Date().toISOString() });
+    const version = this.generation.get(id) || 0;
+    const task = this.runHistoryBatch(id, version);
+    const tracked = task.catch(error => {
+      const message = String(error.message || '历史回填任务失败').replace(/https?:\/\/\S+/g, '罗盘页面').slice(0, 200);
+      try {
+        const saved = this.store.historyBatch(id);
+        if (saved?.status === 'running') this.store.saveHistoryBatch(id, { ...saved, status: 'error', error: message, updatedAt: new Date().toISOString() });
+      } catch { /* A storage failure must not start another read or erase the saved cursor. */ }
+      console.error(`历史回填暂停：${message}`);
+    }).finally(() => { if (this.historyBusy.get(id) === tracked) this.historyBusy.delete(id); });
+    this.historyBusy.set(id, tracked);
+    return { batch: progress };
+  }
+  reportComplete(id, roomId) {
+    const report = this.store.historyReport(id, roomId);
+    return !!report && ['historyBasic', 'historyCore', 'historyTrade'].every(name => report.endpoints?.[name]?.ok);
+  }
+  pauseHistoryBatch(id) {
+    this.store.account(id);
+    const progress = this.store.historyBatch(id);
+    if (!progress || progress.status !== 'running') return { batch: progress };
+    this.generation.set(id, (this.generation.get(id) || 0) + 1);
+    return { batch: this.store.saveHistoryBatch(id, { ...progress, status: 'paused', updatedAt: new Date().toISOString() }) };
+  }
+  async runHistoryBatch(id, version) {
+    const current = () => !this.stopping && version === (this.generation.get(id) || 0);
+    while (current()) {
+      let progress = this.store.historyBatch(id);
+      if (progress?.status !== 'running') return;
+      if (progress.nextIndex >= progress.roomIds.length) {
+        this.store.saveHistoryBatch(id, { ...progress, status: 'completed', updatedAt: new Date().toISOString() });
+        this.store.event(id, `历史报表批量回填结束：成功 ${progress.succeeded} 场，部分 ${progress.partial} 场，失败 ${progress.failed} 场；未写入飞书`);
+        return;
+      }
+      const roomId = progress.roomIds[progress.nextIndex];
+      try {
+        if (this.store.account(id).uid !== progress.uid) throw new CollectError('账号身份已变化，已停止历史回填。', 'account_changed');
+        if (this.reportComplete(id, roomId)) {
+          this.store.saveHistoryBatch(id, { ...progress, nextIndex: progress.nextIndex + 1,
+            skippedOnResume: progress.skippedOnResume + 1, updatedAt: new Date().toISOString() });
+          continue;
+        }
+        const result = await this.historyReport(id, roomId, version);
+        if (!current() || result.cancelled) return;
+        progress = this.store.historyBatch(id);
+        if (progress.status !== 'running') return;
+        const partial = !this.reportComplete(id, roomId);
+        this.store.saveHistoryBatch(id, { ...progress, nextIndex: progress.nextIndex + 1,
+          [partial ? 'partial' : 'succeeded']: progress[partial ? 'partial' : 'succeeded'] + 1,
+          consecutiveFailures: 0,
+          updatedAt: new Date().toISOString() });
+      } catch (error) {
+        if (!current()) return;
+        progress = this.store.historyBatch(id);
+        const message = String(error.message || '读取失败').replace(/https?:\/\/\S+/g, '罗盘页面').slice(0, 200);
+        if (['needs_login', 'rate_limited', 'account_changed'].includes(error.kind)) {
+          const limited = error.kind === 'rate_limited';
+          if (limited) this.next.set(id, Date.now() + 300000);
+          this.store.saveHistoryBatch(id, { ...progress, status: limited ? 'rate_limited' : 'error',
+            error: message, retryAfter: limited ? new Date(Date.now() + 300000).toISOString() : null,
+            updatedAt: new Date().toISOString() });
+          this.store.event(id, message);
+          return;
+        }
+        if (!(error instanceof CollectError)) {
+          this.store.saveHistoryBatch(id, { ...progress, status: 'error', error: message, updatedAt: new Date().toISOString() });
+          return;
+        }
+        this.store.saveHistoryBatch(id, { ...progress, nextIndex: progress.nextIndex + 1,
+          failed: progress.failed + 1, consecutiveFailures: (progress.consecutiveFailures || 0) + 1,
+          failures: [...progress.failures, { roomId, message }].slice(-100), updatedAt: new Date().toISOString() });
+        if ((progress.consecutiveFailures || 0) >= 2) {
+          const latest = this.store.historyBatch(id);
+          this.store.saveHistoryBatch(id, { ...latest, status: 'error', error: '连续三场读取失败，请检查罗盘状态后继续', updatedAt: new Date().toISOString() });
+          return;
+        }
+      }
+      if (current() && this.historyRequestSpacingMs)
+        await new Promise(resolve => setTimeout(resolve, this.historyRequestSpacingMs));
+    }
   }
   tick() {
     if (this.stopping) return;
     this.feishu.tick();
-    for (const a of this.store.accounts()) if (a.enabled && !this.busy.has(a.id) && !this.historyBusy.has(a.id) && Date.now() >= (this.next.get(a.id) || 0)) this.start(a.id);
+    for (const a of this.store.accounts()) {
+      const batch = this.store.historyBatch(a.id);
+      if (batch?.status === 'rate_limited' && Date.now() < Date.parse(batch.retryAfter)) continue;
+      if (a.enabled && !this.busy.has(a.id) && !this.historyBusy.has(a.id) && Date.now() >= (this.next.get(a.id) || 0)) this.start(a.id);
+    }
   }
   async command(method, args = {}) {
     switch (method) {
@@ -237,6 +365,9 @@ export class Collector {
       case 'history.page': return this.historyPage(String(args.id || ''), args.reset === true,
         args.startDate ?? null, args.endDate ?? null);
       case 'history.report': return this.historyReport(String(args.id || ''), String(args.room || ''));
+      case 'history.batch.start': return this.startHistoryBatch(String(args.id || ''), args.startDate, args.endDate);
+      case 'history.batch.resume': return this.startHistoryBatch(String(args.id || ''), null, null, true);
+      case 'history.batch.pause': return this.pauseHistoryBatch(String(args.id || ''));
       case 'room.review': {
         const account = this.store.account(String(args.account || ''));
         const roomId = String(args.room || '');
@@ -280,6 +411,7 @@ async function main() {
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   let collector;
   const store = new Store(root);
+  store.recoverHistoryBatches();
   const engine = new BrowserEngine(root, id => { if (collector) collector.pause(id, '罗盘窗口已关闭，自动同步已暂停'); });
   collector = new Collector(store, engine);
   const timer = setInterval(() => collector.tick(), 5000);

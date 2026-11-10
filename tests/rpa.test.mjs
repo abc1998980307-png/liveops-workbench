@@ -37,6 +37,7 @@ function setup(handler = task => structuredClone(responses[task])) {
   const store = new Store(root);
   const engine = { request: async (_id, task, options) => handler(task, options), open: async () => ({}), close: async () => {} };
   const collector = new Collector(store, engine);
+  collector.historyRequestSpacingMs = 0;
   const a = store.create('测试'); store.save({ ...a, enabled: true });
   return { root, store, collector, id: a.id, cleanup: async () => { await collector.close(); fs.rmSync(root, { recursive: true }); } };
 }
@@ -248,6 +249,149 @@ test('history range only imports dated rooms and ties continuation to UID and ra
     t.store.save({ ...t.store.account(t.id), uid: 'different' });
     await assert.rejects(t.collector.command('history.page', { id: t.id }), /重新读取/);
     assert.equal(t.store.db.prepare('SELECT COUNT(*) AS n FROM snapshots').get().n, 0);
+  } finally { await t.cleanup(); }
+});
+test('batch history backfill is bounded, durable and isolated from Feishu', async () => {
+  const t = setup(task => structuredClone(task === 'identity' ? responses.identity : historyResponses[task]));
+  try {
+    savedHistoryRoom(t);
+    const date = historyBounds().latest;
+    t.store.saveRoom(t.id, { ...t.store.room(t.id, roomId), startedAt: `${date} 08:00:00` });
+    t.store.saveRoom(t.id, { id: '7612345678901234568', title: '直播中', state: 'live', startedAt: `${date} 09:00:00` });
+    t.collector.feishu.config = { appToken: 'app_test', tableId: 'tbl_test', accountIds: [t.id], enabled: true };
+    const started = t.collector.command('history.batch.start', { id: t.id, startDate: date, endDate: date });
+    const first = await started;
+    assert.equal(first.batch.selected, 1);
+    assert.equal(first.batch.status, 'running');
+    await t.collector.historyBusy.get(t.id);
+    const batch = t.store.historyBatch(t.id);
+    assert.deepEqual([batch.status, batch.nextIndex, batch.succeeded, batch.failed], ['completed', 1, 1, 0]);
+    assert.equal(t.store.historyReport(t.id, roomId).metrics.length, 5);
+    assert.equal(t.store.db.prepare('SELECT COUNT(*) AS n FROM snapshots').get().n, 0);
+    assert.equal(t.collector.feishu.pending().length, 0);
+    assert.equal(t.store.account(t.id).enabled, false);
+    const repeated = await t.collector.command('history.batch.start', { id: t.id, startDate: date, endDate: date });
+    assert.deepEqual([repeated.batch.status, repeated.batch.skippedExisting, repeated.batch.roomIds.length], ['completed', 1, 0]);
+  } finally { await t.cleanup(); }
+});
+test('batch pause cancels an in-flight report without moving its cursor, then resumes', async () => {
+  let resolveBasic;
+  const t = setup(task => task === 'historyBasic' ? new Promise(resolve => { resolveBasic = resolve; }) :
+    structuredClone(task === 'identity' ? responses.identity : historyResponses[task]));
+  try {
+    savedHistoryRoom(t);
+    const date = historyBounds().latest;
+    t.store.saveRoom(t.id, { ...t.store.room(t.id, roomId), startedAt: `${date} 08:00:00` });
+    await t.collector.command('history.batch.start', { id: t.id, startDate: date, endDate: date });
+    while (!resolveBasic) await new Promise(resolve => setImmediate(resolve));
+    await assert.rejects(t.collector.command('history.batch.start', { id: t.id, startDate: date, endDate: date }), /正在执行其他读取任务/);
+    const paused = await t.collector.command('history.batch.pause', { id: t.id });
+    assert.equal(paused.batch.status, 'paused');
+    resolveBasic(structuredClone(historyResponses.historyBasic));
+    await t.collector.historyBusy.get(t.id);
+    assert.equal(t.store.historyBatch(t.id).nextIndex, 0);
+    assert.equal(t.store.historyReport(t.id, roomId), null);
+    t.collector.engine.request = async (_id, task) => structuredClone(task === 'identity' ? responses.identity : historyResponses[task]);
+    await t.collector.command('history.batch.resume', { id: t.id });
+    await t.collector.historyBusy.get(t.id);
+    assert.deepEqual([t.store.historyBatch(t.id).status, t.store.historyBatch(t.id).succeeded], ['completed', 1]);
+  } finally { await t.cleanup(); }
+});
+test('batch stops on account switch without saving or advancing', async () => {
+  let reads = 0;
+  const t = setup(task => task === 'identity'
+    ? { data: { author_id: ++reads === 1 ? '99887766' : 'other' } }
+    : structuredClone(historyResponses[task]));
+  try {
+    savedHistoryRoom(t);
+    const date = historyBounds().latest;
+    t.store.saveRoom(t.id, { ...t.store.room(t.id, roomId), startedAt: `${date} 08:00:00` });
+    await t.collector.command('history.batch.start', { id: t.id, startDate: date, endDate: date });
+    await t.collector.historyBusy.get(t.id);
+    const batch = t.store.historyBatch(t.id);
+    assert.deepEqual([batch.status, batch.nextIndex], ['error', 0]);
+    assert.match(batch.error, /身份已变化/);
+    assert.equal(t.store.historyReport(t.id, roomId), null);
+  } finally { await t.cleanup(); }
+});
+test('batch rate limit keeps cursor and defers automatic sync', async () => {
+  const t = setup(task => {
+    if (task === 'historyCore') throw new CollectError('请求过快', 'rate_limited');
+    return structuredClone(task === 'identity' ? responses.identity : historyResponses[task]);
+  });
+  try {
+    savedHistoryRoom(t);
+    const date = historyBounds().latest;
+    t.store.saveRoom(t.id, { ...t.store.room(t.id, roomId), startedAt: `${date} 08:00:00` });
+    await t.collector.command('history.batch.start', { id: t.id, startDate: date, endDate: date });
+    await t.collector.historyBusy.get(t.id);
+    const batch = t.store.historyBatch(t.id);
+    assert.equal(batch.status, 'rate_limited');
+    assert.equal(batch.nextIndex, 0);
+    assert.ok(Date.parse(batch.retryAfter) > Date.now());
+    assert.ok(t.collector.next.get(t.id) > Date.now());
+    await assert.rejects(t.collector.command('history.batch.resume', { id: t.id }), /等待提示时间/);
+    assert.equal(t.store.historyReport(t.id, roomId), null);
+  } finally { await t.cleanup(); }
+});
+test('batch counts partial reports separately and continues to the next room', async () => {
+  const secondRoom = '7612345678901234568';
+  const t = setup((task, room) => {
+    if (task === 'historyTrade' && room === roomId) throw new CollectError('交易明细暂缺');
+    return structuredClone(task === 'identity' ? responses.identity : historyResponses[task]);
+  });
+  try {
+    savedHistoryRoom(t);
+    const date = historyBounds().latest;
+    t.store.saveRoom(t.id, { ...t.store.room(t.id, roomId), startedAt: `${date} 08:00:00` });
+    t.store.saveRoom(t.id, { id: secondRoom, title: '第二场', state: 'ended', startedAt: `${date} 10:00:00` });
+    await t.collector.command('history.batch.start', { id: t.id, startDate: date, endDate: date });
+    await t.collector.historyBusy.get(t.id);
+    const batch = t.store.historyBatch(t.id);
+    assert.deepEqual([batch.status, batch.succeeded, batch.partial, batch.failed], ['completed', 1, 1, 0]);
+    assert.equal(t.store.historyReport(t.id, roomId).endpoints.historyTrade.ok, false);
+    assert.equal(t.store.historyReport(t.id, secondRoom).endpoints.historyTrade.ok, true);
+  } finally { await t.cleanup(); }
+});
+test('batch resume skips a complete report saved before its cursor checkpoint', async () => {
+  const calls = [];
+  const t = setup(task => { calls.push(task); return structuredClone(task === 'identity' ? responses.identity : historyResponses[task]); });
+  try {
+    savedHistoryRoom(t);
+    const date = historyBounds().latest;
+    t.store.saveRoom(t.id, { ...t.store.room(t.id, roomId), startedAt: `${date} 08:00:00` });
+    const originalSave = t.store.saveHistoryBatch.bind(t.store);
+    let fail = true;
+    t.store.saveHistoryBatch = (id, batch) => {
+      if (batch.nextIndex === 1 && fail) { fail = false; throw new Error('checkpoint failed'); }
+      return originalSave(id, batch);
+    };
+    await t.collector.command('history.batch.start', { id: t.id, startDate: date, endDate: date });
+    await t.collector.historyBusy.get(t.id);
+    assert.equal(t.store.historyBatch(t.id).nextIndex, 0);
+    assert.equal(t.store.historyBatch(t.id).status, 'error');
+    assert.equal(t.store.historyReport(t.id, roomId).endpoints.historyCore.ok, true);
+    const detailsBefore = calls.filter(task => task.startsWith('history')).length;
+    await t.collector.command('history.batch.resume', { id: t.id });
+    await t.collector.historyBusy.get(t.id);
+    assert.equal(calls.filter(task => task.startsWith('history')).length, detailsBefore);
+    assert.deepEqual([t.store.historyBatch(t.id).status, t.store.historyBatch(t.id).skippedOnResume], ['completed', 1]);
+    const second = new Store(t.root);
+    assert.equal(second.historyBatch(t.id).status, 'completed');
+    second.close();
+  } finally { await t.cleanup(); }
+});
+test('opening the database does not pause a live batch; startup recovery does', async () => {
+  const t = setup();
+  try {
+    const date = historyBounds().latest;
+    t.store.saveHistoryBatch(t.id, { status: 'running', uid: '99887766', startDate: date,
+      endDate: date, roomIds: [roomId], nextIndex: 0 });
+    const reader = new Store(t.root);
+    assert.equal(reader.historyBatch(t.id).status, 'running');
+    reader.close();
+    t.store.recoverHistoryBatches();
+    assert.equal(t.store.historyBatch(t.id).status, 'paused');
   } finally { await t.cleanup(); }
 });
 test('history import rejects switched identity and pause prevents in-flight writes', async () => {
