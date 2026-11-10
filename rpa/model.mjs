@@ -147,13 +147,59 @@ export function roomList(body) {
   return [...rooms.values()];
 }
 
-export function historyWindow(now = new Date()) {
+function shanghaiDate(now) {
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
   }).formatToParts(now).map(part => [part.type, part.value]));
-  const midnight = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day) - 89);
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+export function historyBounds(now = new Date()) {
+  const today = shanghaiDate(now);
+  const [year, month, day] = today.split('-').map(Number);
+  return { earliest: new Date(Date.UTC(year, month - 1, day - 89)).toISOString().slice(0, 10), latest: today };
+}
+
+export function historyWindow(now = new Date()) {
+  const { earliest } = historyBounds(now);
+  const midnight = Date.parse(`${earliest}T00:00:00Z`);
   return { beginDate: (midnight - 8 * 3600e3) / 1000,
-    beginDateFormat: `${new Date(midnight).toISOString().slice(0, 10)}T00:00:00+08:00` };
+    beginDateFormat: `${earliest}T00:00:00+08:00` };
+}
+
+function validCalendarDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return false;
+  const [year, month, day] = value.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day)).toISOString().slice(0, 10) === value;
+}
+
+export function historyRange(startDate, endDate, now = new Date()) {
+  const bounds = historyBounds(now);
+  if (!validCalendarDate(startDate) || !validCalendarDate(endDate) ||
+      startDate < bounds.earliest || endDate > bounds.latest || startDate > endDate)
+    throw new Error(`历史日期需在 ${bounds.earliest} 至 ${bounds.latest} 之间，且开始日期不晚于结束日期`);
+  return { startDate, endDate, ...historyWindow(now) };
+}
+
+export function historyStartDate(raw) {
+  if (raw == null) return null;
+  const value = String(raw);
+  if (/^\d{10}(?:\d{3})?$/.test(value)) {
+    const time = Number(value) * (value.length === 10 ? 1000 : 1);
+    const date = new Date(time);
+    return Number.isFinite(time) ? shanghaiDate(date) : null;
+  }
+  const local = /^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(value);
+  if (local) {
+    if (!validCalendarDate(local[1]) || (local[2] &&
+        (Number(local[2]) > 23 || Number(local[3]) > 59 || Number(local[4] || 0) > 59))) return null;
+    return local[1];
+  }
+  const zoned = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/.exec(value);
+  if (!zoned || !validCalendarDate(zoned[1]) || Number(zoned[2]) > 23 ||
+      Number(zoned[3]) > 59 || Number(zoned[4]) > 59) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : shanghaiDate(date);
 }
 
 export function historyRoomPage(body, requestedPage) {

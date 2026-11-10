@@ -77,6 +77,12 @@ class RpaHttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(data)["method"], "history.page")
         self.assertEqual(json.loads(data)["args"], {"reset": True, "id": account})
+        status, data = self.request("POST", route,
+                                    b'{"reset":true,"startDate":"2026-11-01","endDate":"2026-11-10"}',
+                                    {"Content-Type": "application/json"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data)["args"], {"reset": True, "startDate": "2026-11-01",
+                                                     "endDate": "2026-11-10", "id": account})
         status, _ = self.request("POST", route, b"{}", {"Origin": "https://attacker.example", "Content-Type": "application/json"})
         self.assertEqual(status, 403)
         report_route = f"/api/rpa/accounts/{account}/history-report"

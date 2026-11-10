@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { taskUrl, validateResponse, measure, findMetric, roomList, historyWindow, historyRoomPage, validateHistoryEndpoint, normalizeHistoryReport, normalizeSnapshot, CollectError } from '../rpa/model.mjs';
+import { taskUrl, validateResponse, measure, findMetric, roomList, historyBounds, historyWindow, historyRange, historyStartDate, historyRoomPage, validateHistoryEndpoint, normalizeHistoryReport, normalizeSnapshot, CollectError } from '../rpa/model.mjs';
 import { Store } from '../rpa/store.mjs';
 import { Collector } from '../rpa/collector.mjs';
 
@@ -70,6 +70,17 @@ test('room IDs stay precise and unknown status is not treated as live', () => {
 test('historical request and response have bounded pagination and exact string IDs', () => {
   const window = historyWindow(new Date('2026-11-10T10:00:00+08:00'));
   assert.deepEqual(window, { beginDate: 1786550400, beginDateFormat: '2026-08-13T00:00:00+08:00' });
+  assert.deepEqual(historyBounds(new Date('2026-11-10T10:00:00+08:00')), { earliest: '2026-08-13', latest: '2026-11-10' });
+  assert.deepEqual(historyRange('2026-09-01', '2026-09-30', new Date('2026-11-10T10:00:00+08:00')),
+    { startDate: '2026-09-01', endDate: '2026-09-30', ...window });
+  for (const range of [['2026-08-12', '2026-09-01'], ['2026-11-11', '2026-11-11'],
+    ['2026-09-30', '2026-09-01'], ['2026-09-31', '2026-10-01']])
+    assert.throws(() => historyRange(...range, new Date('2026-11-10T10:00:00+08:00')));
+  assert.equal(historyStartDate('2026-08-23 08:04:00'), '2026-08-23');
+  assert.equal(historyStartDate('2026-08-22T17:00:00Z'), '2026-08-23');
+  assert.equal(historyStartDate('1787443200'), '2026-08-23');
+  assert.equal(historyStartDate('2026-02-30 08:04:00'), null);
+  assert.equal(historyStartDate('unknown'), null);
   const url = new URL(taskUrl('history', { pageNo: 2, ...window }));
   assert.equal(url.pathname, '/compass_api/content_live/author/live_detail/history_live');
   assert.equal(url.searchParams.get('page_no'), '2');
@@ -185,11 +196,12 @@ test('historical detail marks partial failures and retains the last complete rep
 });
 test('manual history pages resume after restart without snapshots or Feishu writes', async () => {
   const ids = Array.from({ length: 10 }, (_, i) => `76123456789012345${String(i).padStart(2, '0')}`);
+  const day = historyBounds().latest;
   const calls = [];
   const t = setup((task, options) => {
     calls.push({ task, options });
     if (task === 'identity') return structuredClone(responses.identity);
-    if (task === 'history') return { data: { data_result: (options.pageNo === 1 ? ids : [ids[0]]).map(id => ({ live_room: `历史场次 ${id}`, operation: { live_id: id } })), page_result: { page_no: options.pageNo, page_size: 10, total: 11 } } };
+    if (task === 'history') return { data: { data_result: (options.pageNo === 1 ? ids : [ids[0]]).map(id => ({ live_room: `历史场次 ${id}`, start_time: `${day} 08:00:00`, operation: { live_id: id } })), page_result: { page_no: options.pageNo, page_size: 10, total: 11 } } };
     throw new Error('unexpected task');
   });
   try {
@@ -208,6 +220,34 @@ test('manual history pages resume after restart without snapshots or Feishu writ
     assert.equal(t.store.detail(t.id, ids[0]).latest, null);
     assert.equal(t.store.account(t.id).enabled, false);
     assert.deepEqual(calls.filter(c => c.task === 'history').map(c => c.options.pageNo), [1, 2]);
+  } finally { await t.cleanup(); }
+});
+test('history range only imports dated rooms and ties continuation to UID and range', async () => {
+  const { earliest, latest } = historyBounds();
+  const ids = ['7612345678901234561', '7612345678901234562', '7612345678901234563'];
+  const t = setup((task, options) => {
+    if (task === 'identity') return structuredClone(responses.identity);
+    if (task === 'history') return { data: { data_result: [
+      { operation: { live_id: ids[0] }, start_time: `${latest} 08:00:00` },
+      { operation: { live_id: ids[1] }, start_time: `${earliest} 08:00:00` },
+      { operation: { live_id: ids[2] } },
+    ], page_result: { page_no: options.pageNo, page_size: 10, total: 3 } } };
+    throw new Error('unexpected task');
+  });
+  try {
+    t.store.save({ ...t.store.account(t.id), uid: '99887766', enabled: false, state: 'paused' });
+    const first = await t.collector.command('history.page', { id: t.id, reset: true, startDate: latest, endDate: latest });
+    assert.deepEqual([first.scanned, first.imported, first.outsideRange, first.unknownDates], [3, 1, 1, 1]);
+    assert.deepEqual(t.store.rooms(t.id).map(room => room.id), [ids[0]]);
+    assert.equal(first.uid, '99887766');
+    assert.deepEqual(await t.collector.command('history.page', { id: t.id, startDate: latest, endDate: latest }), first);
+    await assert.rejects(t.collector.command('history.page', { id: t.id, startDate: earliest, endDate: latest }), /重新读取/);
+    const reopened = new Store(t.root);
+    assert.equal(reopened.historyProgress(t.id).startDate, latest);
+    reopened.close();
+    t.store.save({ ...t.store.account(t.id), uid: 'different' });
+    await assert.rejects(t.collector.command('history.page', { id: t.id }), /重新读取/);
+    assert.equal(t.store.db.prepare('SELECT COUNT(*) AS n FROM snapshots').get().n, 0);
   } finally { await t.cleanup(); }
 });
 test('history import rejects switched identity and pause prevents in-flight writes', async () => {

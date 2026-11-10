@@ -5,7 +5,7 @@ import readline from 'node:readline';
 import { pathToFileURL } from 'node:url';
 import { Store } from './store.mjs';
 import { BrowserEngine } from './engine.mjs';
-import { roomList, historyWindow, historyRoomPage, validateHistoryEndpoint, normalizeHistoryReport, normalizeSnapshot, CollectError } from './model.mjs';
+import { roomList, historyBounds, historyWindow, historyRange, historyStartDate, historyRoomPage, validateHistoryEndpoint, normalizeHistoryReport, normalizeSnapshot, CollectError } from './model.mjs';
 import { FeishuSync } from './feishu.mjs';
 
 export class Collector {
@@ -14,7 +14,7 @@ export class Collector {
     this.feishu = new FeishuSync(store);
   }
   state() {
-    return { ready: true, accounts: this.store.accounts().map(a => ({ ...a, busy: this.busy.has(a.id), historyBusy: this.historyBusy.has(a.id), history: this.store.historyProgress(a.id), nextSync: a.enabled ? new Date(this.next.get(a.id) || Date.now()).toISOString() : null, rooms: this.store.rooms(a.id) })), events: this.store.events(), retentionDays: 30 };
+    return { ready: true, accounts: this.store.accounts().map(a => ({ ...a, busy: this.busy.has(a.id), historyBusy: this.historyBusy.has(a.id), history: this.store.historyProgress(a.id), nextSync: a.enabled ? new Date(this.next.get(a.id) || Date.now()).toISOString() : null, rooms: this.store.rooms(a.id) })), events: this.store.events(), retentionDays: 30, historyBounds: historyBounds() };
   }
   pause(id, message = '已暂停自动同步') {
     const a = this.store.account(id);
@@ -103,15 +103,22 @@ export class Collector {
     if (String(currentUid) !== uid || this.store.account(id).uid !== uid)
       throw new CollectError('罗盘账号身份已变化，已停止历史读取。', 'account_changed');
   }
-  async historyPage(id, reset = false) {
+  async historyPage(id, reset = false, startDate = null, endDate = null) {
     const account = this.store.account(id);
     if (this.stopping || this.busy.has(id) || this.historyBusy.has(id)) throw new Error('该账号正在执行其他读取任务');
     if (!account.uid) throw new Error('请先完成罗盘账号身份核验');
     const previous = this.store.historyProgress(id);
+    const bounds = historyBounds();
+    const selection = historyRange(startDate ?? previous?.startDate ?? bounds.earliest,
+      endDate ?? previous?.endDate ?? bounds.latest);
+    if (previous && !reset && (previous.uid !== account.uid ||
+        previous.startDate !== selection.startDate || previous.endDate !== selection.endDate ||
+        previous.beginDate !== historyWindow().beginDate))
+      throw new Error('历史读取范围、账号或 90 天窗口已变化，请重新读取所选日期');
     if (previous?.complete && !reset) return previous;
-    const window = reset || !previous ? historyWindow() : previous;
     const progress = reset || !previous ? {
-      ...window, nextPage: 1, total: null, scanned: 0, imported: 0,
+      ...selection, uid: account.uid, nextPage: 1, total: null, scanned: 0, imported: 0,
+      unknownDates: 0, outsideRange: 0,
       complete: false, truncated: false, error: null, startedAt: new Date().toISOString(),
     } : previous;
     this.store.saveHistoryProgress(id, { ...progress, error: null });
@@ -129,8 +136,11 @@ export class Collector {
         if (!current()) return this.store.historyProgress(id);
         await this.verifyHistoryIdentity(id, account.uid);
         if (!current()) return this.store.historyProgress(id);
-        let imported = 0;
+        let imported = 0, unknownDates = 0, outsideRange = 0;
         for (const room of page.rooms) {
+          const date = historyStartDate(room.startedAt);
+          if (!date) { unknownDates++; continue; }
+          if (date < progress.startDate || date > progress.endDate) { outsideRange++; continue; }
           const old = this.store.room(id, room.id);
           if (!old) { this.store.saveRoom(id, room); imported++; }
           else if (old.source === 'compass_history') this.store.saveRoom(id, { ...old, ...room });
@@ -139,10 +149,12 @@ export class Collector {
         const result = this.store.saveHistoryProgress(id, {
           ...progress, nextPage: page.pageNo + 1, total: page.total,
           scanned: progress.scanned + page.rooms.length, imported: progress.imported + imported,
+          unknownDates: (progress.unknownDates || 0) + unknownDates,
+          outsideRange: (progress.outsideRange || 0) + outsideRange,
           complete, truncated: page.pageNo >= 50 && page.pageNo * page.pageSize < page.total,
           error: null, lastReadAt: new Date().toISOString(),
         });
-        this.store.event(id, `历史场次第 ${page.pageNo} 页已读取：${page.rooms.length} 场，新增 ${imported} 场；未采集指标或写入飞书`);
+        this.store.event(id, `历史场次第 ${page.pageNo} 页已读取：${page.rooms.length} 场，范围内新增 ${imported} 场${unknownDates ? `，${unknownDates} 场日期无法判定` : ''}；未采集指标或写入飞书`);
         return result;
       } catch (error) {
         if (!current()) return this.store.historyProgress(id);
@@ -222,7 +234,8 @@ export class Collector {
         return { account: { id: account.id, uid: account.uid, label: account.name || account.label, state: account.state, enabled: account.enabled },
                  ...this.store.roomsPage(account.id, offset, limit) };
       }
-      case 'history.page': return this.historyPage(String(args.id || ''), args.reset === true);
+      case 'history.page': return this.historyPage(String(args.id || ''), args.reset === true,
+        args.startDate ?? null, args.endDate ?? null);
       case 'history.report': return this.historyReport(String(args.id || ''), String(args.room || ''));
       case 'room.review': {
         const account = this.store.account(String(args.account || ''));

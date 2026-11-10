@@ -31,6 +31,9 @@
 .rpa-chart { width:100%; height:auto; display:block; }
 .rpa-chart text { font:11px sans-serif; fill:#788b84; }
 .rpa-note { color:var(--muted); font-size:11px; line-height:1.7; margin:12px 0 0; }
+.rpa-history-dates { display:flex; flex-wrap:wrap; gap:10px 16px; }
+.rpa-history-dates label { display:flex; flex-direction:column; gap:5px; color:var(--muted); font-size:11px; }
+.rpa-history-dates input { min-width:0; max-width:100%; padding:7px; border:1px solid var(--line); border-radius:4px; background:white; color:var(--ink); font:inherit; font-size:12px; }
 .rpa-product-name { white-space:normal; max-width:280px; line-height:1.5; }
 .rpa-events { max-height:280px; overflow:auto; }
 .rpa-event { display:flex; gap:14px; border-bottom:1px solid var(--line); padding:10px 16px; font-size:11px; line-height:1.6; }
