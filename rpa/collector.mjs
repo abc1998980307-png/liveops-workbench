@@ -38,8 +38,22 @@ export class Collector {
     this.store.event(id, message);
   }
   rateLimitUntil(id) {
+    const account = this.store.account(id);
     const batch = this.store.historyBatch(id);
-    return batch?.status === 'rate_limited' && Date.now() < Date.parse(batch.retryAfter) ? batch.retryAfter : null;
+    const deadlines = [account.retryAfter, batch?.status === 'rate_limited' ? batch.retryAfter : null]
+      .filter(value => value && Date.parse(value) > Date.now());
+    return deadlines.sort((a, b) => Date.parse(b) - Date.parse(a))[0] || null;
+  }
+  recordRateLimit(id, error) {
+    const account = this.store.account(id);
+    const retryAfter = error.retryAfter || new Date(Date.now() + 300000).toISOString();
+    error.retryAfter = retryAfter;
+    const until = Date.parse(account.retryAfter) > Date.parse(retryAfter) ? account.retryAfter : retryAfter;
+    this.store.save({ ...account, state: 'rate_limited', retryAfter: until,
+      error: String(error.message || '罗盘请求受限').replace(/https?:\/\/\S+/g, '罗盘页面').slice(0, 250),
+      lastCheck: new Date().toISOString() });
+    this.next.set(id, Date.parse(until));
+    return until;
   }
   assertHistoryRequestAllowed(id) {
     const retryAfter = this.rateLimitUntil(id);
@@ -114,9 +128,10 @@ export class Collector {
       if (!current()) return;
       const state = error.kind || 'error';
       const message = String(error.message || '采集失败').replace(/https?:\/\/\S+/g, '罗盘页面').slice(0, 250);
-      this.store.save({ ...this.store.account(id), state, error: message, lastCheck: checkedAt });
+      if (state === 'rate_limited') this.recordRateLimit(id, error);
+      else this.store.save({ ...this.store.account(id), state, error: message, lastCheck: checkedAt });
       this.store.event(id, message);
-      this.next.set(id, Date.now() + (state === 'needs_login' ? 30 : state === 'rate_limited' ? 300 : 60) * 1000);
+      if (state !== 'rate_limited') this.next.set(id, Date.now() + (state === 'needs_login' ? 30 : 60) * 1000);
     }
   }
   async verifyHistoryIdentity(id, uid) {
@@ -183,6 +198,7 @@ export class Collector {
         return result;
       } catch (error) {
         if (!current()) return this.store.historyProgress(id);
+        if (error.kind === 'rate_limited') this.recordRateLimit(id, error);
         const message = String(error.message || '历史场次读取失败').replace(/https?:\/\/\S+/g, '罗盘页面').slice(0, 250);
         this.store.saveHistoryProgress(id, { ...progress, error: message, lastReadAt: new Date().toISOString() });
         this.store.event(id, message);
@@ -248,6 +264,7 @@ export class Collector {
         return { report, ...(reused.length ? { warning: '部分接口失败，已沿用上次成功结果' } : {}) };
       } catch (error) {
         if (!current()) return { cancelled: true };
+        if (error.kind === 'rate_limited') this.recordRateLimit(id, error);
         this.store.event(id, String(error.message || '历史报表读取失败').replace(/https?:\/\/\S+/g, '罗盘页面').slice(0, 250));
         throw error;
       }
@@ -345,9 +362,9 @@ export class Collector {
         const message = String(error.message || '读取失败').replace(/https?:\/\/\S+/g, '罗盘页面').slice(0, 200);
         if (['needs_login', 'rate_limited', 'account_changed'].includes(error.kind)) {
           const limited = error.kind === 'rate_limited';
-          if (limited) this.next.set(id, Date.now() + 300000);
+          const retryAfter = limited ? this.recordRateLimit(id, error) : null;
           this.store.saveHistoryBatch(id, { ...progress, status: limited ? 'rate_limited' : 'error',
-            error: message, retryAfter: limited ? new Date(Date.now() + 300000).toISOString() : null,
+            error: message, retryAfter,
             updatedAt: new Date().toISOString() });
           this.store.event(id, message);
           return;
@@ -373,8 +390,7 @@ export class Collector {
     if (this.stopping) return;
     this.feishu.tick();
     for (const a of this.store.accounts()) {
-      const batch = this.store.historyBatch(a.id);
-      if (batch?.status === 'rate_limited' && Date.now() < Date.parse(batch.retryAfter)) continue;
+      if (this.rateLimitUntil(a.id)) continue;
       if (a.enabled && !this.busy.has(a.id) && !this.historyBusy.has(a.id) && Date.now() >= (this.next.get(a.id) || 0)) this.start(a.id);
     }
   }

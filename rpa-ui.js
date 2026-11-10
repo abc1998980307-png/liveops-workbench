@@ -9,6 +9,11 @@
   const chip = account => `<span class="rpa-chip ${esc(account.state)}">${esc(account.busy ? '正在同步…' : labels[account.state] || '等待同步')}</span>`;
   const value = item => item ? `${esc(item.display)}${item.unit ? ' ' + esc(item.unit) : ''}` : '—';
   const account = () => state?.accounts.find(a => a.id === selected);
+  const retryAfter = a => {
+    const deadlines = [a?.retryAfter, a?.historyBatch?.status === 'rate_limited' ? a.historyBatch.retryAfter : null]
+      .filter(value => value && Date.parse(value) > Date.now());
+    return deadlines.sort((left, right) => Date.parse(right) - Date.parse(left))[0] || null;
+  };
   const roomState = r => r.state === 'live' ? '直播中' : r.state === 'ended' ? '已结束' : '状态待确认';
   function status(message, error = false) { $('rpaStatus').textContent = message; $('rpaStatus').classList.toggle('error', error); }
 
@@ -35,19 +40,20 @@
       $('rpaHistoryEnd').addEventListener('change', render);
     }
     $('rpaAccountList').innerHTML = state.accounts.map(item => `<button class="rpa-account ${item.id === selected ? 'selected' : ''}" data-rpa-account="${esc(item.id)}"><strong>${esc(item.name || item.label)}</strong>${chip(item)}<small>${item.uid ? '账号 ' + esc(item.uid) : '尚未识别账号'}<br>最近同步 ${date(item.lastSync)}</small></button>`).join('');
-    $('rpaSync').disabled = a.busy || actionBusy;
+    const limitedUntil = retryAfter(a);
+    $('rpaSync').disabled = a.busy || actionBusy || !!limitedUntil;
     $('rpaSync').textContent = a.busy ? '正在同步…' : '立即同步';
     $('rpaToggle').textContent = a.enabled ? '暂停同步' : '开启同步';
     if (document.activeElement !== $('rpaInterval')) $('rpaInterval').value = String(a.interval);
     $('rpaAccountError').innerHTML = a.error ? `<div class="rpa-account-error">${esc(a.error)}</div>` : '';
-    $('rpaMeta').innerHTML = `<span>最近检查 ${date(a.lastCheck)}</span><span>最近成功同步 ${date(a.lastSync)}</span><span>${a.enabled ? '自动同步已开启' : '自动同步已暂停'}</span>`;
+    $('rpaMeta').innerHTML = `<span>最近检查 ${date(a.lastCheck)}</span><span>最近成功同步 ${date(a.lastSync)}</span><span>${a.enabled ? '自动同步已开启' : '自动同步已暂停'}</span>${limitedUntil ? `<span>请求受限，可重试时间 ${date(limitedUntil)}</span>` : ''}`;
     const history = a.history;
     const selectedStart = $('rpaHistoryStart').value, selectedEnd = $('rpaHistoryEnd').value;
     const rangeChanged = !history?.uid || history.uid !== a.uid ||
       history.startDate !== selectedStart || history.endDate !== selectedEnd;
     $('rpaHistoryStart').disabled = a.historyBusy || actionBusy;
     $('rpaHistoryEnd').disabled = a.historyBusy || actionBusy;
-    $('rpaHistory').disabled = !a.uid || a.busy || a.historyBusy || actionBusy ||
+    $('rpaHistory').disabled = !a.uid || a.busy || a.historyBusy || actionBusy || !!limitedUntil ||
       !selectedStart || !selectedEnd || selectedStart > selectedEnd;
     $('rpaHistory').textContent = a.historyBusy ? '正在读取…' : rangeChanged || history?.complete ? '按日期重新读取' : history?.nextPage > 1 ? '读取下一页' : '导入所选日期';
     $('rpaHistoryStatus').textContent = selectedStart > selectedEnd ? '开始日期不能晚于结束日期。' : history ?
@@ -58,7 +64,7 @@
       batch.endDate === selectedEnd && ['paused', 'error', 'rate_limited'].includes(batch.status);
     $('rpaBatchStart').dataset.rpaAction = batchResume ? 'history-batch-resume' : 'history-batch-start';
     $('rpaBatchStart').textContent = batchResume ? '继续回填' : batchRunning ? '正在回填…' : '回填所选日期';
-    $('rpaBatchStart').disabled = !a.uid || a.busy || a.historyBusy || actionBusy ||
+    $('rpaBatchStart').disabled = !a.uid || a.busy || a.historyBusy || actionBusy || !!limitedUntil ||
       !selectedStart || !selectedEnd || selectedStart > selectedEnd ||
       (batchResume && batch.retryAfter && Date.now() < Date.parse(batch.retryAfter));
     $('rpaBatchPause').hidden = !batchRunning;
@@ -105,7 +111,7 @@
   function historyReportMarkup(data) {
     const report = data.historyReport;
     if (!report && data.room?.source !== 'compass_history' && data.room?.state !== 'ended') return '';
-    const busy = account()?.historyBusy || actionBusy;
+    const busy = account()?.historyBusy || actionBusy || !!retryAfter(account());
     const action = `<button class="btn small" data-rpa-action="history-report" type="button" ${busy ? 'disabled' : ''}>${report ? '重新读取报表' : '读取历史报表'}</button>`;
     if (!report) return `<div class="rpa-heading"><h2>历史报表</h2>${action}</div><p class="rpa-note">尚未读取这场直播的历史经营指标。读取结果只保存在本机，不进入飞书自动同步。</p>`;
     const failures = Object.entries(report.endpoints || {}).filter(([, item]) => !item.ok);

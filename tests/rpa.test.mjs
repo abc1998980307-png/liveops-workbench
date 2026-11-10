@@ -377,6 +377,39 @@ test('batch rate limit keeps cursor and defers automatic sync', async () => {
     assert.equal(t.store.historyReport(t.id, roomId), null);
   } finally { await t.cleanup(); }
 });
+test('429 from ordinary reads persists one account cooldown across every request path and restart', async () => {
+  for (const blockedTask of ['rooms', 'history', 'historyCore']) {
+    const t = setup(task => {
+      if (task === blockedTask) throw new CollectError('请求过快', 'rate_limited');
+      return structuredClone(task === 'identity' ? responses.identity :
+        Object.hasOwn(historyResponses, task) ? historyResponses[task] : responses[task]);
+    });
+    try {
+      savedHistoryRoom(t);
+      if (blockedTask === 'rooms') {
+        assert.equal((await t.collector.command('sync', { id: t.id })).queued, true);
+        await t.collector.busy.get(t.id);
+      } else if (blockedTask === 'history') {
+        await assert.rejects(t.collector.command('history.page', { id: t.id, reset: true }), /请求过快/);
+      } else {
+        await assert.rejects(t.collector.command('history.report', { id: t.id, room: roomId }), /请求过快/);
+      }
+      const until = t.store.account(t.id).retryAfter;
+      assert.ok(Date.parse(until) > Date.now());
+      assert.equal(t.store.historyBatch(t.id), null);
+      const reopened = new Store(t.root);
+      try {
+        assert.equal(reopened.account(t.id).retryAfter, until);
+        const resumed = new Collector(reopened, t.collector.engine);
+        assert.equal((await resumed.command('sync', { id: t.id })).retryAfter, until);
+        await assert.rejects(resumed.command('history.page', { id: t.id, reset: true }), /请求受限/);
+        await assert.rejects(resumed.command('history.report', { id: t.id, room: roomId }), /请求受限/);
+        const date = historyBounds().latest;
+        assert.throws(() => resumed.startHistoryBatch(t.id, date, date), /请求受限/);
+      } finally { reopened.close(); }
+    } finally { await t.cleanup(); }
+  }
+});
 test('batch counts partial reports separately and continues to the next room', async () => {
   const secondRoom = '7612345678901234568';
   const t = setup((task, room) => {
