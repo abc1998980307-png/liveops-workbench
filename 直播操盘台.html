@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f4f6f5">
+  <meta name="theme-color" content="#fafbf8">
   <title>直播操盘台</title>
   <link rel="stylesheet" href="/rpa-ui.css">
   <link rel="stylesheet" href="/feishu-ui.css">
@@ -348,44 +348,57 @@
       .top-actions { gap: 8px; }
     }
   </style>
+  <link rel="stylesheet" href="/workbench-ui.css">
 </head>
 <body>
+  <a class="skip-link" href="#mainContent">跳转到主要内容</a>
+  <svg class="ui-symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="icon-monitor" viewBox="0 0 32 32"><rect x="3" y="7" width="26" height="20" rx="7" fill="currentColor"/><path d="m11 3 5 4 5-4" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><rect x="7" y="11" width="18" height="12" rx="4" fill="#fff" fill-opacity=".85"/><path d="m14 14 6 3-6 3Z" fill="currentColor"/></symbol>
+    <symbol id="icon-business" viewBox="0 0 32 32"><rect x="3" y="4" width="26" height="25" rx="7" fill="currentColor" fill-opacity=".2"/><rect x="7" y="16" width="4" height="9" rx="2" fill="currentColor"/><rect x="14" y="10" width="4" height="15" rx="2" fill="currentColor"/><rect x="21" y="6" width="4" height="19" rx="2" fill="currentColor"/></symbol>
+    <symbol id="icon-keywords" viewBox="0 0 32 32"><path d="M17 2c2 7 10 10 10 18a11 11 0 0 1-22 0c0-4 3-8 7-11 0 4 1 5 2 5 3-4 3-8 3-12Z" fill="currentColor"/><path d="M17 16c1 3 5 5 5 8a6 6 0 0 1-12 0c0-3 3-5 7-8Z" fill="#fff" fill-opacity=".65"/></symbol>
+    <symbol id="icon-sessions" viewBox="0 0 32 32"><rect x="5" y="4" width="23" height="25" rx="6" fill="currentColor"/><path d="M11 4v25" stroke="#fff" stroke-opacity=".55" stroke-width="2"/><path d="m16 13 7 4-7 4Z" fill="#fff"/><path d="M8 9H4m4 7H4m4 7H4" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></symbol>
+    <symbol id="icon-sources" viewBox="0 0 32 32"><path d="M11 4v6m10-6v6" stroke="currentColor" stroke-width="4" stroke-linecap="round"/><path d="M7 10h18v6a9 9 0 0 1-18 0v-6Z" fill="currentColor"/><path d="M16 24v5" stroke="currentColor" stroke-width="4" stroke-linecap="round"/><path d="M12 14h8" stroke="#fff" stroke-opacity=".75" stroke-width="3" stroke-linecap="round"/></symbol>
+    <symbol id="icon-settings" viewBox="0 0 32 32"><path d="m12 3-1 4-4 2-4 1v11l4 1 4 2 1 5h8l1-5 4-2 4-1V10l-4-1-4-2-1-4Z" fill="currentColor"/><circle cx="16" cy="16" r="6" fill="#fff" fill-opacity=".85"/><circle cx="16" cy="16" r="3" fill="currentColor"/></symbol>
+    <symbol id="icon-accounts" viewBox="0 0 32 32"><circle cx="16" cy="10" r="6" fill="currentColor"/><path d="M5 28v-3a11 11 0 0 1 22 0v3Z" fill="currentColor" fill-opacity=".7"/></symbol>
+  </svg>
+  <button class="nav-scrim" id="navScrim" type="button" aria-label="关闭导航" hidden tabindex="-1"></button>
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">
       <div class="brand">
-        <div class="brand-mark">播</div>
-        <div><div class="brand-name">直播操盘台</div><div class="brand-caption">LIVE COMMERCE OPS</div></div>
+        <div class="brand-mark"><svg class="ui-icon" aria-hidden="true"><use href="#icon-monitor"/></svg></div>
+        <div><div class="brand-name">直播操盘台</div><div class="brand-caption">LIVEOPS · 每一场都算数</div></div>
       </div>
       <div class="nav-label">工作台</div>
       <nav class="nav-list" aria-label="主导航">
-        <button class="nav-button active" data-view="monitor"><span>直播监控</span><span class="nav-count" id="navLiveCount">02</span></button>
-        <button class="nav-button" data-view="business"><span>经营数据</span><span class="nav-count">罗盘</span></button>
-        <button class="nav-button" data-view="keywords"><span>热词洞察</span></button>
-        <button class="nav-button" data-view="sessions"><span>场次复盘</span></button>
+        <button class="nav-button active" data-view="monitor" aria-current="page"><svg class="ui-icon" aria-hidden="true"><use href="#icon-monitor"/></svg><span>直播监控</span><span class="nav-count" id="navLiveCount">00</span></button>
+        <button class="nav-button" data-view="business"><svg class="ui-icon" aria-hidden="true"><use href="#icon-business"/></svg><span>经营数据</span><span class="nav-count">罗盘</span></button>
+        <button class="nav-button" data-view="keywords"><svg class="ui-icon" aria-hidden="true"><use href="#icon-keywords"/></svg><span>热词洞察</span></button>
+        <button class="nav-button" data-view="sessions"><svg class="ui-icon" aria-hidden="true"><use href="#icon-sessions"/></svg><span>场次复盘</span></button>
       </nav>
       <div class="nav-label" style="margin-top:20px">设置</div>
       <nav class="nav-list" aria-label="设置导航">
-        <button class="nav-button" data-view="sources"><span>数据源接入</span></button>
-        <button class="nav-button" data-view="settings"><span>运行设置</span></button>
+        <button class="nav-button" data-view="sources"><svg class="ui-icon" aria-hidden="true"><use href="#icon-sources"/></svg><span>数据源接入</span></button>
+        <button class="nav-button" data-view="settings"><svg class="ui-icon" aria-hidden="true"><use href="#icon-settings"/></svg><span>运行设置</span></button>
       </nav>
       <div class="sidebar-spacer"></div>
       <div class="workspace-card">
         <div class="workspace-name"><span class="workspace-dot"></span>本地工作区</div>
-        <div class="workspace-sub">服务绑定本机回环地址</div>
+        <div class="workspace-sub">录屏与数据，安心留在本机</div>
       </div>
     </aside>
 
-    <main class="main">
+    <main class="main" id="mainContent" tabindex="-1">
       <header class="topbar">
-        <button class="mobile-menu" id="mobileMenu" aria-label="打开导航">☰</button>
+        <button class="mobile-menu" id="mobileMenu" aria-label="打开导航" aria-controls="sidebar" aria-expanded="false">☰</button>
         <div class="breadcrumb">操盘中心 <span style="color:#aab4b0;padding:0 6px">/</span> <strong id="breadcrumbTitle">直播监控</strong></div>
         <div class="top-actions"><span class="demo-pill">本机服务</span><div class="avatar" title="本地用户">李</div></div>
       </header>
       <div class="content">
         <section class="view active" id="view-monitor">
-          <div class="page-head">
-            <div><div class="eyebrow">LIVE ROOM CONTROL</div><h1>直播监控</h1><p class="page-desc">统一查看自有账号与竞品账号的开播状态、场次数据和录制状态。</p></div>
+          <div class="page-head welcome-head">
+            <div><div class="eyebrow">LIVE ROOM CONTROL</div><h1>直播监控</h1><p class="page-desc">让每一场直播，都有迹可循。<br>从主页监测到录屏复盘，在这里轻松管理。</p></div>
             <div class="button-row"><button class="btn" id="refreshBtn">刷新列表</button><button class="btn primary" id="addAccountBtn">＋ 添加账号</button></div>
+            <img class="welcome-illustration" src="/workbench-hero.svg" width="300" height="210" alt="" aria-hidden="true">
           </div>
           <div class="recorder-strip">
             <div><div class="recorder-heading">本机录制器 <span class="recorder-status" data-recorder-status role="status">检查中</span></div><p class="recorder-description" data-recorder-summary>连接后可在账号详情中开启直播监测与录制。</p></div>
@@ -393,10 +406,10 @@
           </div>
           <div class="notice" id="serviceNotice"><div><strong>数据口径：</strong>开播状态与录制由本机 bililive-go 提供；热点榜来自 DailyHotApi。两者都不是成交数据源，观看人数和 GMV 需要另行授权接入。</div><button class="notice-close" id="dismissNotice" aria-label="关闭">×</button></div>
           <div class="stats">
-            <div class="stat"><div class="stat-label">监控账号 <span class="stat-note">自有 + 竞品</span></div><div class="stat-value" id="statAccounts">0 <span class="stat-note">个账号</span></div></div>
-            <div class="stat"><div class="stat-label">当前直播 <span class="stat-note up">本机采集器</span></div><div class="stat-value" id="statLive">0 <span class="stat-note">场</span></div></div>
-            <div class="stat"><div class="stat-label">已接入账号 <span class="stat-note">主页 / 直播间</span></div><div class="stat-value" id="statBound">0 <span class="stat-note">个</span></div></div>
-            <div class="stat"><div class="stat-label">本地录屏 <span class="stat-note">已存档</span></div><div class="stat-value" id="statRecording">0 <span class="stat-note">个文件</span></div></div>
+            <div class="stat"><svg class="stat-icon" aria-hidden="true"><use href="#icon-accounts"/></svg><div class="stat-label">监控账号 <span class="stat-note">自有 + 竞品</span></div><div class="stat-value" id="statAccounts">0 <span class="stat-note">个账号</span></div></div>
+            <div class="stat"><svg class="stat-icon" aria-hidden="true"><use href="#icon-monitor"/></svg><div class="stat-label">当前直播 <span class="stat-note up">本机采集器</span></div><div class="stat-value" id="statLive">0 <span class="stat-note">场</span></div></div>
+            <div class="stat"><svg class="stat-icon" aria-hidden="true"><use href="#icon-sources"/></svg><div class="stat-label">已接入账号 <span class="stat-note">主页 / 直播间</span></div><div class="stat-value" id="statBound">0 <span class="stat-note">个</span></div></div>
+            <div class="stat"><svg class="stat-icon" aria-hidden="true"><use href="#icon-sessions"/></svg><div class="stat-label">本地录屏 <span class="stat-note">已存档</span></div><div class="stat-value" id="statRecording">0 <span class="stat-note">个文件</span></div></div>
           </div>
           <div class="workspace">
             <section class="panel">
@@ -446,7 +459,7 @@
 
         <section class="view" id="view-keywords">
           <div class="page-head">
-            <div><div class="eyebrow">KEYWORD INTELLIGENCE</div><h1>热词洞察</h1><p class="page-desc">用趋势、内容热度和自家搜索来源交叉判断选题机会。</p></div>
+            <div><div class="eyebrow">KEYWORD INTELLIGENCE</div><h1>热词洞察</h1><p class="page-desc">看看大家在聊什么，再从直播字幕里发现你的内容灵感。</p></div>
             <div class="button-row"><button class="btn" id="exportKeywords">导出词表</button></div>
           </div>
           <div class="notice"><div><strong>口径说明：</strong>以下是 DailyHotApi 当前返回的抖音热点榜原始热度值，不是搜索量、长尾词库或成交意向。输入词只会在当前榜单中筛选。</div></div>
@@ -469,7 +482,7 @@
         </section>
 
         <section class="view" id="view-sessions">
-          <div class="page-head"><div><div class="eyebrow">SESSION REVIEW</div><h1>场次复盘</h1><p class="page-desc">查看 bililive-go 保存到本机的直播录屏文件。</p></div><div class="button-row"><button class="btn" id="refreshSessions">刷新录屏</button><button class="btn" id="exportSessions">导出清单</button></div></div>
+          <div class="page-head"><div><div class="eyebrow">SESSION REVIEW</div><h1>场次复盘</h1><p class="page-desc">找回精彩片段，整理字幕与经营数据，把经验留给下一场。</p></div><div class="button-row"><button class="btn" id="refreshSessions">刷新录屏</button><button class="btn" id="exportSessions">导出清单</button></div></div>
           <div class="notice"><div><strong>录制状态：</strong>此处仅列出本机录制目录中的实际文件。bililive-go 只会对已绑定的直播间链接启动监测和录制。</div></div>
           <section class="panel session-search">
             <div class="panel-head"><div><div class="panel-title">长录制场次</div><div class="panel-subtitle">按录制器场次追踪文件切换与已观察到的视频时长</div></div><button class="btn small" id="refreshRecordingSessions" type="button">刷新场次</button></div>
@@ -524,7 +537,7 @@
         </section>
 
         <section class="view" id="view-settings">
-          <div class="page-head"><div><div class="eyebrow">PLUGIN SETTINGS</div><h1>运行设置</h1><p class="page-desc">管理本机已接入插件和操盘台刷新行为。</p></div><div class="button-row"><button class="btn" id="reloadSettings">重新读取</button></div></div>
+          <div class="page-head"><div><div class="eyebrow">PLUGIN SETTINGS</div><h1>运行设置</h1><p class="page-desc">把录制、压缩和转写调到顺手的状态。</p></div><div class="button-row"><button class="btn" id="reloadSettings">重新读取</button></div></div>
           <div class="settings-stack">
             <section class="panel" id="dependencyPanel">
               <div class="panel-head"><div><div class="panel-title">本机组件安装</div><div class="panel-subtitle">为录制、压缩、离线字幕和罗盘采集准备运行工具</div></div><span class="tag" id="dependencyBadge" role="status">检查中</span></div>
@@ -1117,12 +1130,18 @@
       document.getElementById("confirmMediaRecovery").addEventListener("click", event => retryMediaJob(id, true, event.currentTarget));
     });
     function switchView(name) {
+      const fromMobileNavigation = document.body.classList.contains("nav-open");
       currentView = name;
       document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === `view-${name}`));
-      document.querySelectorAll(".nav-button[data-view]").forEach(b => b.classList.toggle("active", b.dataset.view === name));
+      document.querySelectorAll(".nav-button[data-view]").forEach(b => {
+        b.classList.toggle("active", b.dataset.view === name);
+        if (b.dataset.view === name) b.setAttribute("aria-current", "page");
+        else b.removeAttribute("aria-current");
+      });
       const labels = {monitor:"直播监控", business:"经营数据", keywords:"热词洞察", sessions:"场次复盘", sources:"数据源接入", settings:"运行设置"};
       document.getElementById("breadcrumbTitle").textContent = labels[name];
-      document.getElementById("sidebar").classList.remove("mobile-open");
+      setNavigation(false);
+      if (fromMobileNavigation) document.getElementById("mainContent").focus({preventScroll:true});
       if (name === "sessions") refreshSessions();
       if (name === "keywords") window.LiveKeywords?.refresh();
       if (name === "sources") refreshServiceStatus();
@@ -1130,7 +1149,7 @@
       if (["monitor", "settings"].includes(name)) refreshRecorder();
       if (name === "business") { window.LiveRpa?.refresh(); window.LiveFeishu?.refresh(); }
       history.replaceState(null, "", "#" + name);
-      window.scrollTo({top:0, behavior:"smooth"});
+      window.scrollTo({top:0, behavior:matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth"});
     }
     const validViews = new Set(["monitor", "business", "keywords", "sessions", "sources", "settings"]);
     window.addEventListener("hashchange", () => {
@@ -1192,14 +1211,42 @@
     document.querySelectorAll(".nav-button[data-view]").forEach(b => b.addEventListener("click", () => switchView(b.dataset.view)));
     document.querySelectorAll("[data-go-view]").forEach(b => b.addEventListener("click", () => switchView(b.dataset.goView)));
     document.querySelectorAll("[data-recorder-action]").forEach(b => b.addEventListener("click", () => runRecorderAction(b.dataset.recorderAction)));
-    document.getElementById("mobileMenu").addEventListener("click", () => document.getElementById("sidebar").classList.toggle("mobile-open"));
+    function setNavigation(open) {
+      const mobile = matchMedia("(max-width: 720px)").matches;
+      const sidebar = document.getElementById("sidebar");
+      const expanded = mobile && open;
+      const wasOpen = sidebar.classList.contains("mobile-open");
+      const main = document.getElementById("mainContent");
+      const menu = document.getElementById("mobileMenu");
+      sidebar.classList.toggle("mobile-open", expanded);
+      sidebar.inert = mobile && !expanded;
+      main.inert = expanded;
+      document.querySelector(".skip-link").inert = expanded;
+      document.body.classList.toggle("nav-open", expanded);
+      document.getElementById("navScrim").hidden = !expanded;
+      menu.setAttribute("aria-expanded", String(expanded));
+      if (expanded) sidebar.querySelector('[aria-current="page"]').focus({preventScroll:true});
+      else if (wasOpen) (mobile ? menu : main).focus({preventScroll:true});
+    }
+    document.getElementById("mobileMenu").addEventListener("click", () => setNavigation(!document.getElementById("sidebar").classList.contains("mobile-open")));
+    document.getElementById("navScrim").addEventListener("click", () => { setNavigation(false); document.getElementById("mobileMenu").focus(); });
+    matchMedia("(max-width: 720px)").addEventListener("change", () => setNavigation(false));
+    setNavigation(false);
     document.getElementById("accountSearch").addEventListener("input", renderAccounts);
     document.getElementById("typeFilter").addEventListener("change", renderAccounts);
     document.getElementById("stateFilter").addEventListener("change", renderAccounts);
     document.getElementById("addAccountBtn").addEventListener("click", addAccountModal);
     document.getElementById("modalClose").addEventListener("click", closeModal);
     document.getElementById("modalBackdrop").addEventListener("click", event => { if (event.target.id === "modalBackdrop") closeModal(); });
-    document.addEventListener("keydown", event => { if (event.key === "Escape") closeModal(); });
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape") { closeModal(); setNavigation(false); }
+      if (event.key === "Tab" && document.body.classList.contains("nav-open")) {
+        const buttons = [...document.querySelectorAll("#sidebar .nav-button")];
+        const first = buttons[0], last = buttons[buttons.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
+    });
     document.getElementById("refreshBtn").addEventListener("click", refreshAll);
     document.getElementById("refreshSessions").addEventListener("click", refreshSessions);
     document.getElementById("reloadSettings").addEventListener("click", refreshSettings);

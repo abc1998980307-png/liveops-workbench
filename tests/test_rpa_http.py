@@ -239,7 +239,7 @@ class RpaHttpTests(unittest.TestCase):
         self.assertEqual(self.request("GET", "/ego-setup.json")[0], 404)
 
     def test_static_allowlist_never_serves_collector_or_evidence(self):
-        for route in ["/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/"]:
+        for route in ["/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/workbench-ui.css", "/workbench-hero.svg", "/"]:
             self.assertEqual(self.request("GET", route)[0], 200)
         for route in ["/rpa/collector.mjs", "/rpa/feishu.mjs", "/rpa_bridge.py", "/../server.py", "/rpa/data.sqlite"]:
             self.assertEqual(self.request("GET", route)[0], 404)

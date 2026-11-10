@@ -1564,10 +1564,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def serve_static(self, url_path, head_only=False):
         requested = urllib.parse.unquote(url_path)
-        if requested not in ("", "/", "/直播操盘台.html", "/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/dependency-ui.js", "/recording-sessions-ui.js", "/keyword-ui.js", "/hot-service-ui.js"):
+        resources = ("/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/dependency-ui.js",
+                     "/recording-sessions-ui.js", "/keyword-ui.js", "/hot-service-ui.js", "/workbench-ui.css", "/workbench-hero.svg")
+        if requested not in ("", "/", "/直播操盘台.html", *resources):
             self.send_json({"error": "not found"}, 404)
             return
-        candidate = ROOT / (requested.lstrip("/") if requested in ("/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/dependency-ui.js", "/recording-sessions-ui.js", "/keyword-ui.js", "/hot-service-ui.js") else "直播操盘台.html")
+        candidate = ROOT / (requested.lstrip("/") if requested in resources else "直播操盘台.html")
         if not candidate.is_file():
             self.send_json({"error": "not found"}, 404)
             return
