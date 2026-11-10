@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { taskUrl, validateResponse, measure, findMetric, roomList, historyWindow, historyRoomPage, normalizeSnapshot, CollectError } from '../rpa/model.mjs';
+import { taskUrl, validateResponse, measure, findMetric, roomList, historyWindow, historyRoomPage, validateHistoryEndpoint, normalizeHistoryReport, normalizeSnapshot, CollectError } from '../rpa/model.mjs';
 import { Store } from '../rpa/store.mjs';
 import { Collector } from '../rpa/collector.mjs';
 
@@ -17,6 +17,21 @@ const responses = {
   core: { st: 0, data: { online_user_cnt: { value: 123, unit: '人' }, pay_amt: { value: 1200, value_str: '12.00', unit: '元' }, watch_pay_ucnt_ratio: 0.12 } },
   products: { st: 0, data: { product_list: [{ product_id: '9000', product_name: '测试商品', pay_amt: { value: 500, unit: '分' }, stock_cnt: 0 }] } },
 };
+const historyResponses = {
+  historyBasic: { st: 0, data: { live_room_base_info: {
+    title: '测试历史直播', is_living: false,
+    start_time: { unit: 'time', value: 1787443200 }, end_time: { unit: 'time', value: 1787446800 },
+  } } },
+  historyCore: { st: 0, data: { flow_index_list: [
+    { index_name: 'view_cnt', index_display: '观看次数', value: { unit: 'number', value: 0 } },
+    { index_name: 'watch_ratio', index_display: '观看转化', value: { unit: 'ratio', value: 0.125 } },
+    { index_name: 'watch_time', index_display: '观看时长', value: { unit: 'time', value: 3600 } },
+    { index_name: 'missing', index_display: '暂缺指标', value: { unit: 'number' } },
+  ], interaty_index_list: [], portrait_index_list: [], product_index_list: [], refund_index_list: [] } },
+  historyTrade: { st: 0, data: { trade_list: [
+    { index_name: 't7payin8d_predstl_ord_amt', index_display: '预计结算金额', value: { unit: 'price', value: 12345 } },
+  ] } },
+};
 function setup(handler = task => structuredClone(responses[task])) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'liveops-rpa-test-'));
   const store = new Store(root);
@@ -24,6 +39,10 @@ function setup(handler = task => structuredClone(responses[task])) {
   const collector = new Collector(store, engine);
   const a = store.create('测试'); store.save({ ...a, enabled: true });
   return { root, store, collector, id: a.id, cleanup: async () => { await collector.close(); fs.rmSync(root, { recursive: true }); } };
+}
+function savedHistoryRoom(t) {
+  t.store.save({ ...t.store.account(t.id), uid: '99887766', enabled: false, state: 'paused' });
+  t.store.saveRoom(t.id, { id: roomId, title: '测试历史直播', state: 'ended', source: 'compass_history' });
 }
 
 test('request targets are fixed and room IDs cannot become URLs or parameters', () => {
@@ -59,9 +78,110 @@ test('historical request and response have bounded pagination and exact string I
   assert.throws(() => taskUrl('history', { pageNo: 51, ...window }));
   const body = { data: { data_result: [{ live_room: '测试历史直播', start_time: '2026-08-23 08:04:00', operation: { live_id: roomId } }], page_result: { page_no: 2, page_size: 10, total: 11 } } };
   assert.deepEqual(historyRoomPage(body, 2).rooms[0], { id: roomId, title: '测试历史直播', state: 'ended', startedAt: '2026-08-23 08:04:00', today: false, source: 'compass_history' });
+  const observedShape = { ...body, data: { ...body.data, data_result: [{ ...body.data.data_result[0], start_time: { start_time: '2026-08-23 08:04:00', live_duration: '01:00:00' } }] } };
+  assert.equal(historyRoomPage(observedShape, 2).rooms[0].startedAt, '2026-08-23 08:04:00');
   assert.throws(() => historyRoomPage({ data: { ...body.data, data_result: [{ operation: { live_id: Number(roomId) } }] } }, 2), CollectError);
   assert.throws(() => historyRoomPage(body, 1), CollectError);
   assert.throws(() => historyRoomPage({ data: { data_result: [] } }, 1), CollectError);
+});
+test('historical detail endpoints use exact live_room_id and reject changed schemas', () => {
+  for (const task of ['historyBasic', 'historyCore', 'historyTrade']) {
+    const url = new URL(taskUrl(task, roomId));
+    assert.equal(url.hostname, 'compass.jinritemai.com');
+    assert.equal(url.searchParams.get('live_room_id'), roomId);
+    assert.equal(url.searchParams.has('room_id'), false);
+    assert.equal(validateHistoryEndpoint(task, historyResponses[task]), historyResponses[task]);
+    assert.throws(() => taskUrl(task, `${roomId}&x=1`));
+    assert.throws(() => validateHistoryEndpoint(task, { data: {} }), CollectError);
+  }
+});
+test('historical metrics keep source, raw units, zeros and missing values distinct', () => {
+  const results = Object.fromEntries(Object.entries(historyResponses).map(([task, body]) => [task, { ok: true, body }]));
+  const report = normalizeHistoryReport(results, roomId, '2026-11-10T00:00:00.000Z');
+  assert.equal(report.source, 'compass_history_detail');
+  assert.equal(report.roomState, 'ended');
+  assert.equal(report.startedAt, new Date(1787443200 * 1000).toISOString());
+  assert.equal(report.endedAt, new Date(1787446800 * 1000).toISOString());
+  const byKey = Object.fromEntries(report.metrics.map(item => [item.key, item]));
+  assert.deepEqual([byKey.t7payin8d_predstl_ord_amt.value, byKey.t7payin8d_predstl_ord_amt.display, byKey.t7payin8d_predstl_ord_amt.unit, byKey.t7payin8d_predstl_ord_amt.rawUnit], [12345, '123.45', '元', 'price']);
+  assert.deepEqual([byKey.watch_ratio.value, byKey.watch_ratio.display, byKey.watch_ratio.unit], [0.125, '12.5', '%']);
+  assert.deepEqual([byKey.watch_time.value, byKey.watch_time.display, byKey.watch_time.unit], [3600, '3,600', '秒']);
+  assert.deepEqual([byKey.view_cnt.value, byKey.view_cnt.display], [0, '0']);
+  assert.deepEqual([byKey.missing.value, byKey.missing.display], [null, '—']);
+  assert.equal(byKey.t7payin8d_predstl_ord_amt.source, 'historyTrade');
+  assert.equal(byKey.t7payin8d_predstl_ord_amt.category, '成交');
+  assert.equal(byKey.pay_amt, undefined);
+});
+test('manual historical detail persists across restart without snapshots or Feishu work', async () => {
+  const calls = [];
+  const t = setup((task, options) => { calls.push({ task, options }); return structuredClone(task === 'identity' ? responses.identity : historyResponses[task]); });
+  try {
+    savedHistoryRoom(t);
+    t.collector.feishu.config = { appToken: 'app_test', tableId: 'tbl_test', accountIds: [t.id], enabled: true };
+    const result = await t.collector.command('history.report', { id: t.id, room: roomId });
+    assert.equal(result.report.metrics.length, 5);
+    assert.deepEqual(calls.map(item => item.task), ['identity', 'historyBasic', 'historyCore', 'historyTrade', 'identity']);
+    assert.deepEqual(calls.filter(item => item.task.startsWith('history')).map(item => item.options), [roomId, roomId, roomId]);
+    assert.equal(t.store.detail(t.id, roomId).latest, null);
+    assert.equal(t.store.db.prepare('SELECT COUNT(*) AS n FROM snapshots').get().n, 0);
+    assert.equal(t.collector.feishu.pending().length, 0);
+    assert.equal(t.store.account(t.id).enabled, false);
+    const reopened = new Store(t.root);
+    assert.equal(reopened.detail(t.id, roomId).historyReport.metrics.length, 5);
+    assert.equal(reopened.detail(t.id, roomId, true).historyRaw.historyTrade.ok, true);
+    reopened.close();
+  } finally { await t.cleanup(); }
+});
+test('historical detail refuses account changes and in-flight pause before saving', async () => {
+  const t = setup();
+  try {
+    savedHistoryRoom(t);
+    let identityReads = 0;
+    t.collector.engine.request = async (_id, task) => task === 'identity'
+      ? { data: { author_id: ++identityReads === 1 ? '99887766' : 'other' } }
+      : structuredClone(historyResponses[task]);
+    await assert.rejects(t.collector.command('history.report', { id: t.id, room: roomId }), /身份已变化/);
+    assert.equal(t.store.historyReport(t.id, roomId), null);
+    let resolveBasic;
+    t.collector.engine.request = async (_id, task) => task === 'identity' ? structuredClone(responses.identity)
+      : task === 'historyBasic' ? new Promise(resolve => { resolveBasic = resolve; }) : structuredClone(historyResponses[task]);
+    const pending = t.collector.command('history.report', { id: t.id, room: roomId });
+    while (!resolveBasic) await new Promise(resolve => setImmediate(resolve));
+    t.collector.pause(t.id);
+    resolveBasic(structuredClone(historyResponses.historyBasic));
+    assert.deepEqual(await pending, { cancelled: true });
+    assert.equal(t.store.historyReport(t.id, roomId), null);
+    assert.equal(t.store.db.prepare('SELECT COUNT(*) AS n FROM snapshots').get().n, 0);
+  } finally { await t.cleanup(); }
+});
+test('historical detail marks partial failures and retains the last complete report', async () => {
+  const t = setup(task => {
+    if (task === 'identity') return structuredClone(responses.identity);
+    if (task === 'historyTrade') throw new CollectError('成交接口暂不可用');
+    return structuredClone(historyResponses[task]);
+  });
+  try {
+    savedHistoryRoom(t);
+    const partial = await t.collector.command('history.report', { id: t.id, room: roomId });
+    assert.equal(partial.report.endpoints.historyTrade.ok, false);
+    assert.equal(partial.report.metrics.some(item => item.category === '成交'), false);
+    t.collector.engine.request = async (_id, task) => structuredClone(task === 'identity' ? responses.identity : historyResponses[task]);
+    const complete = await t.collector.command('history.report', { id: t.id, room: roomId });
+    assert.equal(complete.report.endpoints.historyTrade.ok, true);
+    t.collector.engine.request = async (_id, task) => {
+      if (task === 'historyCore') throw new CollectError('流量接口暂不可用');
+      return structuredClone(task === 'identity' ? responses.identity : historyResponses[task]);
+    };
+    const retained = await t.collector.command('history.report', { id: t.id, room: roomId });
+    assert.match(retained.warning, /保留上次完整报表/);
+    assert.deepEqual(t.store.historyReport(t.id, roomId), complete.report);
+    t.collector.engine.request = async (_id, task) => {
+      if (task !== 'identity') throw new CollectError('接口全部失败');
+      return structuredClone(responses.identity);
+    };
+    await assert.rejects(t.collector.command('history.report', { id: t.id, room: roomId }), /三个历史详情接口均未成功/);
+    assert.deepEqual(t.store.historyReport(t.id, roomId), complete.report);
+  } finally { await t.cleanup(); }
 });
 test('manual history pages resume after restart without snapshots or Feishu writes', async () => {
   const ids = Array.from({ length: 10 }, (_, i) => `76123456789012345${String(i).padStart(2, '0')}`);

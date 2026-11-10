@@ -11,6 +11,9 @@ export const TASKS = {
   account: '/ecomauth/loginv1/get_account_info?login_source=compass',
   rooms: '/compass_api/author/live/live_detail/today_live_room',
   history: '/compass_api/content_live/author/live_detail/history_live',
+  historyBasic: '/compass_api/author/live/live_room_detail/basic_info',
+  historyCore: '/compass_api/author/live/live_room_detail/core_group_info',
+  historyTrade: '/compass_api/author/live/live_room_detail/trade_info',
   base: '/compass_api/author/live/live_screen/live_base_info',
   core: '/compass_api/author/live/live_screen/core_data',
   products: '/compass_api/content_live/author/live_screen/product_list',
@@ -24,6 +27,10 @@ export function taskUrl(task, roomId) {
   if (['base', 'core', 'products'].includes(task)) {
     if (!/^\d{1,30}$/.test(String(roomId))) throw new Error('直播场次 ID 无效');
     url.searchParams.set('room_id', roomId);
+  }
+  if (['historyBasic', 'historyCore', 'historyTrade'].includes(task)) {
+    if (!/^\d{1,30}$/.test(String(roomId))) throw new Error('历史场次 ID 无效');
+    url.searchParams.set('live_room_id', roomId);
   }
   if (task === 'core') url.searchParams.set('index_selected', CORE_KEYS.join(','));
   if (task === 'products') {
@@ -162,7 +169,7 @@ export function historyRoomPage(body, requestedPage) {
     if (typeof id !== 'string' || !/^\d{1,30}$/.test(id)) throw new CollectError('历史场次 ID 无法保持精确字符串，已停止导入。');
     const name = row.live_room;
     const title = typeof name === 'string' ? name : name?.room_title || name?.room_name || name?.title;
-    const rawTime = row.start_time;
+    const rawTime = row.start_time?.start_time ?? row.start_time;
     let startedAt = rawTime == null ? null : String(rawTime).slice(0, 80);
     if (/^\d{10,13}$/.test(startedAt || '')) {
       const time = Number(startedAt) * (startedAt.length === 10 ? 1000 : 1);
@@ -173,6 +180,71 @@ export function historyRoomPage(body, requestedPage) {
   }
   if (!rooms.size && total > (pageNo - 1) * pageSize) throw new CollectError('历史场次分页为空，但仍有未读取记录。');
   return { rooms: [...rooms.values()], pageNo, pageSize, total };
+}
+
+export function validateHistoryEndpoint(task, body) {
+  const data = body?.data;
+  const valid = task === 'historyBasic' ? data?.live_room_base_info && typeof data.live_room_base_info === 'object' :
+    task === 'historyCore' ? Array.isArray(data?.flow_index_list) :
+    task === 'historyTrade' ? Array.isArray(data?.trade_list) : false;
+  if (!valid) throw new CollectError(`${task} 历史报表结构已变化。`);
+  return body;
+}
+
+function historyTime(value) {
+  const raw = value?.value;
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return null;
+  const milliseconds = raw > 1e12 ? raw : raw * 1000;
+  const date = new Date(milliseconds);
+  return date.getUTCFullYear() >= 2000 && date.getUTCFullYear() <= 2100 ? date.toISOString() : null;
+}
+
+function historyMetric(item, category, source) {
+  if (!item || typeof item !== 'object') return null;
+  const key = String(item.index_name || '').trim();
+  if (!/^[a-zA-Z0-9_]{1,80}$/.test(key)) return null;
+  const label = String(item.index_display || key).slice(0, 100);
+  const raw = item.value?.value;
+  const value = typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+  const rawUnit = typeof item.value?.unit === 'string' ? item.value.unit.slice(0, 30) : '';
+  let display = '—', unit = '';
+  if (value !== null) {
+    if (rawUnit === 'price') {
+      display = (value / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); unit = '元';
+    } else if (rawUnit === 'ratio') {
+      display = (value * 100).toLocaleString('zh-CN', { maximumFractionDigits: 2 }); unit = '%';
+    } else if (rawUnit === 'time') {
+      display = value.toLocaleString('zh-CN', { maximumFractionDigits: 2 }); unit = '秒';
+    } else {
+      display = value.toLocaleString('zh-CN', { maximumFractionDigits: 2 }); unit = rawUnit === 'number' ? '' : rawUnit;
+    }
+  }
+  return { key, label, category, value, display, unit, rawUnit, source };
+}
+
+export function normalizeHistoryReport(results, roomId, retrievedAt = new Date().toISOString()) {
+  const base = results.historyBasic?.ok ? results.historyBasic.body.data.live_room_base_info : null;
+  const core = results.historyCore?.ok ? results.historyCore.body.data : null;
+  const trade = results.historyTrade?.ok ? results.historyTrade.body.data : null;
+  const groups = [
+    ['成交', 'historyTrade', trade?.trade_list],
+    ['流量/转化', 'historyCore', core?.flow_index_list],
+    ['互动', 'historyCore', core?.interaty_index_list],
+    ['人群', 'historyCore', core?.portrait_index_list],
+    ['商品', 'historyCore', core?.product_index_list],
+    ['售后', 'historyCore', core?.refund_index_list],
+  ];
+  const metrics = groups.flatMap(([category, source, list]) => Array.isArray(list) ?
+    list.slice(0, 100).map(item => historyMetric(item, category, source)).filter(Boolean) : []);
+  return {
+    source: 'compass_history_detail', roomId, retrievedAt,
+    title: typeof base?.title === 'string' ? base.title.slice(0, 200) : null,
+    startedAt: historyTime(base?.start_time), endedAt: historyTime(base?.end_time),
+    roomState: base?.is_living === true ? 'live' : base?.is_living === false ? 'ended' : 'unknown',
+    metrics,
+    endpoints: Object.fromEntries(['historyBasic', 'historyCore', 'historyTrade'].map(name =>
+      [name, { ok: results[name]?.ok === true, error: results[name]?.error || null }])),
+  };
 }
 
 export function normalizeSnapshot(results) {

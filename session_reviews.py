@@ -135,6 +135,23 @@ class SessionReviews:
     def _inline(cls, value):
         return cls._plain_markdown(" ".join(str(value if value is not None else "").splitlines()))
 
+    def _append_business_metrics(self, lines, metrics, endpoints):
+        for metric in metrics:
+            if not isinstance(metric, dict):
+                continue
+            label = self._inline(metric.get("label") or metric.get("key") or "未命名指标")
+            display = self._inline(metric.get("display") if metric.get("display") is not None else "—")
+            unit = self._inline(metric.get("unit") or "")
+            original = metric.get("value")
+            raw_unit = self._inline(metric.get("rawUnit") or "")
+            lines.append("- " + label + "：" + display + (" " + unit if unit else "")
+                         + "；原值 " + self._inline(original if original is not None else "未返回")
+                         + (" " + raw_unit if raw_unit else ""))
+        failed = [name for name, result in endpoints.items()
+                  if isinstance(result, dict) and not result.get("ok")]
+        if failed:
+            lines.append("- 部分接口未成功：" + self._inline("、".join(failed)))
+
     def export_markdown(self, session_id):
         session = self._session(session_id)
         with self.lock:
@@ -175,27 +192,23 @@ class SessionReviews:
                           "- 关联时间：" + self._inline(link["linkedAt"]),
                           "- 数据状态：" + self._inline(business["status"])])
             if business["status"] == "ready":
-                lines.extend(["- 指标采样时间：" + self._inline(business.get("sampledAt") or "未记录"),
-                              "- 场次状态：" + self._inline(business.get("roomState") or "unknown"), "", "### 本机快照指标", ""])
-                for metric in business["metrics"]:
-                    if not isinstance(metric, dict):
-                        continue
-                    label = self._inline(metric.get("label") or metric.get("key") or "未命名指标")
-                    display = self._inline(metric.get("display") if metric.get("display") is not None else "—")
-                    unit = self._inline(metric.get("unit") or "")
-                    original = metric.get("value")
-                    lines.append("- " + label + "：" + display + (" " + unit if unit else "")
-                                 + "；原值 " + self._inline(original if original is not None else "未返回"))
-                failed = [name for name, result in business.get("endpoints", {}).items()
-                          if isinstance(result, dict) and not result.get("ok")]
-                if failed:
-                    lines.append("- 部分接口未成功：" + self._inline("、".join(failed)))
+                historical = business.get("source") == "history_report"
+                lines.extend([("- 报表读取时间：" if historical else "- 指标采样时间：") + self._inline(business.get("sampledAt") or "未记录"),
+                              "- 数据来源：" + ("罗盘历史直播间详情" if historical else "本机实时采样"),
+                              "- 场次状态：" + self._inline(business.get("roomState") or "unknown"),
+                              "", "### 历史报表指标" if historical else "### 本机快照指标", ""])
+                self._append_business_metrics(lines, business["metrics"], business.get("endpoints", {}))
+                report = business.get("historyReport")
+                if not historical and isinstance(report, dict):
+                    lines.extend(["", "### 历史报表指标", "", "- 报表读取时间：" + self._inline(report.get("retrievedAt") or "未记录"),
+                                  "- 数据来源：罗盘历史直播间详情；与实时采样分开保存", ""])
+                    self._append_business_metrics(lines, report.get("metrics") or [], report.get("endpoints") or {})
             else:
                 lines.append("- 缺失说明：" + self._inline(business.get("note") or "经营快照不可用"))
         else:
             lines.append("- 尚未确认与罗盘经营场次的对应关系。")
         lines.extend(["", "## 数据边界", "",
-                      ("- 经营指标来自已确认关联的本机罗盘快照；仍需核对最终结算和采样范围，不把整体成交除以消耗当作官方归因 ROI。"
+                      ("- 经营指标来自已确认关联的本机罗盘实时快照及/或按读取时间保存的历史报表；结算值可能变化，历史报表不进入飞书自动同步；不把整体成交除以消耗当作官方归因 ROI。"
                        if business.get("status") == "ready" else
                        "- 此文档只依据本机录制观察、归档状态与手工填写的复盘内容；尚未关联罗盘经营场次或经营快照不可用，不包含成交、消耗等经营指标。"),
                       "- 接入观察前的片段可能缺失；文件切换及观察中断无法证明直播连续或准确的断流时长。",

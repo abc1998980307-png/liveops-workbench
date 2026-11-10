@@ -40,11 +40,13 @@ class FakeLookup:
             {"key": "pay_amt", "label": "成交金额", "display": "0.00", "value": 0, "unit": "元"},
             {"key": "online_user_cnt", "label": "在线人数", "display": "—", "value": None, "unit": "人"}],
                        "endpoints": {"base": {"ok": True}, "core": {"ok": False, "error": "缺失"}}}
+        self.history_report = None
 
     def __call__(self, account, room):
         self.calls.append((account, room))
         return {"account": {"id": account, "uid": self.uid, "label": "测试账号", "state": "paused", "enabled": False},
-                "room": self.room if room == ROOM else None, "latest": self.latest}
+                "room": self.room if room == ROOM else None, "latest": self.latest,
+                "historyReport": self.history_report}
 
 
 class SessionLinksTests(unittest.TestCase):
@@ -126,6 +128,32 @@ class SessionLinksTests(unittest.TestCase):
         changed = reviews.export_markdown(RECORDING_A).decode("utf-8")
         self.assertIn("身份", changed)
         self.assertNotIn("成交金额：", changed)
+
+    def test_history_report_is_usable_without_snapshot_and_export_names_its_source(self):
+        self.links.link(self.payload())
+        self.lookup.latest = None
+        self.lookup.history_report = {
+            "source": "compass_history_detail", "roomId": ROOM,
+            "retrievedAt": "2026-11-10T06:00:00Z", "roomState": "ended",
+            "metrics": [{"key": "settlement", "label": "预计结算金额", "display": "123.45",
+                         "value": 12345, "unit": "元", "rawUnit": "price"}],
+            "endpoints": {"historyTrade": {"ok": True}, "historyCore": {"ok": False}},
+        }
+        detail = self.links.business_snapshot(RECORDING_A)
+        self.assertEqual(detail["status"], "ready")
+        self.assertEqual(detail["source"], "history_report")
+        reviews = SessionReviews(self.temp.name, self.sessions, FakeArchives(), links=self.links)
+        reviews.save({"sessionId": RECORDING_A, "summary": "历史报表核对", "actions": "复查"})
+        text = reviews.export_markdown(RECORDING_A).decode("utf-8")
+        self.assertIn("报表读取时间：2026-11-10T06:00:00Z", text)
+        self.assertIn("数据来源：罗盘历史直播间详情", text)
+        self.assertIn("预计结算金额：123.45 元；原值 12345 price", text)
+        self.assertIn("部分接口未成功：historyCore", text)
+        self.lookup.history_report["roomId"] = "999"
+        self.assertEqual(self.links.business_snapshot(RECORDING_A)["status"], "no_snapshot")
+        self.lookup.history_report["roomId"] = ROOM
+        self.lookup.uid = "different"
+        self.assertEqual(self.links.business_snapshot(RECORDING_A)["status"], "identity_changed")
 
     def test_corrupt_link_file_is_preserved(self):
         original = b'{"version":1,"links":"damaged"}'

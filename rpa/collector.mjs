@@ -5,7 +5,7 @@ import readline from 'node:readline';
 import { pathToFileURL } from 'node:url';
 import { Store } from './store.mjs';
 import { BrowserEngine } from './engine.mjs';
-import { roomList, historyWindow, historyRoomPage, normalizeSnapshot, CollectError } from './model.mjs';
+import { roomList, historyWindow, historyRoomPage, validateHistoryEndpoint, normalizeHistoryReport, normalizeSnapshot, CollectError } from './model.mjs';
 import { FeishuSync } from './feishu.mjs';
 
 export class Collector {
@@ -95,6 +95,14 @@ export class Collector {
       this.next.set(id, Date.now() + (state === 'needs_login' ? 30 : state === 'rate_limited' ? 300 : 60) * 1000);
     }
   }
+  async verifyHistoryIdentity(id, uid) {
+    const identity = await this.engine.request(id, 'identity');
+    const currentUid = identity?.data?.author_id;
+    if (typeof currentUid === 'number' && !Number.isSafeInteger(currentUid)) throw new CollectError('账号标识精度无法确认，已停止历史读取。');
+    if (!currentUid) throw new CollectError('罗盘登录已失效，请重新登录。', 'needs_login');
+    if (String(currentUid) !== uid || this.store.account(id).uid !== uid)
+      throw new CollectError('罗盘账号身份已变化，已停止历史读取。', 'account_changed');
+  }
   async historyPage(id, reset = false) {
     const account = this.store.account(id);
     if (this.stopping || this.busy.has(id) || this.historyBusy.has(id)) throw new Error('该账号正在执行其他读取任务');
@@ -111,11 +119,7 @@ export class Collector {
     const current = () => !this.stopping && version === (this.generation.get(id) || 0);
     const task = (async () => {
       try {
-        const identity = await this.engine.request(id, 'identity');
-        const uid = identity?.data?.author_id;
-        if (typeof uid === 'number' && !Number.isSafeInteger(uid)) throw new CollectError('账号标识精度无法确认，已停止历史导入。');
-        if (!uid) throw new CollectError('罗盘登录已失效，请重新登录。', 'needs_login');
-        if (String(uid) !== account.uid) throw new CollectError('罗盘账号身份已变化，已停止历史导入。', 'account_changed');
+        await this.verifyHistoryIdentity(id, account.uid);
         if (!current()) return this.store.historyProgress(id);
         const body = await this.engine.request(id, 'history', {
           pageNo: progress.nextPage, beginDate: progress.beginDate,
@@ -123,11 +127,7 @@ export class Collector {
         });
         const page = historyRoomPage(body, progress.nextPage);
         if (!current()) return this.store.historyProgress(id);
-        const confirmation = await this.engine.request(id, 'identity');
-        const confirmedUid = confirmation?.data?.author_id;
-        if (typeof confirmedUid === 'number' && !Number.isSafeInteger(confirmedUid)) throw new CollectError('账号标识精度无法确认，已停止历史导入。');
-        if (!confirmedUid || String(confirmedUid) !== account.uid || this.store.account(id).uid !== account.uid)
-          throw new CollectError('罗盘账号身份已变化，已停止历史导入。', 'account_changed');
+        await this.verifyHistoryIdentity(id, account.uid);
         if (!current()) return this.store.historyProgress(id);
         let imported = 0;
         for (const room of page.rooms) {
@@ -149,6 +149,52 @@ export class Collector {
         const message = String(error.message || '历史场次读取失败').replace(/https?:\/\/\S+/g, '罗盘页面').slice(0, 250);
         this.store.saveHistoryProgress(id, { ...progress, error: message, lastReadAt: new Date().toISOString() });
         this.store.event(id, message);
+        throw error;
+      }
+    })();
+    this.historyBusy.set(id, task);
+    try { return await task; } finally { this.historyBusy.delete(id); }
+  }
+  async historyReport(id, roomId) {
+    const account = this.store.account(id);
+    if (this.stopping || this.busy.has(id) || this.historyBusy.has(id)) throw new Error('该账号正在执行其他读取任务');
+    if (!account.uid) throw new Error('请先完成罗盘账号身份核验');
+    if (!/^\d{1,30}$/.test(roomId)) throw new Error('历史场次 ID 无效');
+    const room = this.store.room(id, roomId);
+    if (!room) throw new Error('请先将历史场次目录导入本机');
+    if (room.state === 'live') throw new Error('直播中的场次请使用实时采集');
+    const version = this.generation.get(id) || 0;
+    const current = () => !this.stopping && version === (this.generation.get(id) || 0);
+    const task = (async () => {
+      try {
+        await this.verifyHistoryIdentity(id, account.uid);
+        if (!current()) return { cancelled: true };
+        const names = ['historyBasic', 'historyCore', 'historyTrade'];
+        const values = await Promise.all(names.map(async name => {
+          try { return { ok: true, body: validateHistoryEndpoint(name, await this.engine.request(id, name, roomId)) }; }
+          catch (error) {
+            if (['needs_login', 'rate_limited', 'account_changed'].includes(error.kind)) throw error;
+            return { ok: false, error: String(error.message || '读取失败').slice(0, 200) };
+          }
+        }));
+        if (!current()) return { cancelled: true };
+        const results = Object.fromEntries(names.map((name, index) => [name, values[index]]));
+        if (!values.some(value => value.ok)) throw new CollectError('三个历史详情接口均未成功，原报表未覆盖。');
+        await this.verifyHistoryIdentity(id, account.uid);
+        if (!current()) return { cancelled: true };
+        if (JSON.stringify(results).length > 2 * 1024 * 1024) throw new CollectError('历史详情超过本机保存上限，原报表未覆盖。');
+        const report = normalizeHistoryReport(results, roomId);
+        const previous = this.store.historyReport(id, roomId);
+        if (previous && Object.values(previous.endpoints || {}).every(endpoint => endpoint.ok) && values.some(value => !value.ok)) {
+          this.store.event(id, `历史场次 ${roomId} 本次部分接口失败，保留上次完整报表`);
+          return { report: previous, warning: '部分接口失败，已保留上次完整报表' };
+        }
+        this.store.saveHistoryReport(id, roomId, report, results);
+        this.store.event(id, `历史场次 ${roomId} 报表已读取：${report.metrics.length} 项指标${values.some(value => !value.ok) ? '，部分接口失败' : ''}；未写入飞书`);
+        return { report };
+      } catch (error) {
+        if (!current()) return { cancelled: true };
+        this.store.event(id, String(error.message || '历史报表读取失败').replace(/https?:\/\/\S+/g, '罗盘页面').slice(0, 250));
         throw error;
       }
     })();
@@ -177,13 +223,14 @@ export class Collector {
                  ...this.store.roomsPage(account.id, offset, limit) };
       }
       case 'history.page': return this.historyPage(String(args.id || ''), args.reset === true);
+      case 'history.report': return this.historyReport(String(args.id || ''), String(args.room || ''));
       case 'room.review': {
         const account = this.store.account(String(args.account || ''));
         const roomId = String(args.room || '');
         if (!/^\d{1,30}$/.test(roomId)) throw new Error('经营场次 ID 无效');
         const detail = this.store.detail(account.id, roomId);
         return { account: { id: account.id, uid: account.uid, label: account.name || account.label, state: account.state, enabled: account.enabled },
-                 room: detail.room, latest: detail.latest };
+                 room: detail.room, latest: detail.latest, historyReport: detail.historyReport };
       }
       case 'create': return { account: this.store.create(String(args.label || '')) };
       case 'login': return this.login(String(args.id));

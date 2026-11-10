@@ -104,10 +104,12 @@
       const heading = `已关联：${linked.accountLabel || '罗盘账号'} · ${linked.roomTitle || '未命名场次'} · ID ${linked.roomId} · 罗盘开始 ${businessTime(linked.roomStartedAt)} · 关联于 ${formatTime(linked.linkedAt)}。`;
       const detail = businessDetail;
       const state = detail?.status;
-      const note = !detail ? '正在检查本机指标快照。' : state === 'ready'
-        ? `本机快照采样于 ${formatTime(detail.sampledAt)}，以下是原值与单位。`
+      const note = !detail ? '正在检查本机经营指标。' : state === 'ready'
+        ? `${detail.source === 'history_report' ? '罗盘历史报表读取于' : '本机实时快照采样于'} ${formatTime(detail.sampledAt)}，以下是原值与单位。`
         : detail.note || ({unavailable:'本机经营数据暂不可读取。', identity_changed:'经营账号身份已变化，指标已隐藏。', room_missing:'原经营场次不在本机记录中。', no_snapshot:'该场次暂无本机指标快照。'}[state] || '经营数据状态待确认。');
-      $('sessionLinkCurrent').innerHTML = `${esc(heading)}<br>${esc(note)}${state === 'ready' ? `<div class="review-link-metrics">${(detail.metrics || []).map(metric => `<div>${esc(metric.label || metric.key || '指标')}<strong>${esc(metric.display ?? '—')}${metric.unit ? ' ' + esc(metric.unit) : ''}</strong></div>`).join('')}</div>` : ''}`;
+      const history = detail?.source !== 'history_report' ? detail?.historyReport : null;
+      const historyMarkup = state === 'ready' && history ? `<details><summary>历史报表 · ${esc(formatTime(history.retrievedAt))} · ${history.metrics?.length || 0} 项指标</summary><div class="review-link-metrics">${(history.metrics || []).map(metric => `<div>${esc(metric.label || metric.key || '指标')}<strong>${esc(metric.display ?? '—')}${metric.unit ? ' ' + esc(metric.unit) : ''}</strong></div>`).join('')}</div></details>` : '';
+      $('sessionLinkCurrent').innerHTML = `${esc(heading)}<br>${esc(note)}${state === 'ready' ? `<div class="review-link-metrics">${(detail.metrics || []).map(metric => `<div>${esc(metric.label || metric.key || '指标')}<strong>${esc(metric.display ?? '—')}${metric.unit ? ' ' + esc(metric.unit) : ''}</strong></div>`).join('')}</div>${historyMarkup}` : ''}`;
     }
   }
   async function loadBusinessRooms(offset = 0) {

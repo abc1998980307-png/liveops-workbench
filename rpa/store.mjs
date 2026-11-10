@@ -14,6 +14,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS snapshots (id INTEGER PRIMARY KEY, account TEXT NOT NULL, room TEXT NOT NULL, time TEXT NOT NULL, json TEXT NOT NULL, raw TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS snapshot_room ON snapshots(account,room,id DESC);
       CREATE TABLE IF NOT EXISTS history_progress (account TEXT PRIMARY KEY, json TEXT NOT NULL, FOREIGN KEY(account) REFERENCES accounts(id));
+      CREATE TABLE IF NOT EXISTS history_reports (account TEXT NOT NULL, room TEXT NOT NULL, json TEXT NOT NULL, raw TEXT NOT NULL, PRIMARY KEY(account,room), FOREIGN KEY(account,room) REFERENCES rooms(account,id));
       CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, account TEXT, time TEXT NOT NULL, message TEXT NOT NULL);`);
   }
   accounts() { return this.db.prepare('SELECT json FROM accounts').all().map(r => JSON.parse(r.json)); }
@@ -37,6 +38,15 @@ export class Store {
     this.account(account);
     this.db.prepare('INSERT INTO history_progress(account,json) VALUES (?,?) ON CONFLICT(account) DO UPDATE SET json=excluded.json').run(account, JSON.stringify(progress));
     return progress;
+  }
+  historyReport(account, room, raw = false) {
+    const row = this.db.prepare('SELECT json,raw FROM history_reports WHERE account=? AND room=?').get(account, room);
+    return row ? { ...JSON.parse(row.json), ...(raw ? { raw: JSON.parse(row.raw) } : {}) } : null;
+  }
+  saveHistoryReport(account, room, report, raw) {
+    if (!this.room(account, room)) throw new Error('历史场次尚未保存');
+    this.db.prepare('INSERT INTO history_reports(account,room,json,raw) VALUES (?,?,?,?) ON CONFLICT(account,room) DO UPDATE SET json=excluded.json,raw=excluded.raw').run(account, room, JSON.stringify(report), JSON.stringify(raw));
+    return report;
   }
   roomsPage(account, offset, limit) {
     this.account(account);
@@ -63,7 +73,11 @@ export class Store {
     this.account(account);
     const latest = this.db.prepare('SELECT time,json,raw FROM snapshots WHERE account=? AND room=? ORDER BY id DESC LIMIT 1').get(account, room);
     const history = this.db.prepare('SELECT time,json FROM snapshots WHERE account=? AND room=? ORDER BY id DESC LIMIT 120').all(account, room).reverse().map(r => ({ time: r.time, metrics: JSON.parse(r.json).metrics }));
-    return { room: this.room(account, room), latest: latest ? { time: latest.time, ...JSON.parse(latest.json) } : null, history, ...(raw && latest ? { raw: JSON.parse(latest.raw) } : {}) };
+    const report = this.historyReport(account, room);
+    return { room: this.room(account, room), latest: latest ? { time: latest.time, ...JSON.parse(latest.json) } : null, history,
+      historyReport: report,
+      ...(raw && report ? { historyRaw: this.historyReport(account, room, true).raw } : {}),
+      ...(raw && latest ? { raw: JSON.parse(latest.raw) } : {}) };
   }
   close() { this.db.close(); }
 }

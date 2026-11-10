@@ -186,8 +186,17 @@ class SessionLinks:
         if not isinstance(room, dict) or str(room.get("id")) != link["roomId"]:
             return {**result, "status": "room_missing", "note": "原经营场次不在本机记录中，未展示指标"}
         latest = business.get("latest")
-        if not isinstance(latest, dict) or not isinstance(latest.get("metrics"), list):
+        report = business.get("historyReport")
+        if (not isinstance(report, dict) or report.get("roomId") != link["roomId"]
+                or report.get("source") != "compass_history_detail"
+                or not isinstance(report.get("metrics"), list)):
+            report = None
+        if isinstance(latest, dict) and isinstance(latest.get("metrics"), list):
+            return {**result, "status": "ready", "source": "realtime_snapshot", "sampledAt": latest.get("time"),
+                    "metrics": latest["metrics"], "endpoints": latest.get("endpoints") if isinstance(latest.get("endpoints"), dict) else {},
+                    "roomState": room.get("state", "unknown"), "historyReport": report}
+        if report is None:
             return {**result, "status": "no_snapshot", "note": "该经营场次尚无本机指标快照"}
-        return {**result, "status": "ready", "sampledAt": latest.get("time"),
-                "metrics": latest["metrics"], "endpoints": latest.get("endpoints") if isinstance(latest.get("endpoints"), dict) else {},
-                "roomState": room.get("state", "unknown")}
+        return {**result, "status": "ready", "source": "history_report", "sampledAt": report.get("retrievedAt"),
+                "metrics": report["metrics"], "endpoints": report.get("endpoints") if isinstance(report.get("endpoints"), dict) else {},
+                "roomState": report.get("roomState") or room.get("state", "unknown"), "historyReport": report}

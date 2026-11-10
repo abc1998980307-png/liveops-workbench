@@ -1253,10 +1253,10 @@ class Handler(BaseHTTPRequestHandler):
                 action = {"settings": "config", "check": "test"}.get(feishu_match[1], feishu_match[1])
                 self.rpa_call("feishu." + action, payload)
                 return
-            match = re.fullmatch(r"/api/rpa/accounts/([a-f0-9-]{36})/(login|sync|monitor|settings|history)", path)
+            match = re.fullmatch(r"/api/rpa/accounts/([a-f0-9-]{36})/(login|sync|monitor|settings|history|history-report)", path)
             if match:
-                action = "history.page" if match[2] == "history" else match[2]
-                self.rpa_call(action, {**payload, "id": match[1]}, timeout=55 if match[2] == "history" else 45 if match[2] == "login" else 12)
+                action = {"history": "history.page", "history-report": "history.report"}.get(match[2], match[2])
+                self.rpa_call(action, {**payload, "id": match[1]}, timeout=60 if match[2] in ("history", "history-report") else 45 if match[2] == "login" else 12)
             else:
                 self.send_json({"error": "not found"}, 404)
             return

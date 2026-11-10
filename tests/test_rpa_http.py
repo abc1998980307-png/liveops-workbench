@@ -79,6 +79,15 @@ class RpaHttpTests(unittest.TestCase):
         self.assertEqual(json.loads(data)["args"], {"reset": True, "id": account})
         status, _ = self.request("POST", route, b"{}", {"Origin": "https://attacker.example", "Content-Type": "application/json"})
         self.assertEqual(status, 403)
+        report_route = f"/api/rpa/accounts/{account}/history-report"
+        status, data = self.request("POST", report_route, b'{"room":"7612345678901234567"}',
+                                    {"Content-Type": "application/json"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data)["method"], "history.report")
+        self.assertEqual(json.loads(data)["args"], {"room": "7612345678901234567", "id": account})
+        status, _ = self.request("POST", report_route, b"{}",
+                                 {"Origin": "https://attacker.example", "Content-Type": "application/json"})
+        self.assertEqual(status, 403)
 
     def test_profile_link_account_can_be_created_and_monitored_without_room_url(self):
         profile_id = "MS4wLjABAAAA1234567890"
