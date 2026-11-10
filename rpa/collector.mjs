@@ -121,7 +121,8 @@ export class Collector {
       }
       if (!current()) return;
       const state = failed ? (successes ? 'partial' : 'error') : 'ready';
-      this.store.save({ ...this.store.account(id), state, error: errors.slice(0, 3).join('；') || null, lastSync: failed && !successes ? a.lastSync : new Date().toISOString(), lastCheck: checkedAt });
+      this.store.save({ ...this.store.account(id), state, retryAfter: null,
+        error: errors.slice(0, 3).join('；') || null, lastSync: failed && !successes ? a.lastSync : new Date().toISOString(), lastCheck: checkedAt });
       this.store.event(id, rooms.length ? `检测到 ${rooms.length} 个今日场次，采集 ${selected.length} 场${failed ? `，${failed} 项接口失败` : '，数据已保存'}` : '账号在线，今日暂无直播场次');
       this.next.set(id, Date.now() + this.store.account(id).interval * 1000);
     } catch (error) {
@@ -390,6 +391,10 @@ export class Collector {
     if (this.stopping) return;
     this.feishu.tick();
     for (const a of this.store.accounts()) {
+      if (a.retryAfter && Date.now() >= Date.parse(a.retryAfter)) {
+        this.store.save({ ...a, retryAfter: null,
+          ...(a.state === 'rate_limited' && !a.enabled ? { state: 'paused', error: null } : {}) });
+      }
       if (this.rateLimitUntil(a.id)) continue;
       if (a.enabled && !this.busy.has(a.id) && !this.historyBusy.has(a.id) && Date.now() >= (this.next.get(a.id) || 0)) this.start(a.id);
     }

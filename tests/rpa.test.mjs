@@ -407,6 +407,10 @@ test('429 from ordinary reads persists one account cooldown across every request
         const date = historyBounds().latest;
         assert.throws(() => resumed.startHistoryBatch(t.id, date, date), /请求受限/);
       } finally { reopened.close(); }
+      t.store.save({ ...t.store.account(t.id), retryAfter: new Date(Date.now() - 1000).toISOString() });
+      t.collector.tick();
+      assert.equal(t.store.account(t.id).retryAfter, null);
+      assert.equal(t.store.account(t.id).state, 'paused');
     } finally { await t.cleanup(); }
   }
 });
