@@ -123,3 +123,24 @@ test('profile lookup command calls the isolated browser reader', async () => {
     assert.deepEqual(result, { status_code: 0, user: { room_data: '' } });
   } finally { await collector.close(); fs.rmSync(root, { recursive: true }); }
 });
+
+test('saved rooms can be paged and inspected while collection stays paused', async () => {
+  const t = setup();
+  try {
+    t.store.save({ ...t.store.account(t.id), uid: '99887766', enabled: false, state: 'paused' });
+    for (let i = 0; i < 105; i++) t.store.saveRoom(t.id, { id: String(100000 + i), title: `历史场次 ${i}`, state: 'ended' });
+    const first = await t.collector.command('rooms.list', { account: t.id, offset: 0, limit: 50 });
+    const last = await t.collector.command('rooms.list', { account: t.id, offset: 100, limit: 50 });
+    assert.equal(first.total, 105);
+    assert.equal(first.rooms.length, 50);
+    assert.equal(last.rooms.length, 5);
+    assert.equal(last.hasMore, false);
+    const historical = await t.collector.command('room.review', { account: t.id, room: '100000' });
+    assert.equal(historical.room.title, '历史场次 0');
+    assert.equal(historical.latest, null);
+    assert.equal(historical.account.uid, '99887766');
+    assert.equal(t.store.account(t.id).enabled, false);
+    assert.equal(t.collector.busy.size, 0);
+    await assert.rejects(t.collector.command('rooms.list', { account: t.id, offset: -1 }));
+  } finally { await t.cleanup(); }
+});

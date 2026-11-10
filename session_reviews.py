@@ -21,10 +21,11 @@ class ReviewStoreError(RuntimeError):
 
 
 class SessionReviews:
-    def __init__(self, data_root, sessions, archives, now=None):
+    def __init__(self, data_root, sessions, archives, now=None, links=None):
         self.file = Path(data_root) / "plugin-settings" / "session-reviews.json"
         self.sessions = sessions
         self.archives = archives
+        self.links = links
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.lock = threading.RLock()
 
@@ -121,7 +122,7 @@ class SessionReviews:
 
     @staticmethod
     def _plain_markdown(value, block=False):
-        escaped = html.escape(str(value or ""), quote=False)
+        escaped = html.escape(str(value if value is not None else ""), quote=False)
         special = r"([\\`*_{}\[\]()#+.!|>~-])" if block else r"([\\`*_{}\[\]()!|~])"
         return re.sub(special, r"\\\1", escaped)
 
@@ -132,7 +133,7 @@ class SessionReviews:
 
     @classmethod
     def _inline(cls, value):
-        return cls._plain_markdown(" ".join(str(value or "").splitlines()))
+        return cls._plain_markdown(" ".join(str(value if value is not None else "").splitlines()))
 
     def export_markdown(self, session_id):
         session = self._session(session_id)
@@ -162,9 +163,41 @@ class SessionReviews:
                     lines.append("- " + label + "（录屏目录内相对路径）：" + self._inline(archive[key]))
             lines.append("")
         lines.extend(["## 复盘摘要", "", self._quote(review["summary"] or "未填写"), "",
-                      "## 后续动作", "", self._quote(review["actions"] or "未填写"), "",
-                      "## 数据边界", "",
-                      "- 此文档只依据本机录制观察、归档状态与手工填写的复盘内容；尚未关联罗盘经营场次，不包含成交、消耗等经营指标。",
+                      "## 后续动作", "", self._quote(review["actions"] or "未填写"), ""])
+        business = self.links.business_snapshot(session_id) if self.links else {"linked": False, "status": "unlinked"}
+        lines.extend(["## 经营场次", ""])
+        if business.get("linked"):
+            link = business["link"]
+            lines.extend(["- 关联方式：用户明确确认", "- 经营账号：" + self._inline(link["accountLabel"]),
+                          "- 账号 UID：" + self._inline(link["accountUid"]),
+                          "- 罗盘场次 ID：" + self._inline(link["roomId"]),
+                          "- 罗盘场次标题：" + self._inline(link["roomTitle"]),
+                          "- 关联时间：" + self._inline(link["linkedAt"]),
+                          "- 数据状态：" + self._inline(business["status"])])
+            if business["status"] == "ready":
+                lines.extend(["- 指标采样时间：" + self._inline(business.get("sampledAt") or "未记录"),
+                              "- 场次状态：" + self._inline(business.get("roomState") or "unknown"), "", "### 本机快照指标", ""])
+                for metric in business["metrics"]:
+                    if not isinstance(metric, dict):
+                        continue
+                    label = self._inline(metric.get("label") or metric.get("key") or "未命名指标")
+                    display = self._inline(metric.get("display") if metric.get("display") is not None else "—")
+                    unit = self._inline(metric.get("unit") or "")
+                    original = metric.get("value")
+                    lines.append("- " + label + "：" + display + (" " + unit if unit else "")
+                                 + "；原值 " + self._inline(original if original is not None else "未返回"))
+                failed = [name for name, result in business.get("endpoints", {}).items()
+                          if isinstance(result, dict) and not result.get("ok")]
+                if failed:
+                    lines.append("- 部分接口未成功：" + self._inline("、".join(failed)))
+            else:
+                lines.append("- 缺失说明：" + self._inline(business.get("note") or "经营快照不可用"))
+        else:
+            lines.append("- 尚未确认与罗盘经营场次的对应关系。")
+        lines.extend(["", "## 数据边界", "",
+                      ("- 经营指标来自已确认关联的本机罗盘快照；仍需核对最终结算和采样范围，不把整体成交除以消耗当作官方归因 ROI。"
+                       if business.get("status") == "ready" else
+                       "- 此文档只依据本机录制观察、归档状态与手工填写的复盘内容；尚未关联罗盘经营场次或经营快照不可用，不包含成交、消耗等经营指标。"),
                       "- 接入观察前的片段可能缺失；文件切换及观察中断无法证明直播连续或准确的断流时长。",
                       "- 归档未知间断：" + ("是" if archive and archive.get("unknownGaps") else "未由归档确认；仍需核对原始记录"),
                       ""])

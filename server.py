@@ -27,6 +27,7 @@ from dependency_service import DependencyManager
 from recording_sessions import RecordingSessions
 from recording_archives import RecordingArchiveManager
 from session_reviews import SessionReviews, ReviewStoreError
+from session_links import SessionLinks, LinkStoreError
 from keyword_service import KeywordService
 from hot_service import HotService, HotServiceError
 from service_status import compass_status, feishu_status
@@ -80,7 +81,9 @@ if _pipeline_spec and _pipeline_spec.loader:
 
 RECORDING_ARCHIVES = RecordingArchiveManager(DATA_ROOT, RECORDING_SESSIONS, MEDIA_PIPELINE,
                                              lambda: read_settings()["recordingDirectory"])
-SESSION_REVIEWS = SessionReviews(DATA_ROOT, RECORDING_SESSIONS, RECORDING_ARCHIVES)
+SESSION_LINKS = SessionLinks(DATA_ROOT, RECORDING_SESSIONS,
+                             lambda account, room: COLLECTOR.call("room.review", {"account": account, "room": room}, timeout=5))
+SESSION_REVIEWS = SessionReviews(DATA_ROOT, RECORDING_SESSIONS, RECORDING_ARCHIVES, links=SESSION_LINKS)
 
 
 def read_accounts():
@@ -846,6 +849,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.rpa_call("feishu.state")
             elif path == "/api/rpa/session":
                 self.rpa_call("detail", {"account": (query.get("account") or [""])[0], "room": (query.get("room") or [""])[0], "raw": (query.get("raw") or [""])[0] == "1"})
+            elif path == "/api/rpa/rooms":
+                self.rpa_call("rooms.list", {"account": (query.get("account") or [""])[0],
+                                             "offset": (query.get("offset") or ["0"])[0],
+                                             "limit": (query.get("limit") or ["50"])[0]})
             else:
                 self.send_json({"error": "not found"}, 404)
             return
@@ -925,6 +932,26 @@ class Handler(BaseHTTPRequestHandler):
             except (ReviewStoreError, OSError) as error:
                 self.send_json({"error": str(error)}, 500)
             return
+        if path == "/api/session-links":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台读取场次关联"}, 403)
+                return
+            try:
+                self.send_json(SESSION_LINKS.list())
+            except (LinkStoreError, OSError) as error:
+                self.send_json({"error": str(error)}, 500)
+            return
+        if path == "/api/session-links/detail":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台读取场次关联"}, 403)
+                return
+            try:
+                self.send_json(SESSION_LINKS.business_snapshot((query.get("recordingSessionId") or [""])[0]))
+            except ValueError as error:
+                self.send_json({"error": str(error)}, 400)
+            except (LinkStoreError, OSError) as error:
+                self.send_json({"error": str(error)}, 500)
+            return
         if path == "/api/session-reviews/export":
             if not self.rpa_request_allowed():
                 self.send_json({"error": "仅允许从本机工作台导出复盘"}, 403)
@@ -938,7 +965,7 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as error:
                 self.send_json({"error": str(error)}, 400)
                 return
-            except (ReviewStoreError, OSError) as error:
+            except (ReviewStoreError, LinkStoreError, OSError) as error:
                 self.send_json({"error": str(error)}, 500)
                 return
             self.send_response(200)
@@ -1125,6 +1152,21 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(error)}, 400)
             except (ReviewStoreError, OSError) as error:
                 self.send_json({"error": str(error)}, 500)
+            return
+
+        if path in ("/api/session-links", "/api/session-links/unlink"):
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台管理场次关联"}, 403)
+                return
+            try:
+                result = SESSION_LINKS.link(payload) if path == "/api/session-links" else SESSION_LINKS.unlink(payload)
+                self.send_json({"link": result} if path == "/api/session-links" else result)
+            except FileNotFoundError as error:
+                self.send_json({"error": str(error)}, 404)
+            except ValueError as error:
+                self.send_json({"error": str(error)}, 400)
+            except (LinkStoreError, OSError) as error:
+                self.send_json({"error": str(error)}, 503)
             return
 
         if path == "/api/recordings/reveal":

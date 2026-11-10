@@ -28,6 +28,17 @@ export class Store {
   }
   events() { return this.db.prepare('SELECT account,time,message FROM events ORDER BY id DESC LIMIT 30').all(); }
   rooms(id) { return this.db.prepare('SELECT json FROM rooms WHERE account=? ORDER BY updated DESC LIMIT 100').all(id).map(r => JSON.parse(r.json)); }
+  roomsPage(account, offset, limit) {
+    this.account(account);
+    const total = this.db.prepare('SELECT COUNT(*) AS count FROM rooms WHERE account=?').get(account).count;
+    const rooms = this.db.prepare('SELECT json FROM rooms WHERE account=? ORDER BY updated DESC, id DESC LIMIT ? OFFSET ?').all(account, limit, offset).map(r => JSON.parse(r.json));
+    return { rooms, total, offset, limit, hasMore: offset + rooms.length < total };
+  }
+  room(account, id) {
+    this.account(account);
+    const row = this.db.prepare('SELECT json FROM rooms WHERE account=? AND id=?').get(account, id);
+    return row ? JSON.parse(row.json) : null;
+  }
   saveRoom(account, room) {
     const time = new Date().toISOString();
     this.db.prepare('INSERT INTO rooms VALUES (?,?,?,?) ON CONFLICT(account,id) DO UPDATE SET json=excluded.json,updated=excluded.updated').run(account, room.id, JSON.stringify({ ...room, updatedAt: time }), time);
@@ -42,7 +53,7 @@ export class Store {
     this.account(account);
     const latest = this.db.prepare('SELECT time,json,raw FROM snapshots WHERE account=? AND room=? ORDER BY id DESC LIMIT 1').get(account, room);
     const history = this.db.prepare('SELECT time,json FROM snapshots WHERE account=? AND room=? ORDER BY id DESC LIMIT 120').all(account, room).reverse().map(r => ({ time: r.time, metrics: JSON.parse(r.json).metrics }));
-    return { room: this.rooms(account).find(r => r.id === room) || null, latest: latest ? { time: latest.time, ...JSON.parse(latest.json) } : null, history, ...(raw && latest ? { raw: JSON.parse(latest.raw) } : {}) };
+    return { room: this.room(account, room), latest: latest ? { time: latest.time, ...JSON.parse(latest.json) } : null, history, ...(raw && latest ? { raw: JSON.parse(latest.raw) } : {}) };
   }
   close() { this.db.close(); }
 }

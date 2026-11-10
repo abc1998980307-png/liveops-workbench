@@ -233,6 +233,16 @@
     .review-form select:focus, .review-form textarea:focus { outline: none; border-color: #80b7ad; box-shadow: 0 0 0 3px rgb(20 125 112 / 9%); }
     .review-form .button-row { flex-wrap: wrap; }
     .review-form .button-row .btn:disabled { cursor: not-allowed; opacity: .55; }
+    .review-link { display: grid; gap: 10px; padding: 13px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .review-link-title { color: var(--ink); font-size: 12px; font-weight: 650; }
+    .review-link-pickers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .review-link-page { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .review-link-page .session-search-meta { margin: 0; }
+    .review-form label.review-link-confirm { display: flex; align-items: flex-start; gap: 8px; font-weight: 400; line-height: 1.5; }
+    .review-link-confirm input { margin: 2px 0 0; flex: none; }
+    .review-link-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); gap: 7px 14px; margin: 3px 0; }
+    .review-link-metrics div { min-width: 0; font-size: 11px; overflow-wrap: anywhere; }
+    .review-link-metrics strong { display: block; color: var(--ink); font-size: 12px; }
     #recordingSessionRows .tag { align-self: start; }
     #recordingSessionRows details { margin-top: 7px; font-size: 11px; line-height: 1.7; }
     #recordingSessionRows summary { cursor: pointer; }
@@ -304,6 +314,7 @@
       .side-stack { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 720px) {
+      .review-link-pickers { grid-template-columns: minmax(0, 1fr); }
       .app-shell { display: block; }
       .sidebar { position: fixed; z-index: 8; left: 0; top: 0; bottom: 0; width: 248px; transform: translateX(-101%); transition: transform .2s; box-shadow: 15px 0 45px rgb(20 40 35 / 12%); }
       .sidebar.mobile-open { transform: translateX(0); }
@@ -470,6 +481,18 @@
               <form class="review-form" id="sessionReviewForm">
                 <label>录制场次<select id="sessionReviewSelect" required><option value="">选择录制场次</option></select></label>
                 <div class="session-search-meta" id="sessionReviewSource">选择场次后查看录制与归档状态。</div>
+                <div class="review-link" aria-label="罗盘经营场次关联">
+                  <div class="review-link-title">关联罗盘经营场次</div>
+                  <div class="session-search-meta" id="sessionLinkCurrent">选择录制场次后查看经营数据关联。</div>
+                  <div class="review-link-pickers">
+                    <label>罗盘账号<select id="sessionLinkAccount" disabled><option value="">选择经营账号</option></select></label>
+                    <label>本机已保存的经营场次<select id="sessionLinkRoom" disabled><option value="">选择经营场次</option></select></label>
+                  </div>
+                  <div class="review-link-page"><button class="btn small" id="sessionLinkPrevious" type="button" disabled>上一页</button><span class="session-search-meta" id="sessionLinkPage">暂无候选场次</span><button class="btn small" id="sessionLinkNext" type="button" disabled>下一页</button></div>
+                  <label class="review-link-confirm"><input id="sessionLinkConfirmed" type="checkbox" disabled><span>我已核对录制账号、经营账号及场次时间，确认这两场属于同一场直播</span></label>
+                  <div class="button-row"><button class="btn primary" id="saveSessionLink" type="button" disabled>确认关联</button><button class="btn" id="removeSessionLink" type="button" disabled>解除关联</button></div>
+                  <div class="session-search-meta" id="sessionLinkStatus" role="status" aria-live="polite">关联操作不会启动已暂停的罗盘采集。</div>
+                </div>
                 <label>复盘摘要<textarea id="sessionReviewSummary" maxlength="5000" required placeholder="记录可从录屏或字幕核对的事实与判断"></textarea></label>
                 <label>后续行动<textarea id="sessionReviewActions" maxlength="3000" placeholder="记录负责人、跟进事项或待核对的问题"></textarea></label>
                 <div class="button-row"><button class="btn primary" id="saveSessionReview" type="submit" disabled>保存复盘</button><button class="btn" id="exportSessionReview" type="button" disabled>导出复盘</button></div>

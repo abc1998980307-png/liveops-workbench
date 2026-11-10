@@ -109,6 +109,21 @@ export class Collector {
       case 'feishu.sync': return this.feishu.sync();
       case 'feishu.monitor': return this.feishu.monitor(args.enabled);
       case 'state': return this.state();
+      case 'rooms.list': {
+        const account = this.store.account(String(args.account || ''));
+        const offset = Number(args.offset ?? 0), limit = Number(args.limit ?? 50);
+        if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('场次分页参数无效');
+        return { account: { id: account.id, uid: account.uid, label: account.name || account.label, state: account.state, enabled: account.enabled },
+                 ...this.store.roomsPage(account.id, offset, limit) };
+      }
+      case 'room.review': {
+        const account = this.store.account(String(args.account || ''));
+        const roomId = String(args.room || '');
+        if (!/^\d{1,30}$/.test(roomId)) throw new Error('经营场次 ID 无效');
+        const detail = this.store.detail(account.id, roomId);
+        return { account: { id: account.id, uid: account.uid, label: account.name || account.label, state: account.state, enabled: account.enabled },
+                 room: detail.room, latest: detail.latest };
+      }
       case 'create': return { account: this.store.create(String(args.label || '')) };
       case 'login': return this.login(String(args.id));
       case 'sync': return this.start(String(args.id));
