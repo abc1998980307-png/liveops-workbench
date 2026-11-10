@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { taskUrl, validateResponse, measure, findMetric, roomList, normalizeSnapshot, CollectError } from '../rpa/model.mjs';
+import { taskUrl, validateResponse, measure, findMetric, roomList, historyWindow, historyRoomPage, normalizeSnapshot, CollectError } from '../rpa/model.mjs';
 import { Store } from '../rpa/store.mjs';
 import { Collector } from '../rpa/collector.mjs';
 
@@ -20,7 +20,7 @@ const responses = {
 function setup(handler = task => structuredClone(responses[task])) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'liveops-rpa-test-'));
   const store = new Store(root);
-  const engine = { request: async (_id, task) => handler(task), open: async () => ({}), close: async () => {} };
+  const engine = { request: async (_id, task, options) => handler(task, options), open: async () => ({}), close: async () => {} };
   const collector = new Collector(store, engine);
   const a = store.create('测试'); store.save({ ...a, enabled: true });
   return { root, store, collector, id: a.id, cleanup: async () => { await collector.close(); fs.rmSync(root, { recursive: true }); } };
@@ -47,6 +47,81 @@ test('room IDs stay precise and unknown status is not treated as live', () => {
   assert.equal(roomList({ data: { card_list: [{ room_id: '1', status: 0 }] } })[0].state, 'unknown');
   assert.throws(() => roomList({ data: { card_list: [{ room_id: Number(roomId) }] } }));
   assert.throws(() => roomList({ data: { items: [] } }));
+});
+test('historical request and response have bounded pagination and exact string IDs', () => {
+  const window = historyWindow(new Date('2026-11-10T10:00:00+08:00'));
+  assert.deepEqual(window, { beginDate: 1786550400, beginDateFormat: '2026-08-13T00:00:00+08:00' });
+  const url = new URL(taskUrl('history', { pageNo: 2, ...window }));
+  assert.equal(url.pathname, '/compass_api/content_live/author/live_detail/history_live');
+  assert.equal(url.searchParams.get('page_no'), '2');
+  assert.equal(url.searchParams.get('page_size'), '10');
+  assert.equal(url.searchParams.get('date_type'), '24');
+  assert.throws(() => taskUrl('history', { pageNo: 51, ...window }));
+  const body = { data: { data_result: [{ live_room: '测试历史直播', start_time: '2026-08-23 08:04:00', operation: { live_id: roomId } }], page_result: { page_no: 2, page_size: 10, total: 11 } } };
+  assert.deepEqual(historyRoomPage(body, 2).rooms[0], { id: roomId, title: '测试历史直播', state: 'ended', startedAt: '2026-08-23 08:04:00', today: false, source: 'compass_history' });
+  assert.throws(() => historyRoomPage({ data: { ...body.data, data_result: [{ operation: { live_id: Number(roomId) } }] } }, 2), CollectError);
+  assert.throws(() => historyRoomPage(body, 1), CollectError);
+  assert.throws(() => historyRoomPage({ data: { data_result: [] } }, 1), CollectError);
+});
+test('manual history pages resume after restart without snapshots or Feishu writes', async () => {
+  const ids = Array.from({ length: 10 }, (_, i) => `76123456789012345${String(i).padStart(2, '0')}`);
+  const calls = [];
+  const t = setup((task, options) => {
+    calls.push({ task, options });
+    if (task === 'identity') return structuredClone(responses.identity);
+    if (task === 'history') return { data: { data_result: (options.pageNo === 1 ? ids : [ids[0]]).map(id => ({ live_room: `历史场次 ${id}`, operation: { live_id: id } })), page_result: { page_no: options.pageNo, page_size: 10, total: 11 } } };
+    throw new Error('unexpected task');
+  });
+  try {
+    t.store.save({ ...t.store.account(t.id), uid: '99887766', enabled: false, state: 'paused' });
+    const first = await t.collector.command('history.page', { id: t.id, reset: true });
+    assert.equal(first.nextPage, 2);
+    assert.equal(first.imported, 10);
+    const secondStore = new Store(t.root);
+    assert.equal(secondStore.historyProgress(t.id).nextPage, 2);
+    secondStore.close();
+    const second = await t.collector.command('history.page', { id: t.id });
+    assert.equal(second.complete, true);
+    assert.equal(second.imported, 10);
+    assert.equal(second.scanned, 11);
+    assert.equal(t.store.roomsPage(t.id, 0, 100).total, 10);
+    assert.equal(t.store.detail(t.id, ids[0]).latest, null);
+    assert.equal(t.store.account(t.id).enabled, false);
+    assert.deepEqual(calls.filter(c => c.task === 'history').map(c => c.options.pageNo), [1, 2]);
+  } finally { await t.cleanup(); }
+});
+test('history import rejects switched identity and pause prevents in-flight writes', async () => {
+  const t = setup();
+  try {
+    t.store.save({ ...t.store.account(t.id), uid: '99887766', enabled: false, state: 'paused' });
+    t.collector.engine.request = async () => ({ data: { author_id: 'other' } });
+    await assert.rejects(t.collector.command('history.page', { id: t.id, reset: true }), /身份已变化/);
+    assert.equal(t.store.rooms(t.id).length, 0);
+    assert.match(t.store.historyProgress(t.id).error, /身份已变化/);
+    let resolveHistory;
+    t.collector.engine.request = async (_id, task) => task === 'identity' ? structuredClone(responses.identity) : new Promise(resolve => { resolveHistory = resolve; });
+    const pending = t.collector.command('history.page', { id: t.id });
+    while (!resolveHistory) await new Promise(resolve => setImmediate(resolve));
+    t.collector.pause(t.id);
+    resolveHistory({ data: { data_result: [{ operation: { live_id: roomId } }], page_result: { page_no: 1, page_size: 10, total: 1 } } });
+    await pending;
+    assert.equal(t.store.rooms(t.id).length, 0);
+    assert.equal(t.store.account(t.id).state, 'paused');
+  } finally { await t.cleanup(); }
+});
+test('identity switched during a history request cannot write that page', async () => {
+  const t = setup();
+  try {
+    t.store.save({ ...t.store.account(t.id), uid: '99887766', enabled: false, state: 'paused' });
+    let reads = 0;
+    t.collector.engine.request = async (_id, task) => {
+      if (task === 'identity') return { data: { author_id: ++reads === 1 ? '99887766' : 'other' } };
+      return { data: { data_result: [{ operation: { live_id: roomId } }], page_result: { page_no: 1, page_size: 10, total: 1 } } };
+    };
+    await assert.rejects(t.collector.command('history.page', { id: t.id, reset: true }), /身份已变化/);
+    assert.equal(t.store.rooms(t.id).length, 0);
+    assert.equal(t.store.historyProgress(t.id).nextPage, 1);
+  } finally { await t.cleanup(); }
 });
 test('normalize mixed metric and product shapes; failed metrics remain missing', () => {
   const results = Object.fromEntries(['base','core','products'].map(k => [k, { ok: true, body: responses[k] }]));

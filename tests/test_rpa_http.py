@@ -70,6 +70,16 @@ class RpaHttpTests(unittest.TestCase):
         status, _ = self.request("POST", "/api/rpa/accounts/x/login", "{}", {"Content-Type":"application/json"})
         self.assertEqual(status, 404)
 
+    def test_history_route_is_explicit_and_same_origin_only(self):
+        account = "00000000-0000-4000-8000-000000000001"
+        route = f"/api/rpa/accounts/{account}/history"
+        status, data = self.request("POST", route, b'{"reset":true}', {"Content-Type": "application/json"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data)["method"], "history.page")
+        self.assertEqual(json.loads(data)["args"], {"reset": True, "id": account})
+        status, _ = self.request("POST", route, b"{}", {"Origin": "https://attacker.example", "Content-Type": "application/json"})
+        self.assertEqual(status, 403)
+
     def test_profile_link_account_can_be_created_and_monitored_without_room_url(self):
         profile_id = "MS4wLjABAAAA1234567890"
         profile_url = f"https://www.douyin.com/user/{profile_id}"

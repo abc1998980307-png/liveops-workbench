@@ -10,6 +10,7 @@ export const TASKS = {
   identity: '/business_api/home/unify_track',
   account: '/ecomauth/loginv1/get_account_info?login_source=compass',
   rooms: '/compass_api/author/live/live_detail/today_live_room',
+  history: '/compass_api/content_live/author/live_detail/history_live',
   base: '/compass_api/author/live/live_screen/live_base_info',
   core: '/compass_api/author/live/live_screen/core_data',
   products: '/compass_api/content_live/author/live_screen/product_list',
@@ -28,6 +29,15 @@ export function taskUrl(task, roomId) {
   if (task === 'products') {
     url.searchParams.set('index_selected', PRODUCT_KEYS.join(','));
     for (const key of ['category_id', 'product_filter_type', 'explained_filter_type']) url.searchParams.set(key, '0');
+  }
+  if (task === 'history') {
+    const { pageNo, beginDate, beginDateFormat } = roomId || {};
+    if (!Number.isSafeInteger(pageNo) || pageNo < 1 || pageNo > 50 ||
+        !Number.isSafeInteger(beginDate) || beginDate < 0 ||
+        !/^\d{4}-\d{2}-\d{2}T00:00:00\+08:00$/.test(beginDateFormat || '')) throw new Error('历史场次分页参数无效');
+    for (const [key, value] of Object.entries({ is_asc: 'false', page_no: pageNo, page_size: 10,
+      date_type: 24, begin_date: beginDate, begin_date_format: beginDateFormat,
+      index_selected: '', filter_type: 0 })) url.searchParams.set(key, String(value));
   }
   return url.href;
 }
@@ -128,6 +138,41 @@ export function roomList(body) {
   }
   if (cards.length && !rooms.size) throw new CollectError('已返回场次列表，但场次 ID 格式未识别。请查看同步记录。');
   return [...rooms.values()];
+}
+
+export function historyWindow(now = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(now).map(part => [part.type, part.value]));
+  const midnight = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day) - 89);
+  return { beginDate: (midnight - 8 * 3600e3) / 1000,
+    beginDateFormat: `${new Date(midnight).toISOString().slice(0, 10)}T00:00:00+08:00` };
+}
+
+export function historyRoomPage(body, requestedPage) {
+  const data = body?.data, rows = data?.data_result, page = data?.page_result;
+  if (!Array.isArray(rows) || !page || typeof page !== 'object') throw new CollectError('历史场次接口结构已变化。');
+  const pageNo = page.page_no, pageSize = page.page_size, total = page.total;
+  if (!Number.isSafeInteger(pageNo) || pageNo !== requestedPage ||
+      pageSize !== 10 || !Number.isSafeInteger(total) || total < 0 || rows.length > 10)
+    throw new CollectError('历史场次分页结果无效。');
+  const rooms = new Map();
+  for (const row of rows) {
+    const id = row?.operation?.live_id;
+    if (typeof id !== 'string' || !/^\d{1,30}$/.test(id)) throw new CollectError('历史场次 ID 无法保持精确字符串，已停止导入。');
+    const name = row.live_room;
+    const title = typeof name === 'string' ? name : name?.room_title || name?.room_name || name?.title;
+    const rawTime = row.start_time;
+    let startedAt = rawTime == null ? null : String(rawTime).slice(0, 80);
+    if (/^\d{10,13}$/.test(startedAt || '')) {
+      const time = Number(startedAt) * (startedAt.length === 10 ? 1000 : 1);
+      startedAt = Number.isFinite(time) ? new Date(time).toISOString() : null;
+    }
+    rooms.set(id, { id, title: String(title || `直播场次 ${id}`).slice(0, 200),
+      state: 'ended', startedAt, today: false, source: 'compass_history' });
+  }
+  if (!rooms.size && total > (pageNo - 1) * pageSize) throw new CollectError('历史场次分页为空，但仍有未读取记录。');
+  return { rooms: [...rooms.values()], pageNo, pageSize, total };
 }
 
 export function normalizeSnapshot(results) {

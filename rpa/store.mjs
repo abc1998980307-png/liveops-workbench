@@ -13,6 +13,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS rooms (account TEXT NOT NULL, id TEXT NOT NULL, json TEXT NOT NULL, updated TEXT NOT NULL, PRIMARY KEY(account,id), FOREIGN KEY(account) REFERENCES accounts(id));
       CREATE TABLE IF NOT EXISTS snapshots (id INTEGER PRIMARY KEY, account TEXT NOT NULL, room TEXT NOT NULL, time TEXT NOT NULL, json TEXT NOT NULL, raw TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS snapshot_room ON snapshots(account,room,id DESC);
+      CREATE TABLE IF NOT EXISTS history_progress (account TEXT PRIMARY KEY, json TEXT NOT NULL, FOREIGN KEY(account) REFERENCES accounts(id));
       CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, account TEXT, time TEXT NOT NULL, message TEXT NOT NULL);`);
   }
   accounts() { return this.db.prepare('SELECT json FROM accounts').all().map(r => JSON.parse(r.json)); }
@@ -28,6 +29,15 @@ export class Store {
   }
   events() { return this.db.prepare('SELECT account,time,message FROM events ORDER BY id DESC LIMIT 30').all(); }
   rooms(id) { return this.db.prepare('SELECT json FROM rooms WHERE account=? ORDER BY updated DESC LIMIT 100').all(id).map(r => JSON.parse(r.json)); }
+  historyProgress(account) {
+    const row = this.db.prepare('SELECT json FROM history_progress WHERE account=?').get(account);
+    return row ? JSON.parse(row.json) : null;
+  }
+  saveHistoryProgress(account, progress) {
+    this.account(account);
+    this.db.prepare('INSERT INTO history_progress(account,json) VALUES (?,?) ON CONFLICT(account) DO UPDATE SET json=excluded.json').run(account, JSON.stringify(progress));
+    return progress;
+  }
   roomsPage(account, offset, limit) {
     this.account(account);
     const total = this.db.prepare('SELECT COUNT(*) AS count FROM rooms WHERE account=?').get(account).count;
