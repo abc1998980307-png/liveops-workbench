@@ -26,6 +26,7 @@
 !/recorder_service.py
 !/recording_sessions.py
 !/recording_archives.py
+!/session_reviews.py
 !/mp4_metadata.py
 !/recording-sessions-ui.js
 !/直播操盘台.html

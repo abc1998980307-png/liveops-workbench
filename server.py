@@ -26,6 +26,7 @@ from runtime_config import DATA_ROOT
 from dependency_service import DependencyManager
 from recording_sessions import RecordingSessions
 from recording_archives import RecordingArchiveManager
+from session_reviews import SessionReviews, ReviewStoreError
 from keyword_service import KeywordService
 from hot_service import HotService, HotServiceError
 from service_status import compass_status, feishu_status
@@ -79,6 +80,7 @@ if _pipeline_spec and _pipeline_spec.loader:
 
 RECORDING_ARCHIVES = RecordingArchiveManager(DATA_ROOT, RECORDING_SESSIONS, MEDIA_PIPELINE,
                                              lambda: read_settings()["recordingDirectory"])
+SESSION_REVIEWS = SessionReviews(DATA_ROOT, RECORDING_SESSIONS, RECORDING_ARCHIVES)
 
 
 def read_accounts():
@@ -912,6 +914,41 @@ class Handler(BaseHTTPRequestHandler):
                 snapshot["error"] = "；".join(filter(None, [snapshot.get("error"), archives["error"]]))
             self.send_json(snapshot)
             return
+        if path == "/api/session-reviews":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台读取复盘"}, 403)
+                return
+            try:
+                self.send_json(SESSION_REVIEWS.list((query.get("sessionId") or [None])[0]))
+            except ValueError as error:
+                self.send_json({"error": str(error)}, 400)
+            except (ReviewStoreError, OSError) as error:
+                self.send_json({"error": str(error)}, 500)
+            return
+        if path == "/api/session-reviews/export":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台导出复盘"}, 403)
+                return
+            session_id = (query.get("sessionId") or [""])[0]
+            try:
+                raw = SESSION_REVIEWS.export_markdown(session_id)
+            except FileNotFoundError as error:
+                self.send_json({"error": str(error)}, 404)
+                return
+            except ValueError as error:
+                self.send_json({"error": str(error)}, 400)
+                return
+            except (ReviewStoreError, OSError) as error:
+                self.send_json({"error": str(error)}, 500)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/markdown; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="liveops-review-' + session_id + '.md"')
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         if path == "/api/recording-archives":
             if not self.rpa_request_allowed():
                 self.send_json({"error": "仅允许从本机工作台读取录制归档"}, 403)
@@ -1073,6 +1110,20 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as error:
                 self.send_json({"error": str(error)}, 400)
             except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                self.send_json({"error": str(error)}, 500)
+            return
+
+        if path == "/api/session-reviews":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台保存复盘"}, 403)
+                return
+            try:
+                self.send_json({"review": SESSION_REVIEWS.save(payload)})
+            except FileNotFoundError as error:
+                self.send_json({"error": str(error)}, 404)
+            except ValueError as error:
+                self.send_json({"error": str(error)}, 400)
+            except (ReviewStoreError, OSError) as error:
                 self.send_json({"error": str(error)}, 500)
             return
 

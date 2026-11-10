@@ -43,6 +43,7 @@ flowchart TD
 | `start_dashboard.py`、`启动直播操盘台.command` | 检查端口和健康状态，启动工作台并打开网页 |
 | `recorder_service.py` | 录制器进程归属、并发启动去重、配置生成、停止 / 重启保护 |
 | `recording_sessions.py`、`recording-sessions-ui.js`、`recording_archives.py` | 只读轮询录制器场次历史及当前文件；结束事件确认后，按已校验压缩片段生成长录制归档、按成品时长偏移 TXT/SRT，并记录未知间断；不控制录制 |
+| `session_reviews.py` | 以录制场次 ID 保存本机复盘摘要与后续行动，导出包含当前录制及归档来源的 Markdown；不推断经营场次关联 |
 | `media_pipeline.py`、`mp4_metadata.py` | 文件稳定性检测、压缩、解码校验、按设置删除原件、转写、任务记录及已完成 MP4 容器时长 / 轨道检查 |
 | `flv_recovery.py` | 只读检查 FLV 标签及 AVC 长度，仅隔离一个损坏的末尾视频包 |
 | `rpa_bridge.py` | Python 与 Node 采集器的私有 JSON stdio 通道、请求关联和超时 |
@@ -65,7 +66,7 @@ flowchart TD
 | 热词洞察 | `/api/hotwords`、`/api/transcript-keywords` | 当前抖音热点榜及过滤；转写关键词来自本机中文分词与 KeyBERT 模型，非搜索量或成交指标 |
 | 字幕检索 | `/api/session-search?q=...&limit=50` | 本机 SRT 检索；返回片段内时间、命中文本、字幕链接及相对录屏路径；无经营场次 ID 或网页视频播放 |
 | 录屏定位 | `/api/recordings/reveal`、`/api/recordings/open-directory` | 本机可信请求调用 Finder；检查路径在保存目录内且文件存在 |
-| 场次复盘 | `/api/sessions`、`/api/recording-sessions`、`/api/recording-sessions/archive`、`/api/media/jobs`、`/api/media/retry`、录屏 / 文本文件服务 | 结束事件确认后可合并已校验片段；未知间断写入归档清单 |
+| 场次复盘 | `/api/sessions`、`/api/recording-sessions`、`/api/recording-sessions/archive`、`/api/session-reviews`、`/api/session-reviews/export`、`/api/media/jobs`、`/api/media/retry`、录屏 / 文本文件服务 | 结束事件确认后可合并已校验片段；未知间断写入归档清单；录制复盘可保存和导出，尚未关联经营指标 |
 | 数据源接入 | `/api/status` | 本机 Host / Origin 保护；只调用 `state` 与 `feishu.state`，区分组件可用、采集暂停、检查失败、等待数据和同步成功；未支持项明确未接入 |
 | 运行设置 | `/api/settings`、`/api/choose-recording-directory`、`/api/recorder/*` | 本机目录和进程操作；目录选择使用 macOS 系统能力 |
 

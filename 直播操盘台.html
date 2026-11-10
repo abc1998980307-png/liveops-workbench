@@ -225,6 +225,14 @@
     .session-hit-actions .source-link { margin: 0; }
     .session-score { font-weight: 650; color: #3e645a; }
     .session-note { color: #7b8883; font-size: 10px; }
+    #sessionReviewPanel { scroll-margin-top: 76px; }
+    .review-form { display: grid; gap: 12px; }
+    .review-form label { display: grid; gap: 6px; color: #5f6d68; font-size: 11px; font-weight: 600; }
+    .review-form select, .review-form textarea { width: 100%; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--ink); padding: 9px; font: inherit; font-size: 12px; font-weight: 400; }
+    .review-form textarea { min-height: 96px; resize: vertical; line-height: 1.55; }
+    .review-form select:focus, .review-form textarea:focus { outline: none; border-color: #80b7ad; box-shadow: 0 0 0 3px rgb(20 125 112 / 9%); }
+    .review-form .button-row { flex-wrap: wrap; }
+    .review-form .button-row .btn:disabled { cursor: not-allowed; opacity: .55; }
     #recordingSessionRows .tag { align-self: start; }
     #recordingSessionRows details { margin-top: 7px; font-size: 11px; line-height: 1.7; }
     #recordingSessionRows summary { cursor: pointer; }
@@ -455,6 +463,19 @@
           <section class="panel session-search">
             <div class="panel-head"><div><div class="panel-title">长录制场次</div><div class="panel-subtitle">按录制器场次追踪文件切换与已观察到的视频时长</div></div><button class="btn small" id="refreshRecordingSessions" type="button">刷新场次</button></div>
             <div class="panel-body"><div class="session-search-meta" id="recordingSessionStatus" role="status" aria-live="polite">正在检查录制场次</div><div id="recordingSessionRows"></div></div>
+          </section>
+          <section class="panel session-search" id="sessionReviewPanel">
+            <div class="panel-head"><div><div class="panel-title">场次复盘记录</div><div class="panel-subtitle">按本机录制场次保存摘要与后续行动</div></div></div>
+            <div class="panel-body">
+              <form class="review-form" id="sessionReviewForm">
+                <label>录制场次<select id="sessionReviewSelect" required><option value="">选择录制场次</option></select></label>
+                <div class="session-search-meta" id="sessionReviewSource">选择场次后查看录制与归档状态。</div>
+                <label>复盘摘要<textarea id="sessionReviewSummary" maxlength="5000" required placeholder="记录可从录屏或字幕核对的事实与判断"></textarea></label>
+                <label>后续行动<textarea id="sessionReviewActions" maxlength="3000" placeholder="记录负责人、跟进事项或待核对的问题"></textarea></label>
+                <div class="button-row"><button class="btn primary" id="saveSessionReview" type="submit" disabled>保存复盘</button><button class="btn" id="exportSessionReview" type="button" disabled>导出复盘</button></div>
+                <div class="session-search-meta" id="sessionReviewStatus" role="status" aria-live="polite">尚未选择场次。</div>
+              </form>
+            </div>
           </section>
           <section class="panel session-search">
             <div class="panel-head"><div><div class="panel-title">转写字幕搜索</div><div class="panel-subtitle">查找录屏中的原话、字幕时间和对应文件</div></div><button class="btn small" id="exportSessionSearch" type="button" disabled>导出结果</button></div>
