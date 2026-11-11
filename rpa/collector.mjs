@@ -267,7 +267,7 @@ export class Collector {
         const report = normalizeHistoryReport(merged, roomId);
         this.store.saveHistoryReport(id, roomId, report, merged);
         const reused = names.filter(name => merged[name].reused);
-        this.store.event(id, `历史场次 ${roomId} 报表已读取：${report.metrics.length} 项指标${reused.length ? `，${reused.length} 项接口沿用上次结果` : values.some(value => !value.ok) ? '，部分接口失败' : ''}；未写入飞书`);
+        this.store.event(id, `历史场次 ${roomId} 报表已读取：${report.metrics.length} 项指标${reused.length ? `，${reused.length} 项接口沿用上次结果` : values.some(value => !value.ok) ? '，部分接口失败' : ''}；飞书历史同步由独立开关控制`);
         return { report, ...(reused.length ? { warning: '部分接口失败，已沿用上次成功结果' } : {}) };
       } catch (error) {
         if (!current()) return { cancelled: true };
@@ -376,7 +376,7 @@ export class Collector {
       if (progress?.status !== 'running') return;
       if (progress.nextIndex >= progress.roomIds.length) {
         this.store.saveHistoryBatch(id, { ...progress, status: 'completed', updatedAt: new Date().toISOString() });
-        this.store.event(id, `历史报表批量回填结束：成功 ${progress.succeeded} 场，部分 ${progress.partial} 场，失败 ${progress.failed} 场；未写入飞书`);
+        this.store.event(id, `历史报表批量回填结束：成功 ${progress.succeeded} 场，部分 ${progress.partial} 场，失败 ${progress.failed} 场；飞书历史同步由独立开关控制`);
         return;
       }
       const roomId = progress.roomIds[progress.nextIndex];
@@ -446,6 +446,7 @@ export class Collector {
       case 'feishu.test': return this.feishu.test();
       case 'feishu.sync': return this.feishu.sync();
       case 'feishu.monitor': return this.feishu.monitor(args.enabled);
+      case 'feishu.history.monitor': return this.feishu.historyMonitor(args.enabled);
       case 'state': return this.state();
       case 'rooms.list': {
         const account = this.store.account(String(args.account || ''));

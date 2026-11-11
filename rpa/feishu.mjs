@@ -2,7 +2,8 @@ import crypto from 'node:crypto';
 import { METRICS } from './model.mjs';
 
 const API = 'https://open.feishu.cn/open-apis';
-export const FEISHU_FIELDS = ['同步键', '账号', '账号ID', '直播间ID', '直播标题', '直播状态', '采样时间', '采集状态', ...METRICS.map(([, label]) => label), '指标原值', '商品数量', '商品明细'];
+export const HISTORY_FIELDS = ['历史报表时间', '历史报表状态', '历史结算有效成交金额', '历史结算有效成交订单量', '历史进入直播间人数', '历史指标原值', '历史接口状态'];
+export const FEISHU_FIELDS = ['同步键', '账号', '账号ID', '直播间ID', '直播标题', '直播状态', '采样时间', '采集状态', ...METRICS.map(([, label]) => label), '指标原值', '商品数量', '商品明细', ...HISTORY_FIELDS];
 const ID = /^[A-Za-z0-9_-]+$/;
 
 export function parseBitableUrl(input) {
@@ -123,13 +124,40 @@ export function snapshotFields(account, room, snapshot) {
   return fields;
 }
 
+export function historyFields(account, room, report) {
+  if (!account.uid) throw new Error('账号身份尚未确认，暂不写入飞书');
+  if (!/^\d{1,30}$/.test(room.id) || report.roomId !== room.id || room.state !== 'ended')
+    throw new Error('历史报表与已结束场次不匹配');
+  const endpoints = report.endpoints || {};
+  const complete = ['historyBasic', 'historyCore', 'historyTrade'].every(name => endpoints[name]?.ok);
+  const field = (key, source, rawUnit) => {
+    if (!endpoints[source]?.ok) return '';
+    const metric = report.metrics?.find(item => item.key === key && item.source === source && item.rawUnit === rawUnit);
+    return Number.isFinite(metric?.value) && metric.display !== '—' ? `${metric.display}${metric.unit ? ' ' + metric.unit : ''}` : '';
+  };
+  const fields = {
+    同步键: `compass:${account.uid}:${room.id}`, 账号: account.name || account.label,
+    账号ID: String(account.uid), 直播间ID: room.id, 直播标题: room.title || report.title || '',
+    直播状态: '已结束',
+    历史报表时间: report.retrievedAt || '', 历史报表状态: complete ? '完整' : '部分接口缺失',
+    历史结算有效成交金额: field('t7payin8d_predstl_ord_amt', 'historyTrade', 'price'),
+    历史结算有效成交订单量: field('t7payin8d_predstl_ord_cnt', 'historyTrade', 'number'),
+    历史进入直播间人数: field('watch_ucnt', 'historyCore', 'number'),
+    历史指标原值: JSON.stringify(report.metrics || []), 历史接口状态: JSON.stringify(endpoints),
+  };
+  for (const value of Object.values(fields)) if (String(value).length > 95000) throw new Error('历史报表超出飞书单元格容量，已保留在本机');
+  return fields;
+}
+
 export class FeishuSync {
   constructor(store, { clientFactory = config => new FeishuClient(config), now = () => Date.now() } = {}) {
     this.store = store; this.db = store.db; this.clientFactory = clientFactory; this.now = now;
     this.busy = null; this.stopping = false; this.client = null; this.pauseVersion = 0;
     this.db.exec(`CREATE TABLE IF NOT EXISTS feishu_config (id INTEGER PRIMARY KEY CHECK(id=1), json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS feishu_delivery (destination TEXT NOT NULL, account TEXT NOT NULL, room TEXT NOT NULL, snapshot INTEGER NOT NULL, record TEXT NOT NULL, time TEXT NOT NULL, PRIMARY KEY(destination,account,room));
-      CREATE TABLE IF NOT EXISTS feishu_attempt (destination TEXT NOT NULL, account TEXT NOT NULL, room TEXT NOT NULL, snapshot INTEGER NOT NULL, token TEXT NOT NULL, fields TEXT NOT NULL, PRIMARY KEY(destination,account,room));`);
+      CREATE TABLE IF NOT EXISTS feishu_attempt (destination TEXT NOT NULL, account TEXT NOT NULL, room TEXT NOT NULL, snapshot INTEGER NOT NULL, token TEXT NOT NULL, fields TEXT NOT NULL, PRIMARY KEY(destination,account,room));
+      CREATE TABLE IF NOT EXISTS feishu_history_delivery (destination TEXT NOT NULL, account TEXT NOT NULL, room TEXT NOT NULL, version TEXT NOT NULL, record TEXT NOT NULL, time TEXT NOT NULL, PRIMARY KEY(destination,account,room));
+      CREATE TABLE IF NOT EXISTS feishu_history_attempt (destination TEXT NOT NULL, account TEXT NOT NULL, room TEXT NOT NULL, version TEXT NOT NULL, token TEXT NOT NULL, fields TEXT NOT NULL, PRIMARY KEY(destination,account,room));`);
     this.config = JSON.parse(this.db.prepare('SELECT json FROM feishu_config WHERE id=1').get()?.json || '{}');
   }
   persist() { this.db.prepare('INSERT INTO feishu_config VALUES(1,?) ON CONFLICT(id) DO UPDATE SET json=excluded.json').run(JSON.stringify(this.config)); }
@@ -144,6 +172,16 @@ export class FeishuSync {
       WHERE a.destination=? AND NOT EXISTS (SELECT 1 FROM snapshots s WHERE s.account=a.account AND s.room=a.room))
       SELECT * FROM pending WHERE account IN (SELECT value FROM json_each(?)) ORDER BY id LIMIT ?`).all(this.destination(), this.destination(), JSON.stringify(this.config.accountIds), limit);
   }
+  pendingHistory(limit = 1000) {
+    if (!this.destination() || !this.config.accountIds?.length) return [];
+    return this.db.prepare(`SELECT h.account,h.room,h.json,r.json AS roomJson,a.fields AS attemptFields,a.version AS attemptVersion
+      FROM history_reports h JOIN rooms r ON r.account=h.account AND r.id=h.room
+      LEFT JOIN feishu_history_delivery d ON d.destination=? AND d.account=h.account AND d.room=h.room
+      LEFT JOIN feishu_history_attempt a ON a.destination=? AND a.account=h.account AND a.room=h.room
+      WHERE h.account IN (SELECT value FROM json_each(?)) AND json_extract(h.json,'$.retrievedAt') IS NOT NULL
+        AND (a.version IS NOT NULL OR d.version IS NULL OR d.version<>json_extract(h.json,'$.retrievedAt'))
+      ORDER BY h.account,h.room LIMIT ?`).all(this.destination(), this.destination(), JSON.stringify(this.config.accountIds), limit);
+  }
   state() {
     const c = this.config;
     return {
@@ -152,6 +190,8 @@ export class FeishuSync {
       lastSuccess: c.lastSuccess || null, lastTest: c.lastTest || null, error: c.error || null,
       nextRetry: c.enabled && c.nextRetry ? new Date(c.nextRetry).toISOString() : null,
       pending: this.pending().length, synced: this.destination() ? this.db.prepare('SELECT COUNT(*) AS n FROM feishu_delivery WHERE destination=?').get(this.destination()).n : 0,
+      historyEnabled: c.historyEnabled === true, historyPending: this.pendingHistory().length,
+      historySynced: this.destination() ? this.db.prepare('SELECT COUNT(*) AS n FROM feishu_history_delivery WHERE destination=?').get(this.destination()).n : 0,
       fields: FEISHU_FIELDS, missingFields: c.missingFields || [],
       accountIds: c.accountIds || [], accounts: this.store.accounts().map(({ id, name, label }) => ({ id, name, label })),
     };
@@ -166,7 +206,8 @@ export class FeishuSync {
     if (!appSecret || appSecret.length > 256 || /\s/.test(appSecret)) throw new Error('请在本机填写该应用的 App Secret');
     const accountIds = args.accountIds ?? this.store.accounts().map(a => a.id);
     if (!Array.isArray(accountIds) || !accountIds.length || accountIds.some(id => typeof id !== 'string' || !this.store.accounts().some(a => a.id === id))) throw new Error('请至少选择一个已连接的罗盘账号');
-    this.config = { ...parsed, appId, appSecret, accountIds: [...new Set(accountIds)], enabled: false, verified: false, error: null };
+    this.config = { ...parsed, appId, appSecret, accountIds: [...new Set(accountIds)], enabled: false,
+      historyEnabled: false, verified: false, error: null };
     this.client = null; this.persist();
     return this.state();
   }
@@ -175,7 +216,8 @@ export class FeishuSync {
     const parsed = parseBitableUrl(args.url);
     const accountIds = args.accountIds ?? this.config.accountIds ?? this.store.accounts().map(a => a.id);
     if (!Array.isArray(accountIds) || accountIds.some(id => typeof id !== 'string' || !this.store.accounts().some(a => a.id === id))) throw new Error('同步账号选择无效');
-    this.config = { ...this.config, ...parsed, accountIds: [...new Set(accountIds)], enabled: false, verified: false, error: null, missingFields: [], lastTest: null, lastSuccess: null, nextRetry: 0 };
+    this.config = { ...this.config, ...parsed, accountIds: [...new Set(accountIds)], enabled: false, historyEnabled: false,
+      verified: false, error: null, missingFields: [], lastTest: null, lastSuccess: null, nextRetry: 0 };
     this.client = null; this.persist();
     return this.state();
   }
@@ -209,11 +251,19 @@ export class FeishuSync {
     if (enabled) this.getClient();
     if (!enabled) this.pauseVersion++;
     this.config.enabled = enabled; this.config.nextRetry = 0; this.persist();
-    if (enabled) return this.sync();
+    if (enabled) return this.sync(false);
     return this.state();
   }
-  sync() { const version = this.pauseVersion; return this.launch(() => this.run(version)); }
-  async run(version = this.pauseVersion) {
+  historyMonitor(enabled) {
+    if (typeof enabled !== 'boolean') throw new Error('历史报表同步开关必须为布尔值');
+    if (enabled) this.getClient();
+    if (!enabled) this.pauseVersion++;
+    this.config.historyEnabled = enabled; this.config.nextRetry = 0; this.persist();
+    if (enabled) return this.sync(false);
+    return this.state();
+  }
+  sync(manual = true) { const version = this.pauseVersion; return this.launch(() => this.run(version, manual)); }
+  async run(version = this.pauseVersion, manual = true) {
     if (this.stopping || version !== this.pauseVersion) return;
     const client = this.getClient();
     const active = () => !this.stopping && version === this.pauseVersion;
@@ -221,7 +271,7 @@ export class FeishuSync {
     if (!active()) return;
     this.config.missingFields = []; this.config.verified = true;
     // Bound each pass. New snapshots remain pending until their own successful write.
-    for (const row of this.pending(20)) {
+    for (const row of manual || this.config.enabled ? this.pending(20) : []) {
       if (this.stopping || version !== this.pauseVersion) break;
       const account = this.store.account(row.account);
       const room = this.store.rooms(row.account).find(r => r.id === row.room) || { id: row.room };
@@ -243,10 +293,32 @@ export class FeishuSync {
       } catch (error) { this.db.exec('ROLLBACK'); throw error; }
       this.config.lastSuccess = time;
     }
+    for (const row of this.config.historyEnabled ? this.pendingHistory(20) : []) {
+      if (!active() || !this.config.historyEnabled) break;
+      const account = this.store.account(row.account);
+      const room = JSON.parse(row.roomJson), report = JSON.parse(row.json);
+      let attempt = this.db.prepare('SELECT * FROM feishu_history_attempt WHERE destination=? AND account=? AND room=?').get(this.destination(), row.account, row.room);
+      if (!attempt) {
+        attempt = { version: report.retrievedAt, fields: JSON.stringify(historyFields(account, room, report)), token: crypto.randomUUID() };
+        this.db.prepare('INSERT INTO feishu_history_attempt VALUES (?,?,?,?,?,?)').run(this.destination(), row.account, row.room, attempt.version, attempt.token, attempt.fields);
+      }
+      const fields = JSON.parse(attempt.fields);
+      const record = await client.upsert(fields['同步键'], fields, attempt.token, active);
+      if (!record) break;
+      const time = new Date(this.now()).toISOString();
+      this.db.exec('BEGIN');
+      try {
+        this.db.prepare('INSERT INTO feishu_history_delivery VALUES (?,?,?,?,?,?) ON CONFLICT(destination,account,room) DO UPDATE SET version=excluded.version,record=excluded.record,time=excluded.time').run(this.destination(), row.account, row.room, attempt.version, record, time);
+        this.db.prepare('DELETE FROM feishu_history_attempt WHERE destination=? AND account=? AND room=?').run(this.destination(), row.account, row.room);
+        this.db.exec('COMMIT');
+      } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+      this.config.lastSuccess = time;
+    }
     this.config.error = null; this.config.failures = 0; this.config.nextRetry = 0; this.persist();
   }
   tick() {
-    if (!this.stopping && this.config.enabled && !this.busy && this.now() >= (this.config.nextRetry || 0) && this.pending(1).length) this.sync();
+    if (!this.stopping && (this.config.enabled || this.config.historyEnabled) && !this.busy && this.now() >= (this.config.nextRetry || 0) &&
+        (this.config.enabled && this.pending(1).length || this.config.historyEnabled && this.pendingHistory(1).length)) this.sync(false);
   }
   async close() { this.stopping = true; if (this.busy) await this.busy; }
 }

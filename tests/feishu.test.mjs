@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Store } from '../rpa/store.mjs';
-import { FEISHU_FIELDS, FeishuClient, FeishuSync, parseBitableUrl, snapshotFields } from '../rpa/feishu.mjs';
+import { FEISHU_FIELDS, FeishuClient, FeishuSync, historyFields, parseBitableUrl, snapshotFields } from '../rpa/feishu.mjs';
 
 // All records and credentials below are synthetic; the mock rejects unknown URLs.
 const config = { url: 'https://demo.feishu.cn/base/appTest?table=tblTest', appId: 'cli_test', appSecret: 'fixture-secret' };
@@ -94,6 +94,65 @@ test('export preserves long IDs, zero, missing values and original units', () =>
   assert.equal(snapshotFields(account, room, failed)['商品数量'], '');
   const empty = snapshot(); empty.products = [];
   assert.equal(snapshotFields(account, room, empty)['商品数量'], '0');
+});
+
+test('historical fields keep source, zero and missing values distinct', () => {
+  const report = { roomId: room.id, retrievedAt: '2026-11-10T10:00:00Z', endpoints: {
+    historyBasic: { ok: true }, historyCore: { ok: true }, historyTrade: { ok: true },
+  }, metrics: [
+    { key: 't7payin8d_predstl_ord_amt', source: 'historyTrade', rawUnit: 'price', value: 12345, display: '123.45', unit: '元' },
+    { key: 't7payin8d_predstl_ord_cnt', source: 'historyTrade', rawUnit: 'number', value: 0, display: '0', unit: '' },
+  ] };
+  const fields = historyFields(account, { ...room, state: 'ended' }, report);
+  assert.equal(fields['同步键'], `compass:${account.uid}:${room.id}`);
+  assert.equal(fields['历史结算有效成交金额'], '123.45 元');
+  assert.equal(fields['历史结算有效成交订单量'], '0');
+  assert.equal(fields['历史进入直播间人数'], '');
+  assert.equal(fields['采样时间'], undefined);
+  assert.throws(() => historyFields(account, { ...room, state: 'live' }, report));
+});
+
+test('historical sync recovers lost response and shares the live record without overwriting live fields', async () => {
+  const t = fixture(mockApi({ loseCreateResponse: true }));
+  let reopenedStore, reopened;
+  try {
+    t.store.saveRoom(account.id, { ...room, state: 'ended' });
+    const report = { roomId: room.id, retrievedAt: '2026-11-10T10:00:00Z', endpoints: {
+      historyBasic: { ok: true }, historyCore: { ok: true }, historyTrade: { ok: true },
+    }, metrics: [{ key: 't7payin8d_predstl_ord_amt', source: 'historyTrade', rawUnit: 'price',
+      value: 12345, display: '123.45', unit: '元' }] };
+    t.store.saveHistoryReport(account.id, room.id, report, {});
+    assert.equal(t.sync.state().historyPending, 1);
+    t.sync.historyMonitor(true); await t.sync.busy;
+    assert.equal(t.api.records.size, 1);
+    assert.equal(t.sync.state().historyPending, 1);
+    assert.equal(t.sync.state().pending, 0);
+    const token = t.store.db.prepare('SELECT token FROM feishu_history_attempt').get().token;
+    await t.sync.close();
+    reopenedStore = new Store(t.root);
+    reopened = new FeishuSync(reopenedStore, { clientFactory: c => new FeishuClient(c, t.api.fetcher) });
+    assert.equal(reopenedStore.db.prepare('SELECT token FROM feishu_history_attempt').get().token, token);
+    reopened.sync(false); await reopened.busy;
+    assert.equal(reopened.state().historyPending, 0);
+    assert.equal(reopened.state().historySynced, 1);
+    assert.equal(t.api.records.size, 1);
+    reopenedStore.snapshot(account.id, room.id, snapshot(9), {});
+    reopened.sync(); await reopened.busy;
+    const saved = [...t.api.records.values()][0].fields;
+    assert.equal(t.api.records.size, 1);
+    assert.equal(saved['在线人数'], '9 人');
+    assert.equal(saved['历史结算有效成交金额'], '123.45 元');
+    reopened.historyMonitor(false);
+    reopenedStore.saveHistoryReport(account.id, room.id, { ...report, retrievedAt: '2026-11-11T10:00:00Z' }, {});
+    assert.equal(reopened.state().historyPending, 1);
+    reopened.tick();
+    assert.equal(reopened.busy, null);
+    reopened.historyMonitor(true); await reopened.busy;
+    assert.equal(reopened.state().historyPending, 0);
+    assert.equal(t.api.records.size, 1);
+    assert.equal([...t.api.records.values()][0].fields['历史报表时间'], '2026-11-11T10:00:00Z');
+    assert.equal([...t.api.records.values()][0].fields['在线人数'], '9 人');
+  } finally { if (reopened) await reopened.close(); reopenedStore?.close(); await t.cleanup(); }
 });
 
 test('configuration state is redacted, secrets retained only for unchanged application', async () => {

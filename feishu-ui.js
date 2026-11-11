@@ -25,11 +25,12 @@
     const missing = state.missingFields || [];
     host.innerHTML = `<section class="panel feishu-panel" aria-labelledby="feishuTitle"><div class="panel-head"><div><div class="panel-title" id="feishuTitle">飞书多维表格</div><div class="panel-subtitle">采集后自动更新 · 每个账号、每场直播一条记录</div></div><span class="feishu-badge ${error ? 'error' : state.enabled ? 'active' : ''}" role="status" aria-live="polite">${esc(status)}</span></div><div class="panel-body">
       ${configured ? `<div class="feishu-destination"><div><span class="feishu-label">同步目的地</span>${link ? `<a href="${esc(link)}" target="_blank" rel="noopener noreferrer" class="feishu-target">打开飞书多维表格 ↗</a>` : '<strong>已保存表格配置</strong>'}<span class="feishu-note">同步账号：${esc(selected.map(a => a.name || a.label).join('、') || '尚未选择')}</span></div><button class="btn small" data-feishu-action="configure" ${busy ? 'disabled' : ''}>修改配置</button></div><div class="feishu-stats"><div><span>待同步场次</span><strong>${count(state.pending)}</strong></div><div><span>已同步场次</span><strong>${count(state.synced)}</strong></div><div><span>最近写入成功</span><strong class="feishu-time">${esc(date(state.lastSuccess))}</strong></div></div>` : `<div class="feishu-intro"><div class="feishu-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="24" height="24" fill="none"><rect x="3" y="4" width="18" height="16" rx="3" stroke="currentColor" stroke-width="1.5"/><path d="M3 9h18M9 9v11M15 9v11M3 14h18" stroke="currentColor" stroke-width="1.5"/></svg></div><div><h2>直播数据，自动填进你的飞书表格</h2><p>连接多维表格并选择账号后，工作台会把每场直播的最新经营指标写入表格，后续采集持续更新同一条记录。</p></div><button class="btn primary" data-feishu-action="configure">连接多维表格</button></div>`}
+      ${configured ? `<div class="feishu-history"><label><input id="feishuHistoryEnabled" type="checkbox" ${state.historyEnabled ? 'checked' : ''} ${busy ? 'disabled' : ''}>同步已保存的历史报表</label><span class="feishu-note">待同步 ${count(state.historyPending)} 场 · 已同步 ${count(state.historySynced)} 场。与实时数据使用同一场次记录，历史指标写入独立列。</span></div>` : ''}
       ${!configured && link ? `<div class="feishu-destination"><div><span class="feishu-label">已绑定的多维表格</span><a href="${esc(link)}" target="_blank" rel="noopener noreferrer" class="feishu-target">打开直播经营数据表 ↗</a><span class="feishu-note">表格链接已保存，完成应用授权后即可开启自动同步。</span></div></div>` : ''}
       ${error ? `<div class="feishu-error" role="status">${esc(error)}${state.nextRetry ? `<span>下次重试：${esc(date(state.nextRetry))}</span>` : ''}</div>` : ''}
       ${configured && state.lastTest ? `<p class="feishu-note">最近读取检查 ${esc(date(state.lastTest))}（写入权限以实际同步结果为准）${missing.length ? ` · 首次同步将补充 ${missing.length} 个字段` : ''}</p>` : ''}
       <div class="feishu-actions">${configured ? `<button class="btn primary" data-feishu-action="monitor" ${actionBusy || (busy && !state.enabled) ? 'disabled' : ''}>${state.enabled ? '暂停自动同步' : '开启自动同步'}</button><button class="btn" data-feishu-action="sync" ${busy ? 'disabled' : ''}>立即同步到飞书</button><button class="btn" data-feishu-action="check" ${busy ? 'disabled' : ''}>检查连接</button>` : ''}<span class="feishu-note">${configured ? '工作台服务运行时自动同步；暂无直播数据时等待采集。' : '使用飞书官方接口，需配置自建应用和表格编辑权限。'}</span></div>
-      <details class="feishu-fields"><summary>查看同步内容与写入规则</summary><p>包含账号、直播场次、直播状态、采样时间，以及在线人数、支付人数、成交金额、成交订单、千次观看成交额、观看支付转化、平均观看时长和新增关注。同时写入商品数量与商品明细 JSON，便于后续分析。</p><p>首次同步会在目标数据表新增缺少的标准字段。同一账号、同一场直播更新同一条记录；其他列不受影响。标准字段均为文本列：金额、比例保留展示值与单位，数字原值另存 JSON，缺失数据不填成 0。</p>${fields.length ? `<div class="feishu-field-list">${fields.map(field => `<span>${esc(fieldName(field))}</span>`).join('')}</div>` : ''}${missing.length ? `<p>待补充字段：${esc(missing.map(fieldName).join('、'))}</p>` : ''}</details>
+      <details class="feishu-fields"><summary>查看同步内容与写入规则</summary><p>实时采样包含账号、直播场次、直播状态、采样时间、核心指标及商品明细。历史报表启用后单独写入历史报表时间、接口状态、分类指标原值和三个历史指标，不把历史值伪装为实时采样。</p><p>首次同步会在目标数据表新增缺少的标准字段。同一账号、同一场直播更新同一条记录；其他列不受影响。标准字段均为文本列：金额、比例保留展示值与单位，数字原值另存 JSON，缺失数据不填成 0。</p>${fields.length ? `<div class="feishu-field-list">${fields.map(field => `<span>${esc(fieldName(field))}</span>`).join('')}</div>` : ''}${missing.length ? `<p>待补充字段：${esc(missing.map(fieldName).join('、'))}</p>` : ''}</details>
     </div></section>`;
   }
   function refresh() {
@@ -47,7 +48,7 @@
     if (name === 'configure') return configure();
     actionBusy = true; localError = ''; render();
     try {
-      await apiRequest(`/api/rpa/feishu/${name}`, {method:'POST', body:JSON.stringify(name === 'monitor' ? {enabled:!state.enabled} : {})});
+      await apiRequest(`/api/rpa/feishu/${name}`, {method:'POST', body:JSON.stringify(name === 'monitor' ? {enabled:!state.enabled} : name === 'history-monitor' ? {enabled:!state.historyEnabled} : {})});
       toast(name === 'check' ? '正在检查授权与字段，结果将自动显示' : name === 'sync' ? '已开始同步，结果将自动显示' : '自动同步设置已更新');
       if (loading) await loading;
       await refresh();
@@ -99,6 +100,9 @@
   $('feishuWorkspace').addEventListener('click', event => {
     const name = event.target.closest('[data-feishu-action]')?.dataset.feishuAction;
     if (name) action(name);
+  });
+  $('feishuWorkspace').addEventListener('change', event => {
+    if (event.target.id === 'feishuHistoryEnabled') action('history-monitor');
   });
   window.LiveFeishu = {refresh};
   setInterval(() => { if (currentView === 'business' && !document.hidden) refresh(); }, 5000);

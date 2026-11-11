@@ -1252,9 +1252,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/rpa/accounts":
                 self.rpa_call("create", {"label": str(payload.get("label", ""))})
                 return
-            feishu_match = re.fullmatch(r"/api/rpa/feishu/(config|settings|destination|test|check|sync|monitor)", path)
+            feishu_match = re.fullmatch(r"/api/rpa/feishu/(config|settings|destination|test|check|sync|monitor|history-monitor)", path)
             if feishu_match:
-                action = {"settings": "config", "check": "test"}.get(feishu_match[1], feishu_match[1])
+                action = {"settings": "config", "check": "test", "history-monitor": "history.monitor"}.get(feishu_match[1], feishu_match[1])
                 self.rpa_call("feishu." + action, payload)
                 return
             match = re.fullmatch(r"/api/rpa/accounts/([a-f0-9-]{36})/(login|sync|monitor|settings|history|history-report|history-batch-start|history-batch-resume|history-batch-pause)", path)
