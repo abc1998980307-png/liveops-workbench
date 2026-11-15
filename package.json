@@ -2,7 +2,8 @@
   "name": "liveops-workbench",
   "version": "0.1.0",
   "private": true,
-  "description": "Local livestream operations workbench for macOS",
+  "description": "Local livestream operations workbench for macOS and Windows",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "engines": {
     "node": ">=24"
   },
