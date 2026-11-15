@@ -10,7 +10,7 @@
   let platformFilter = 'all', roomPlatformFilter = 'all', roomAccounts = new Set(), roomAccountsInitialized = false, roomPageView = 0, chartMode = 'chart', aggregationMode = 'exact';
   let roomSort = 'startedAt', roomSortDirection = 'desc';
   let rangePreset = '30', rangeStart = '', rangeEnd = '', omitLiveRooms = false, exactValues = false;
-  let customMetrics = ['watch_ucnt', 'pay_ucnt', 'pay_combo_cnt', 'pay_amt'];
+  let customMetrics = ['watch_ucnt', 'pay_ucnt', 'pay_combo_cnt', 'pay_amt', 'refund_cnt', 'real_refund_amt'];
   let roomDetails = new Map(), roomDetailLoads = new Set(), roomViewBusy = false;
   let accountSummaries = new Map(), summaryLoads = new Set();
   let roomWorkspaceData = null, roomWorkspaceKey = '', roomWorkspaceLoadingKey = '', roomWorkspaceError = '';
@@ -23,6 +23,7 @@
     ['watch_ucnt', '进入直播间人次', '人次'], ['pay_ucnt', '支付人数', '人'],
     ['pay_combo_cnt', '成交订单', '单'], ['pay_amt', '成交金额', '元'],
     ['follow_anchor_ucnt', '新增关注', '人'],
+    ['refund_cnt', '退款笔数', '笔'], ['real_refund_amt', '退款金额', '元'],
   ];
   const $ = id => document.getElementById(id);
   const labels = { ready:'同步正常', needs_login:'等待登录', paused:'已暂停', partial:'部分数据失败', error:'同步失败', rate_limited:'等待重试', account_changed:'账号已切换' };
@@ -93,23 +94,27 @@
   }
   function formatRoomMetric(data, key) {
     const workspaceMetric = data?.metrics && !Array.isArray(data.metrics) ? data.metrics[key] : null;
-    const reportMetric = metricFrom(data?.historyReport, historicalMetricKey(key));
+    const refundUnit = ({refund_cnt:'number', real_refund_amt:'price'})[key];
+    const candidate = metricFrom(data?.historyReport, historicalMetricKey(key));
+    const reportMetric = refundUnit && (candidate?.category !== '售后' || candidate?.rawUnit !== refundUnit) ? null : candidate;
     const preferHistory = data?.historyReport && data.state !== 'live';
     const showMetric = item => `${esc(item.display ?? item.value)}${item.unit ? ` ${esc(item.unit)}` : ''}<small class="rpa-metric-source">${esc(item.source || '罗盘')} · ${esc(date(item.retrievedAt || (item === reportMetric ? data.historyReport?.retrievedAt : null)))}</small>${exactValues ? `<small class="rpa-raw-value">接口值 ${esc(String(item.value))} ${esc(item.rawUnit||'')}</small>` : ''}`;
     if (preferHistory && reportMetric?.value != null) return showMetric(reportMetric);
     if (workspaceMetric?.value != null) return showMetric(workspaceMetric);
     if (reportMetric?.value != null) return showMetric(reportMetric);
-    const latestMetric = metricFrom(data?.latest, key);
+    const latestMetric = refundUnit ? null : metricFrom(data?.latest, key);
     if (latestMetric && latestMetric.value != null) return `${esc(latestMetric.display)}${latestMetric.unit ? ` ${esc(latestMetric.unit)}` : ''}${exactValues ? `<small class="rpa-raw-value">接口值 ${esc(String(latestMetric.value))} ${esc(latestMetric.unit||'')}</small>` : ''}`;
     return '<span class="rpa-missing">未采集</span>';
   }
   function roomMetricValue(data, key) {
     const workspaceMetric = data?.metrics && !Array.isArray(data.metrics) ? data.metrics[key] : null;
     const historical = metricFrom(data?.historyReport, historicalMetricKey(key));
-    if (historical?.value != null && data?.state !== 'live') return { value: historical.value, display: historical.display, unit: historical.unit, source:'罗盘历史详情', rawUnit:historical.rawUnit, retrievedAt:data.historyReport.retrievedAt };
+    const refundUnit = ({refund_cnt:'number', real_refund_amt:'price'})[key];
+    const validHistorical = refundUnit && (historical?.category !== '售后' || historical?.rawUnit !== refundUnit) ? null : historical;
+    if (validHistorical?.value != null && data?.state !== 'live') return { value: validHistorical.value, display: validHistorical.display, unit: validHistorical.unit, source:'罗盘历史详情', rawUnit:validHistorical.rawUnit, retrievedAt:data.historyReport.retrievedAt };
     if (workspaceMetric?.value != null) return workspaceMetric;
-    if (historical?.value != null) return { value: historical.value, display: historical.display, unit: historical.unit, source:'罗盘历史详情', rawUnit:historical.rawUnit, retrievedAt:data.historyReport.retrievedAt };
-    const live = metricFrom(data?.latest, key);
+    if (validHistorical?.value != null) return { value: validHistorical.value, display: validHistorical.display, unit: validHistorical.unit, source:'罗盘历史详情', rawUnit:validHistorical.rawUnit, retrievedAt:data.historyReport.retrievedAt };
+    const live = refundUnit ? null : metricFrom(data?.latest, key);
     if (live?.value != null) return { value:live.value, display:live.display, unit:live.unit, source:'罗盘实时采样' };
     return null;
   }

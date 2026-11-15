@@ -28,6 +28,8 @@ const HISTORY_SUMMARY_FIELDS = [
   { key: 't7payin8d_predstl_ord_amt', label: '结算有效成交金额', source: 'historyTrade', rawUnit: 'price', unit: '元' },
   { key: 't7payin8d_predstl_ord_cnt', label: '结算有效成交订单量', source: 'historyTrade', rawUnit: 'number', unit: '单' },
   { key: 'watch_ucnt', label: '进入直播间人数（按场相加）', source: 'historyCore', rawUnit: 'number', unit: '人次' },
+  { key: 'refund_cnt', label: '历史售后退款笔数', source: 'historyCore', rawUnit: 'number', unit: '笔' },
+  { key: 'real_refund_amt', label: '历史售后实际退款金额', source: 'historyCore', rawUnit: 'price', unit: '元' },
 ];
 
 export function acquireCollectorGuard(root) {
@@ -483,7 +485,8 @@ export class Collector {
       for (const total of totals) {
         const endpoint = report.endpoints?.[total.source];
         const metric = report.metrics?.find(item => item.key === total.key && item.source === total.source);
-        if (!endpoint?.ok || metric?.rawUnit !== total.rawUnit || !Number.isSafeInteger(metric.value)) continue;
+        if (!endpoint?.ok || metric?.rawUnit !== total.rawUnit || !Number.isSafeInteger(metric.value) ||
+            ((total.key === 'refund_cnt' || total.key === 'real_refund_amt') && metric.category !== '售后')) continue;
         const next = total.rawTotal + metric.value;
         if (!Number.isSafeInteger(next)) { total.overflow = true; continue; }
         total.rawTotal = next;
@@ -538,6 +541,11 @@ export class Collector {
       const entryVisits = endpoints.historyCore?.ok ? findHistory('watch_ucnt', 'historyCore') : null;
       const validOrders = validHistory('t7payin8d_predstl_ord_cnt') ? findHistory('t7payin8d_predstl_ord_cnt', 'historyTrade') : null;
       const validSales = validHistory('t7payin8d_predstl_ord_amt') ? findHistory('t7payin8d_predstl_ord_amt', 'historyTrade') : null;
+      const refundMetric = (keys, unit) => endpoints.historyCore?.ok === true ?
+        report?.metrics?.find(item => item.source === 'historyCore' && item.category === '售后' &&
+          keys.includes(item.key) && item.rawUnit === unit && Number.isSafeInteger(item.value) && item.value >= 0) || null : null;
+      const refundCount = refundMetric(['refund_cnt'], 'number');
+      const refundAmount = refundMetric(['real_refund_amt'], 'price');
       const latestMetrics = record.latest?.metrics || [];
       const roomAccount = selected.find(item => item.id === record.account);
       const withSource = (metric, source, retrievedAt) => metric ? { ...metric, source, retrievedAt } : null;
@@ -554,6 +562,8 @@ export class Collector {
           entryVisits: withSource(entryVisits, 'compass_history', report?.retrievedAt || null),
           validOrders: withSource(validOrders, 'compass_history', report?.retrievedAt || null),
           validSales: withSource(validSales, 'compass_history', report?.retrievedAt || null),
+          refundCount: withSource(refundCount, 'compass_history', report?.retrievedAt || null),
+          refundAmount: withSource(refundAmount, 'compass_history', report?.retrievedAt || null),
           onlineUsers: sampled('online_user_cnt'),
           paidUsers: sampled('pay_ucnt'),
           paidOrders: sampled('pay_combo_cnt'),
@@ -563,6 +573,8 @@ export class Collector {
           entryVisits: entryVisits ? { source: 'compass_history', retrievedAt: report.retrievedAt, meaning: '进入直播间人次，不是去重观众' } : null,
           validOrders: validOrders ? { source: 'compass_history', retrievedAt: report.retrievedAt, meaning: '结算有效成交订单量' } : null,
           validSales: validSales ? { source: 'compass_history', retrievedAt: report.retrievedAt, meaning: '结算有效成交金额' } : null,
+          refundCount: refundCount ? { source: 'compass_history', retrievedAt: report.retrievedAt, meaning: '历史售后退款笔数' } : null,
+          refundAmount: refundAmount ? { source: 'compass_history', retrievedAt: report.retrievedAt, meaning: '历史售后实际退款金额' } : null,
           liveSnapshot: record.latest ? { source: 'compass_live_snapshot', sampledAt: record.latest.time } : null,
           adSpend: null,
         },
@@ -608,6 +620,7 @@ export class Collector {
     });
     const definitions = [
       ['entryVisits', 'number', '人次'], ['validOrders', 'number', '单'], ['validSales', 'price', '元'],
+      ['refundCount', 'number', '笔'], ['refundAmount', 'price', '元'],
     ];
     const totals = Object.fromEntries(definitions.map(([key, rawUnit, unit]) => {
       let rawTotal = 0, coveredRooms = 0;
@@ -639,6 +652,7 @@ export class Collector {
     const summaryMetrics = {
       watch_ucnt: totals.entryVisits, t7payin8d_predstl_ord_cnt: totals.validOrders,
       t7payin8d_predstl_ord_amt: totals.validSales,
+      refund_cnt: totals.refundCount, real_refund_amt: totals.refundAmount,
     };
     const workspaceRooms = rows.map(row => ({ accountId: row.accountId, accountName: row.accountName,
       id: row.room.id, title: row.room.title, state: row.room.state, startedAt: row.room.startedAt,
@@ -647,7 +661,8 @@ export class Collector {
         [row.latest.spendReconciliation.compass, row.latest.spendReconciliation.qianchuan]
           .every(side => !side || side.roomId === row.room.id) ? row.latest.spendReconciliation : null,
       metrics: { watch_ucnt: row.metrics.entryVisits, t7payin8d_predstl_ord_cnt: row.metrics.validOrders,
-        t7payin8d_predstl_ord_amt: row.metrics.validSales, online_user_cnt: row.metrics.onlineUsers,
+        t7payin8d_predstl_ord_amt: row.metrics.validSales, refund_cnt: row.metrics.refundCount,
+        real_refund_amt: row.metrics.refundAmount, online_user_cnt: row.metrics.onlineUsers,
         pay_ucnt: row.metrics.paidUsers, pay_combo_cnt: row.metrics.paidOrders, pay_amt: row.metrics.paidAmount,
         follow_anchor_ucnt: row.latest?.metrics?.find(item => item.key === 'follow_anchor_ucnt') || null,
         ad_spend: row.latest?.spendReconciliation?.qianchuan ?

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from hot_insights import HotInsights, HotInsightsError, MAX_SNAPSHOTS
+from hot_insights import HotInsights, HotInsightsError, MAX_SNAPSHOTS, MAX_TREND_POINTS
 
 
 class HotInsightsTests(unittest.TestCase):
@@ -78,6 +78,38 @@ class HotInsightsTests(unittest.TestCase):
         for invalid in ("", "a" * 41, "bad\nword", 1):
             with self.assertRaises(HotInsightsError):
                 self.insights.watch(invalid)
+
+    def test_auto_refresh_is_opt_in_pauseable_and_retryable(self):
+        calls = []
+        fetch = lambda limit: calls.append(limit) or self.fixture()
+        self.assertFalse(self.insights.refresh_if_due(fetch))
+        with self.assertRaises(HotInsightsError):
+            self.insights.configure_refresh(enabled=True, paused=False, interval_minutes=14)
+        self.insights.configure_refresh(enabled=True, paused=True, interval_minutes=15)
+        self.now += timedelta(minutes=16)
+        self.assertFalse(self.insights.refresh_if_due(fetch))
+        self.insights.configure_refresh(enabled=True, paused=False, interval_minutes=15)
+        self.now += timedelta(minutes=15)
+        self.assertFalse(self.insights.refresh_if_due(lambda limit: (_ for _ in ()).throw(RuntimeError("假服务离线"))))
+        self.assertEqual(self.insights.snapshot()["autoRefresh"]["lastError"], "假服务离线")
+        self.now += timedelta(minutes=15)
+        self.assertTrue(self.insights.refresh_if_due(fetch))
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(self.insights.snapshot()["stale"])
+        self.insights.configure_refresh(enabled=False, paused=False, interval_minutes=15)
+        self.now += timedelta(hours=3)
+        self.assertTrue(self.insights.snapshot()["stale"])
+        self.assertFalse(self.insights.refresh_if_due(fetch))
+
+    def test_trend_response_is_compressed_without_changing_current_value(self):
+        self.insights.watch("合成")
+        for index in range(MAX_TREND_POINTS + 5):
+            self.insights.refresh(lambda limit, index=index: self.fixture(hot=index, updated=f"2026-11-12T{index:02d}:00:00Z"))
+            self.now += timedelta(hours=1)
+        view = self.insights.snapshot()
+        self.assertLessEqual(len(view["terms"][0]["trend"]), MAX_TREND_POINTS)
+        self.assertEqual(view["terms"][0]["currentHot"], MAX_TREND_POINTS + 4)
+        self.assertEqual(view["sampleCount"], MAX_TREND_POINTS + 5)
 
 
 if __name__ == "__main__":

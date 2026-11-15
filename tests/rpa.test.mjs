@@ -395,6 +395,8 @@ test('room workspace joins saved rooms with local reports and keeps missing metr
         { key: 'watch_ucnt', value: 0, display: '0', rawUnit: 'number', unit: '', source: 'historyCore' },
         { key: 't7payin8d_predstl_ord_cnt', value: 7, display: '7', rawUnit: 'number', unit: '', source: 'historyTrade' },
         { key: 't7payin8d_predstl_ord_amt', value: 12345, display: '123.45', rawUnit: 'price', unit: '元', source: 'historyTrade' },
+        { key: 'refund_cnt', category: '售后', value: 2, display: '2', rawUnit: 'number', unit: '', source: 'historyCore' },
+        { key: 'real_refund_amt', category: '售后', value: 350, display: '3.50', rawUnit: 'price', unit: '元', source: 'historyCore' },
       ] }, {});
     t.store.saveRoom(t.id, { id: liveId, title: '直播场次', state: 'live', startedAt: `${endDate}T11:00:00+08:00` });
     t.store.snapshot(t.id, liveId, { ...normalizeSnapshot({
@@ -411,6 +413,12 @@ test('room workspace joins saved rooms with local reports and keeps missing metr
     assert.equal(data.totals.entryVisits.coveredRooms, 1);
     assert.equal(data.totals.validOrders.value, 7);
     assert.equal(data.totals.validSales.display, '123.45');
+    assert.equal(data.totals.refundCount.value, 2);
+    assert.equal(data.totals.refundAmount.value, 3.5);
+    assert.equal(data.totals.refundAmount.coveredRooms, 1);
+    assert.equal(data.rows.find(row => row.room.id === historyId).metrics.refundCount.value, 2);
+    assert.equal(data.rows.find(row => row.room.id === liveId).metrics.refundAmount, null);
+    assert.equal(data.rooms.find(row => row.id === historyId).metrics.real_refund_amt.display, '3.50');
     assert.equal(data.rows.find(row => row.room.id === historyId).metrics.entryVisits.value, 0);
     assert.equal(data.rows.find(row => row.room.id === liveId).metrics.entryVisits, null);
     assert.equal(data.rows.find(row => row.room.id === liveId).metrics.onlineUsers.value, 0);
@@ -1041,6 +1049,8 @@ test('historical summary counts only matching, safe values and reports coverage'
       metric('t7payin8d_predstl_ord_amt', 12345, 'price', 'historyTrade'),
       metric('t7payin8d_predstl_ord_cnt', 0, 'number', 'historyTrade'),
       metric('watch_ucnt', 10, 'number', 'historyCore'),
+      { ...metric('refund_cnt', 1, 'number', 'historyCore'), category:'售后' },
+      { ...metric('real_refund_amt', 250, 'price', 'historyCore'), category:'售后' },
     ] }, {});
     t.store.saveHistoryReport(t.id, '100002', { endpoints: { ...endpoints, historyTrade: { ok: false } }, metrics: [
       metric('t7payin8d_predstl_ord_amt', 99999, 'price', 'historyTrade'),
@@ -1049,13 +1059,14 @@ test('historical summary counts only matching, safe values and reports coverage'
     t.store.saveHistoryReport(t.id, '100003', { endpoints, metrics: [
       metric('t7payin8d_predstl_ord_amt', 7, 'yuan', 'historyTrade'),
       metric('watch_ucnt', 2, 'number', 'historyCore'),
+      metric('refund_cnt', 99, 'number', 'historyCore'),
     ] }, {});
     const result = await t.collector.command('history.summary', { account: t.id, startDate: earliest, endDate: latest });
     assert.equal(result.selectedRooms, 3);
     assert.equal(result.reportedRooms, 3);
     assert.equal(result.completeRooms, 2);
     assert.deepEqual(result.metrics.map(m => [m.display, m.coveredRooms, m.complete]), [
-      ['123.45', 1, false], ['0', 1, false], ['17', 3, true],
+      ['123.45', 1, false], ['0', 1, false], ['17', 3, true], ['1', 1, false], ['2.50', 1, false],
     ]);
     assert.equal(t.store.account(t.id).enabled, false);
     assert.equal(t.collector.busy.size, 0);

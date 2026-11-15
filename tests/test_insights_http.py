@@ -18,6 +18,7 @@ from operations_workspace import OperationsWorkspace
 class SavedCollector:
     def __init__(self):
         self.calls = []
+        self.duplicate = False
 
     def call(self, method, args=None, **options):
         self.calls.append((method, options))
@@ -29,10 +30,14 @@ class SavedCollector:
                  "metrics": {"entryVisits": {"value": 20, "rawUnit": "number"},
                              "validSales": {"value": 1234, "rawUnit": "price"}},
                  "latest": None}]
+        if self.duplicate:
+            rows.append({**rows[0], "accountId": "synthetic-second-source",
+                         "room": {**rows[0]["room"], "id": "synthetic-second-room"}})
         offset = args.get("offset", 0)
-        return {"rows": rows[offset:offset + args.get("limit", 100)], "total": 1,
+        return {"rows": rows[offset:offset + args.get("limit", 100)], "total": len(rows),
                 "hasMore": False, "startDate": "2026-11-01", "endDate": "2026-11-15",
-                "accounts": [{"name": "演示来源"}]}
+                "accounts": [{"id": "synthetic-account", "name": "演示来源"}] +
+                            ([{"id": "synthetic-second-source", "name": "演示来源"}] if self.duplicate else [])}
 
 
 class SavedReviews:
@@ -120,11 +125,42 @@ class InsightsHttpTests(unittest.TestCase):
         self.assertEqual(self.request("GET", "/api/team-overview?startDate=bad")[0], 400)
         self.assertTrue(all(options.get("allow_start") is False for _, options in self.collector.calls))
 
+    def test_duplicate_source_confirmation_and_revoke_stay_out_of_mcp(self):
+        self.collector.duplicate = True
+        origin = f"http://127.0.0.1:{self.port}"
+        status, overview = self.request("GET", "/api/team-overview")
+        self.assertEqual(status, 200)
+        self.assertEqual(overview["ambiguousSessions"], 2)
+        candidate = next(item for item in overview["sourceCandidates"] if item["sourceRef"] ==
+                         OperationsWorkspace.source_ref("synthetic-account"))
+        mapping_id = next(item for item in overview["mappings"] if item["sourceAlias"] == "演示来源")["id"]
+        status, confirmed = self.request("POST", "/api/team-overview/confirm", {
+            "sourceRef": candidate["sourceRef"], "sourceAlias": candidate["sourceAlias"],
+            "mappingId": mapping_id, "actor": "合成确认人"}, origin)
+        self.assertEqual(status, 200)
+        self.assertEqual(confirmed["ambiguousSessions"], 1)
+        self.assertEqual(confirmed["groups"]["accounts"][0]["sessions"], 1)
+        status, mcp = self.request("GET", "/api/mcp/read?resource=team_overview")
+        self.assertEqual(status, 200)
+        self.assertNotIn("sourceRef", json.dumps(mcp))
+        self.assertNotIn("sourceConfirmations", json.dumps(mcp))
+        record_id = confirmed["sourceConfirmations"][0]["id"]
+        status, revoked = self.request("POST", "/api/team-overview/revoke", {
+            "confirmationId": record_id, "actor": "合成撤销人"}, origin)
+        self.assertEqual(status, 200)
+        self.assertEqual(revoked["ambiguousSessions"], 2)
+        self.assertEqual(self.request("POST", "/api/team-overview/confirm", {
+            "sourceRef": candidate["sourceRef"], "sourceAlias": "错误来源",
+            "mappingId": mapping_id, "actor": "合成确认人"}, origin)[0], 400)
+
     def test_foreign_origin_cannot_read_or_mutate_insights(self):
         self.assertEqual(self.request("GET", "/api/hot-insights", origin="https://other.invalid")[0], 403)
         self.assertEqual(self.request("GET", "/api/team-overview", origin="https://other.invalid")[0], 403)
         self.assertEqual(self.request("POST", "/api/hot-insights/watch", {"term": "词"},
                                       origin="https://other.invalid")[0], 403)
+        self.assertEqual(self.request("POST", "/api/team-overview/revoke", {
+            "confirmationId": "synthetic-record", "actor": "合成确认人"},
+            origin="https://other.invalid")[0], 403)
 
 
 if __name__ == "__main__":

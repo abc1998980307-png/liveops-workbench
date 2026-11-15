@@ -34,8 +34,9 @@ from keyword_service import KeywordService
 from hot_service import HotService, HotServiceError
 from service_status import compass_status, feishu_status
 from operations_workspace import OperationsWorkspace, WorkspaceError
-from team_overview import build_team_overview
+from team_overview import build_team_overview, duplicate_sources
 from hot_insights import HotInsights, HotInsightsError
+from hot_feishu_sync import HotFeishuSync, HotFeishuError
 from qianchuan_account import QianchuanAccountStore
 
 
@@ -62,6 +63,7 @@ RECORDER = RecorderManager(DATA_ROOT, BGO)
 DEPENDENCIES = DependencyManager(DATA_ROOT, ROOT)
 HOTWORDS = HotService(DATA_ROOT, ROOT, HOT_API)
 HOT_INSIGHTS = HotInsights(DATA_ROOT)
+HOT_FEISHU = HotFeishuSync(DATA_ROOT)
 RECORDING_SESSIONS = RecordingSessions(DATA_ROOT, lambda path: service_request(BGO, path=path, timeout=3),
                                       lambda: read_settings()["recordingDirectory"])
 ACCOUNT_LOCK = threading.RLock()
@@ -931,7 +933,14 @@ class Handler(BaseHTTPRequestHandler):
             if resource == "hot_keywords":
                 result = HOT_INSIGHTS.snapshot()
             elif resource == "team_overview":
-                result = team_overview_snapshot()
+                overview = team_overview_snapshot()
+                result = {key: overview.get(key) for key in ("available", "startDate", "endDate", "totalSessions",
+                                                             "loadedSessions", "truncated", "unmappedSessions", "ambiguousSessions")}
+                result["groups"] = {kind: [{"groupRef": uuid.uuid4().hex, "sessions": row.get("sessions"),
+                                             **{field: row.get(field) for field in ("watch", "sales", "refundCount",
+                                                                                   "refundAmount", "spend", "reconciliation")}}
+                                            for row in overview["groups"][kind]]
+                                    for kind in ("accounts", "stores", "members")}
             elif resource == "links":
                 result = SESSION_LINKS.list()
             elif resource == "timeline":
@@ -1083,6 +1092,15 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self.send_json(hot_insights_snapshot())
             except (HotInsightsError, WorkspaceError, OSError) as error:
+                self.send_json({"error": str(error)}, 500)
+            return
+        if path == "/api/hot-insights/sync":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台读取热词同步状态"}, 403)
+                return
+            try:
+                self.send_json(HOT_FEISHU.state())
+            except HotFeishuError as error:
                 self.send_json({"error": str(error)}, 500)
             return
         if path == "/api/team-overview":
@@ -1289,23 +1307,78 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": str(error)}, 400)
             return
 
-        if path in ("/api/hot-insights/watch", "/api/hot-insights/unwatch", "/api/hot-insights/refresh"):
+        if path in ("/api/hot-insights/watch", "/api/hot-insights/unwatch", "/api/hot-insights/refresh",
+                    "/api/hot-insights/auto-refresh"):
             if not self.rpa_request_allowed():
                 self.send_json({"error": "仅允许从本机工作台管理热词监控"}, 403)
                 return
             action = path.rsplit("/", 1)[-1]
-            if not isinstance(payload, dict) or set(payload) != ({"term"} if action != "refresh" else set()):
+            expected = ({"term"} if action in ("watch", "unwatch") else
+                        {"enabled", "paused", "intervalMinutes"} if action == "auto-refresh" else set())
+            if not isinstance(payload, dict) or set(payload) != expected:
                 self.send_json({"error": "热词请求字段无效"}, 400)
                 return
             try:
                 if action == "refresh":
                     HOT_INSIGHTS.refresh(HOTWORDS.hotwords)
+                    try:
+                        HOT_FEISHU.enqueue(HOT_INSIGHTS.snapshot())
+                    except HotFeishuError:
+                        pass
+                elif action == "auto-refresh":
+                    HOT_INSIGHTS.configure_refresh(enabled=payload["enabled"], paused=payload["paused"],
+                                                   interval_minutes=payload["intervalMinutes"])
                 else:
                     getattr(HOT_INSIGHTS, action)(payload["term"])
                 self.send_json(hot_insights_snapshot())
-            except HotInsightsError as error:
+            except (HotInsightsError, HotFeishuError) as error:
                 self.send_json({"error": str(error)}, 400)
             except (OSError, HotServiceError) as error:
+                self.send_json({"error": str(error)}, 503)
+            return
+
+        if path in ("/api/hot-insights/sync/config", "/api/hot-insights/sync/retry"):
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台管理热词同步"}, 403)
+                return
+            action = path.rsplit("/", 1)[-1]
+            expected = {"enabled", "appId", "appSecret", "tableUrl"} if action == "config" else set()
+            if not isinstance(payload, dict) or set(payload) != expected:
+                self.send_json({"error": "热词同步请求字段无效"}, 400)
+                return
+            try:
+                result = (HOT_FEISHU.configure(enabled=payload["enabled"], app_id=payload["appId"],
+                                                app_secret=payload["appSecret"], table_url=payload["tableUrl"])
+                          if action == "config" else HOT_FEISHU.retry_now())
+                if action == "config" and result["enabled"]:
+                    result = HOT_FEISHU.enqueue(HOT_INSIGHTS.snapshot())
+                self.send_json(result)
+            except (HotFeishuError, HotInsightsError) as error:
+                self.send_json({"error": str(error)}, 400)
+            except OSError:
+                self.send_json({"error": "热词同步本机配置保存失败"}, 503)
+            return
+
+        if path in ("/api/team-overview/confirm", "/api/team-overview/revoke"):
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台确认来源归属"}, 403)
+                return
+            action = path.rsplit("/", 1)[-1]
+            expected = {"sourceRef", "sourceAlias", "mappingId", "actor"} if action == "confirm" else {"confirmationId", "actor"}
+            if not isinstance(payload, dict) or set(payload) != expected:
+                self.send_json({"error": "来源归属请求字段无效"}, 400)
+                return
+            try:
+                if action == "confirm":
+                    candidates = duplicate_sources(saved_business_workspace())
+                    OPERATIONS_WORKSPACE.confirm_source(payload["sourceRef"], payload["sourceAlias"],
+                                                       payload["mappingId"], payload["actor"], candidates)
+                else:
+                    OPERATIONS_WORKSPACE.revoke_source(payload["confirmationId"], payload["actor"])
+                self.send_json(team_overview_snapshot())
+            except WorkspaceError as error:
+                self.send_json({"error": str(error)}, 400)
+            except (OSError, RuntimeError, ValueError) as error:
                 self.send_json({"error": str(error)}, 503)
             return
 
@@ -1962,6 +2035,17 @@ if __name__ == "__main__":
     profile_stop = threading.Event()
     profile_worker = threading.Thread(target=profile_monitor_worker, args=(profile_stop,), name="douyin-profile-monitor", daemon=True)
     profile_worker.start()
+    insights_stop = threading.Event()
+    def refresh_hot_insights():
+        while not insights_stop.wait(30):
+            try:
+                if HOT_INSIGHTS.refresh_if_due(HOTWORDS.hotwords):
+                    HOT_FEISHU.enqueue(HOT_INSIGHTS.snapshot())
+                HOT_FEISHU.tick()
+            except (OSError, HotInsightsError, HotServiceError, HotFeishuError):
+                pass
+    insights_worker = threading.Thread(target=refresh_hot_insights, name="hot-insights-refresh", daemon=True)
+    insights_worker.start()
     print(f"Live Ops adapter listening at http://127.0.0.1:{PORT}", flush=True)
     try:
         server.serve_forever()
@@ -1973,6 +2057,8 @@ if __name__ == "__main__":
         profile_stop.set()
         PROFILE_MONITOR_WAKE.set()
         profile_worker.join(timeout=12)
+        insights_stop.set()
+        insights_worker.join(timeout=12)
         KEYWORDS.close()
         COLLECTOR.close()
         if MEDIA_PIPELINE:

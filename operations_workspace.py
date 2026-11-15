@@ -1,6 +1,7 @@
 """Local, user-entered team and commerce planning records."""
 
 import json
+import hashlib
 import os
 import re
 import threading
@@ -41,7 +42,7 @@ class OperationsWorkspace:
 
     @staticmethod
     def _empty():
-        return {"schemaVersion": 1, **{name: [] for name in COLLECTION_FIELDS}}
+        return {"schemaVersion": 1, **{name: [] for name in COLLECTION_FIELDS}, "sourceConfirmations": []}
 
     def _read(self):
         try:
@@ -58,7 +59,71 @@ class OperationsWorkspace:
             if not isinstance(records, list) or any(not isinstance(record, dict) for record in records):
                 raise WorkspaceError("本机经营配置内容无效；原文件已保留")
             collections[name] = records
-        return {"schemaVersion": 1, **collections}
+        confirmations = data.get("sourceConfirmations", [])
+        if not isinstance(confirmations, list) or any(not isinstance(item, dict) for item in confirmations):
+            raise WorkspaceError("本机来源确认记录无效；原文件已保留")
+        return {"schemaVersion": 1, **collections, "sourceConfirmations": confirmations}
+
+    @staticmethod
+    def source_ref(source_id):
+        if not isinstance(source_id, str) or not source_id:
+            return None
+        return hashlib.sha256(source_id.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _actor(value):
+        if (not isinstance(value, str) or not 1 <= len(value.strip()) <= 80
+                or re.search(r"https?://|(?:cookie|token|password)\s*[:=]|\d{8,}", value, re.I)):
+            raise WorkspaceError("确认人需填写本机显示名，不得填写标识或凭据")
+        return value.strip()
+
+    def _persist(self, data):
+        self.file.parent.mkdir(parents=True, exist_ok=True)
+        temp = self.file.with_suffix(".tmp")
+        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.chmod(temp, 0o600)
+        temp.replace(self.file)
+
+    def confirm_source(self, source_ref, source_alias, mapping_id, actor, candidates):
+        actor = self._actor(actor)
+        if (not isinstance(source_ref, str) or not re.fullmatch(r"[0-9a-f]{64}", source_ref)
+                or not isinstance(source_alias, str) or not source_alias.strip()
+                or not isinstance(mapping_id, str)):
+            raise WorkspaceError("来源确认参数无效")
+        candidate = next((item for item in candidates if item["sourceRef"] == source_ref
+                          and item["sourceAlias"] == source_alias), None)
+        if not candidate:
+            raise WorkspaceError("该重名来源已不在当前本机来源列表，请刷新后重试")
+        with self.lock:
+            data = self._read()
+            mapping = next((item for item in data["accountMappings"] if item["id"] == mapping_id
+                            and item["active"] and item["sourceAlias"].casefold() == source_alias.casefold()), None)
+            if not mapping:
+                raise WorkspaceError("所选直播号对应关系无效")
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            for item in data["sourceConfirmations"]:
+                if item.get("sourceRef") == source_ref and not item.get("revokedAt"):
+                    if item.get("mappingId") == mapping_id:
+                        return item
+                    item.update({"revokedAt": now, "revokedBy": actor})
+            record = {"id": str(uuid.uuid4()), "sourceRef": source_ref, "sourceAlias": source_alias,
+                      "mappingId": mapping_id, "confirmedBy": actor, "confirmedAt": now,
+                      "revokedBy": None, "revokedAt": None}
+            data["sourceConfirmations"].append(record)
+            self._persist(data)
+            return record
+
+    def revoke_source(self, confirmation_id, actor):
+        actor = self._actor(actor)
+        with self.lock:
+            data = self._read()
+            item = next((item for item in data["sourceConfirmations"] if item.get("id") == confirmation_id), None)
+            if not item or item.get("revokedAt"):
+                raise WorkspaceError("有效的来源确认记录不存在")
+            item["revokedAt"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            item["revokedBy"] = actor
+            self._persist(data)
+            return item
 
     def snapshot(self):
         with self.lock:
@@ -172,9 +237,5 @@ class OperationsWorkspace:
             else:
                 record.update({"id": str(uuid.uuid4()), "createdAt": now, "updatedAt": now})
                 records.append(record)
-            self.file.parent.mkdir(parents=True, exist_ok=True)
-            temp = self.file.with_suffix(".tmp")
-            temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            os.chmod(temp, 0o600)
-            temp.replace(self.file)
+            self._persist(data)
             return record

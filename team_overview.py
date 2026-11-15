@@ -2,6 +2,7 @@
 
 from datetime import date
 from decimal import Decimal, InvalidOperation
+from operations_workspace import OperationsWorkspace
 
 
 def _metric(row, key, unit):
@@ -28,6 +29,8 @@ def _group(name, identifier):
     return {"id": identifier, "name": name, "sessions": 0,
             "watch": {"value": None, "coveredRooms": 0},
             "sales": {"value": None, "coveredRooms": 0},
+            "refundCount": {"value": None, "coveredRooms": 0},
+            "refundAmount": {"value": None, "coveredRooms": 0},
             "spend": {"value": None, "coveredRooms": 0},
             "reconciliation": {"matched": 0, "compared": 0, "rate": None}}
 
@@ -35,7 +38,9 @@ def _group(name, identifier):
 def _add(group, row):
     group["sessions"] += 1
     for target, source, unit, divisor in (("watch", "entryVisits", "number", 1),
-                                          ("sales", "validSales", "price", 100)):
+                                          ("sales", "validSales", "price", 100),
+                                          ("refundCount", "refundCount", "number", 1),
+                                          ("refundAmount", "refundAmount", "price", 100)):
         value = _metric(row, source, unit)
         if value is not None:
             group[target]["value"] = (group[target]["value"] or 0) + value / divisor
@@ -60,6 +65,32 @@ def _finalize(groups):
     return sorted(result, key=lambda item: (-item["sessions"], item["name"]))
 
 
+def duplicate_sources(business):
+    accounts = (business or {}).get("accounts", [])
+    rows = (business or {}).get("rows", [])
+    aliases = {}
+    for account in accounts:
+        if isinstance(account, dict) and isinstance(account.get("id"), str):
+            name = str(account.get("name") or "").strip()
+            if name:
+                aliases.setdefault(name.casefold(), {})[account["id"]] = name
+    for row in rows:
+        if isinstance(row, dict) and isinstance(row.get("accountId"), str):
+            alias = str(row.get("accountName") or "").strip()
+            if alias:
+                aliases.setdefault(alias.casefold(), {})[row["accountId"]] = alias
+    candidates = []
+    for sources in aliases.values():
+        if len(sources) < 2:
+            continue
+        for source_id, alias in sources.items():
+            related = [row for row in rows if row.get("accountId") == source_id]
+            latest = max(related, key=lambda row: str((row.get("room") or {}).get("startedAt") or ""), default=None)
+            candidates.append({"sourceRef": OperationsWorkspace.source_ref(source_id), "sourceAlias": alias,
+                               "sessions": len(related), "sampleTitle": str((latest or {}).get("room", {}).get("title") or "")[:120]})
+    return sorted(candidates, key=lambda item: (item["sourceAlias"], item["sourceRef"]))
+
+
 def build_team_overview(workspace, business, reviews, *, available=True):
     """Business rows come from the saved room.workspace query, without any collection."""
     members = {item["id"]: item for item in workspace.get("teamMembers", [])}
@@ -75,14 +106,21 @@ def build_team_overview(workspace, business, reviews, *, available=True):
         alias = str(row.get("accountName") or "").casefold()
         source_ids.setdefault(alias, set()).add(row.get("accountId"))
     ambiguous = {alias for alias, ids in source_ids.items() if len(ids) > 1}
+    confirmed = {item.get("sourceRef"): item for item in workspace.get("sourceConfirmations", [])
+                 if not item.get("revokedAt")}
+    by_id = {item["id"]: item for item in mappings if item.get("active")}
     groups = {kind: {} for kind in ("accounts", "stores", "members")}
     unmatched = ambiguous_count = 0
     rows = business.get("rows", []) if isinstance(business, dict) else []
     for row in rows:
-        mapping = by_alias.get(str(row.get("accountName") or "").casefold())
-        if not mapping or str(row.get("accountName") or "").casefold() in ambiguous:
+        alias = str(row.get("accountName") or "").casefold()
+        mapping = by_alias.get(alias)
+        if alias in ambiguous:
+            confirmation = confirmed.get(OperationsWorkspace.source_ref(row.get("accountId")))
+            mapping = by_id.get(confirmation.get("mappingId")) if confirmation and confirmation.get("sourceAlias", "").casefold() == alias else None
+        if not mapping:
             unmatched += 1
-            if str(row.get("accountName") or "").casefold() in ambiguous:
+            if alias in ambiguous:
                 ambiguous_count += 1
             continue
         targets = [("accounts", mapping["id"], mapping["name"])]
@@ -112,8 +150,11 @@ def build_team_overview(workspace, business, reviews, *, available=True):
             "totalSessions": business.get("total", 0) if business else None,
             "loadedSessions": len(rows), "truncated": bool(business and business.get("hasMore")),
             "unmappedSessions": unmatched, "ambiguousSessions": ambiguous_count, "mappings": mappings,
+            "sourceCandidates": duplicate_sources(business),
+            "sourceConfirmations": workspace.get("sourceConfirmations", []),
             "groups": {kind: _finalize(values) for kind, values in groups.items()},
             "todos": todos,
             "notes": {"watch": "历史进房人次，不是去重观众", "sales": "历史结算有效成交金额（元）",
+                      "refundCount": "历史售后退款笔数；未采集不计零", "refundAmount": "历史售后实际退款金额（元）；未采集不计零",
                       "spend": "千川同场报表消耗（元），仅计已匹配场次",
                       "reconciliation": "仅在罗盘与千川都有同场采样时计算匹配率"}}

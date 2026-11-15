@@ -75,6 +75,7 @@ test('team overview keeps missing metrics empty and switches aggregation dimensi
   await tick();
   assert.match(get('opsOverviewRows').innerHTML, /&lt;直播号&gt;/);
   assert.match(get('opsOverviewRows').innerHTML, /1 \/ 2 场有值/);
+  assert.match(get('opsOverviewRows').innerHTML, /未采集/);
   assert.doesNotMatch(get('opsOverviewRows').innerHTML, /NaN|<直播号>/);
   assert.match(get('opsTodoRows').innerHTML, /核对 &lt;内容&gt;/);
   tabs[1].dispatch('click');
@@ -84,4 +85,33 @@ test('team overview keeps missing metrics empty and switches aggregation dimensi
   get('opsOverviewStart').dispatch('change');
   await tick();
   assert.match(requested.at(-1), /startDate=2026-11-04/);
+});
+
+test('team source confirmation shows audit and submits the selected local mapping', async () => {
+  const elements = new Map();
+  const get = id => elements.get(id) || (elements.set(id, node()), elements.get(id));
+  const ref = 'a'.repeat(64), requests = [];
+  let state = {available:true, totalSessions:2, loadedSessions:2, groups:{accounts:[],stores:[],members:[]},
+    mappings:[{id:'local-mapping',name:'合成直播号',sourceAlias:'同名来源',active:true}],
+    sourceCandidates:[{sourceRef:ref,sourceAlias:'同名来源',sessions:1,sampleTitle:'<合成场次>'}],
+    sourceConfirmations:[], todos:[]};
+  const context = vm.createContext({document:{getElementById:get, querySelectorAll:() => [],
+    querySelector:() => ({value:'local-mapping'})}, window:{}, location:{hash:'#operations'},
+    URLSearchParams, esc:escape, apiRequest:async (path, options) => {
+      requests.push({path,options});
+      if (path.endsWith('/confirm')) state = {...state, sourceConfirmations:[{id:'audit-one',sourceRef:ref,
+        sourceAlias:'同名来源',mappingId:'local-mapping',confirmedBy:'合成确认人',confirmedAt:'2026-11-15T10:00:00Z'}]};
+      return state;
+    }});
+  vm.runInContext(teamScript, context);
+  await tick();
+  assert.match(get('opsSourceRows').innerHTML, /&lt;合成场次&gt;/);
+  get('opsSourceActor').value = '合成确认人';
+  get('opsSourceRows').dispatch('click', {target:{closest: selector => selector === '[data-source-confirm]' ?
+    {dataset:{sourceConfirm:ref,sourceAlias:'同名来源'}} : null}});
+  await tick();
+  const confirmation = requests.find(item => item.path === '/api/team-overview/confirm');
+  assert.ok(confirmation);
+  assert.equal(JSON.parse(confirmation.options.body).actor, '合成确认人');
+  assert.match(get('opsSourceAudit').innerHTML, /合成确认人/);
 });

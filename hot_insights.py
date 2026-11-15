@@ -5,7 +5,7 @@ import math
 import os
 import tempfile
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -13,6 +13,8 @@ MAX_TERMS = 50
 MAX_SNAPSHOTS = 72
 MAX_ITEMS = 100
 MAX_FILE_BYTES = 2 * 1024 * 1024
+MIN_REFRESH_MINUTES = 15
+MAX_TREND_POINTS = 24
 
 
 class HotInsightsError(ValueError):
@@ -44,7 +46,9 @@ class HotInsights:
 
     @staticmethod
     def _empty():
-        return {"version": 1, "terms": [], "snapshots": []}
+        return {"version": 1, "terms": [], "snapshots": [],
+                "autoRefresh": {"enabled": False, "paused": False, "intervalMinutes": 60,
+                                "nextDueAt": None, "lastError": None}}
 
     def _read(self):
         try:
@@ -61,6 +65,17 @@ class HotInsights:
                 or not isinstance(data.get("terms"), list) or len(data["terms"]) > MAX_TERMS
                 or not isinstance(data.get("snapshots"), list) or len(data["snapshots"]) > MAX_SNAPSHOTS):
             raise HotInsightsError("热词记录格式无效，原文件已保留")
+        auto = data.get("autoRefresh", self._empty()["autoRefresh"])
+        if (not isinstance(auto, dict) or type(auto.get("enabled")) is not bool
+                or type(auto.get("paused")) is not bool
+                or type(auto.get("intervalMinutes")) is not int
+                or not MIN_REFRESH_MINUTES <= auto["intervalMinutes"] <= 10080
+                or (auto["enabled"] and not _instant(auto.get("nextDueAt")))
+                or (auto.get("nextDueAt") is not None and not _instant(auto["nextDueAt"]))
+                or (auto.get("lastError") is not None and
+                    (not isinstance(auto["lastError"], str) or len(auto["lastError"]) > 200))):
+            raise HotInsightsError("自动刷新配置无效，原文件已保留")
+        data["autoRefresh"] = auto
         for term in data["terms"]:
             if not isinstance(term, dict) or set(term) != {"term", "addedAt", "firstSeenAt", "lastSeenAt"}:
                 raise HotInsightsError("热词记录格式无效，原文件已保留")
@@ -125,6 +140,40 @@ class HotInsights:
             self._write(data)
             return self._view(data)
 
+    def configure_refresh(self, *, enabled, paused, interval_minutes):
+        if (type(enabled) is not bool or type(paused) is not bool
+                or type(interval_minutes) is not int
+                or not MIN_REFRESH_MINUTES <= interval_minutes <= 10080):
+            raise HotInsightsError("刷新间隔需为 15–10080 分钟，开关需为布尔值")
+        with self.lock:
+            data = self._read()
+            old = data["autoRefresh"]
+            due = (self.now().astimezone(timezone.utc) + timedelta(minutes=interval_minutes)).isoformat()
+            data["autoRefresh"] = {"enabled": enabled, "paused": paused,
+                                   "intervalMinutes": interval_minutes,
+                                   "nextDueAt": due if enabled else None,
+                                   "lastError": old["lastError"] if enabled else None}
+            self._write(data)
+            return self._view(data)
+
+    def refresh_if_due(self, fetcher):
+        with self.lock:
+            auto = self._read()["autoRefresh"]
+            if not auto["enabled"] or auto["paused"] or not auto["nextDueAt"]:
+                return False
+            if _instant(auto["nextDueAt"]) > self.now().astimezone(timezone.utc):
+                return False
+            try:
+                self.refresh(fetcher)
+            except (HotInsightsError, OSError, RuntimeError, ValueError) as error:
+                data = self._read()
+                data["autoRefresh"]["lastError"] = str(error)[:200]
+                data["autoRefresh"]["nextDueAt"] = (
+                    self.now().astimezone(timezone.utc) + timedelta(minutes=auto["intervalMinutes"])).isoformat()
+                self._write(data)
+                return False
+            return True
+
     def refresh(self, fetcher):
         """Fetch an already validated public list; do not start the source service."""
         response = fetcher(MAX_ITEMS)
@@ -160,11 +209,15 @@ class HotInsights:
                 if any(term["term"].casefold() in item["title"].casefold() for item in items):
                     term["firstSeenAt"] = term["firstSeenAt"] or observed
                     term["lastSeenAt"] = observed
+            if data["autoRefresh"]["enabled"] and not data["autoRefresh"]["paused"]:
+                data["autoRefresh"]["nextDueAt"] = (
+                    self.now().astimezone(timezone.utc) +
+                    timedelta(minutes=data["autoRefresh"]["intervalMinutes"])).isoformat()
+                data["autoRefresh"]["lastError"] = None
             self._write(data)
             return self._view(data)
 
-    @staticmethod
-    def _view(data):
+    def _view(self, data):
         latest = data["snapshots"][-1] if data["snapshots"] else None
         monitored = []
         for saved in data["terms"]:
@@ -173,10 +226,23 @@ class HotInsights:
                 matching = [item for item in sample["items"] if saved["term"].casefold() in item["title"].casefold()]
                 series.append({"sampledAt": sample["sampledAt"], "hot": max((item["hot"] for item in matching), default=None),
                                "rank": min((item["rank"] for item in matching), default=None)})
-            monitored.append({**saved, "currentHot": series[-1]["hot"] if series else None,
-                              "currentRank": series[-1]["rank"] if series else None,
+            current_hot = series[-1]["hot"] if series else None
+            current_rank = series[-1]["rank"] if series else None
+            if len(series) > MAX_TREND_POINTS:
+                width = math.ceil(len(series) / MAX_TREND_POINTS)
+                series = [{"sampledAt": bucket[-1]["sampledAt"],
+                           "hot": max((point["hot"] for point in bucket if point["hot"] is not None), default=None),
+                           "rank": min((point["rank"] for point in bucket if point["rank"] is not None), default=None)}
+                          for offset in range(0, len(series), width)
+                          if (bucket := series[offset:offset + width])]
+            monitored.append({**saved, "currentHot": current_hot,
+                              "currentRank": current_rank,
                               "trend": series})
+        auto = data["autoRefresh"]
+        stale_after = timedelta(minutes=max(120, auto["intervalMinutes"] * 2))
+        stale = latest is None or self.now().astimezone(timezone.utc) - _instant(latest["sampledAt"]) > stale_after
         return {"terms": monitored, "latest": latest, "sampleCount": len(data["snapshots"]),
+                "autoRefresh": auto.copy(), "stale": stale,
                 "source": "DailyHotApi", "note": "热度为公开榜单原值；首次观察时间是本机记录时间，不是实际首次上榜时间"}
 
     def snapshot(self, sessions=None):

@@ -1,6 +1,6 @@
 (() => {
   const $ = id => document.getElementById(id);
-  let state = null, loading = null, busy = false, actionError = '';
+  let state = null, loading = null, busy = false, actionError = '', syncState = null, syncError = '';
   const shownTime = value => value ? formatTime(value) : '—';
   const hotValue = value => value == null ? '—' : Number(value).toLocaleString('zh-CN');
   const escape = value => esc(String(value ?? ''));
@@ -24,8 +24,15 @@
     $('hotInsightsRefresh').disabled = busy;
     $('hotWatchForm').querySelector('button[type="submit"]').disabled = busy;
     $('hotInsightsStatus').textContent = actionError || (state.latest
-      ? `${state.sampleCount || 0} 次采样 · 最近观察 ${shownTime(state.latest.sampledAt)} · 首次观察为本机记录时间`
+      ? `${state.sampleCount || 0} 次采样 · 最近观察 ${shownTime(state.latest.sampledAt)}${state.stale ? ' · 采样已过期' : ''} · 首次观察为本机记录时间`
       : '尚无公开榜单采样');
+    const auto = state.autoRefresh || {};
+    if (document.activeElement !== $('hotAutoInterval')) $('hotAutoInterval').value = auto.intervalMinutes || 60;
+    $('hotAutoEnabled').checked = auto.enabled === true;
+    $('hotAutoPaused').checked = auto.paused === true;
+    $('hotAutoStatus').textContent = auto.lastError ? `刷新失败：${auto.lastError}`
+      : auto.enabled ? (auto.paused ? '已暂停' : `下次刷新 ${shownTime(auto.nextDueAt)}`) : '未启用';
+    $('hotAutoForm').querySelector('button[type="submit"]').disabled = busy;
     $('hotWatchRows').innerHTML = terms.length ? terms.map(item => `<tr><td><strong>${escape(item.term)}</strong></td><td class="number">${hotValue(item.currentHot)}${item.currentRank == null ? '' : `<small class="insights-muted">第 ${Number(item.currentRank)} 位</small>`}</td><td>${trendMarkup(item.trend)}</td><td>${escape(shownTime(item.firstSeenAt))}</td><td>${escape(shownTime(item.lastSeenAt))}</td><td><button class="table-action" type="button" data-hot-unwatch="${escape(item.term)}" aria-label="移除 ${escape(item.term)}">移除</button></td></tr>`).join('')
       : '<tr><td colspan="6"><div class="table-empty">尚未添加监控词</div></td></tr>';
     const sessions = state.sessions || [];
@@ -40,6 +47,18 @@
       .finally(() => { loading = null; });
     return loading;
   }
+  async function refreshSync() {
+    try {
+      syncState = await apiRequest('/api/hot-insights/sync');
+      $('hotSyncEnabled').checked = syncState.enabled;
+      $('hotSyncStatus').textContent = syncError || (syncState.enabled
+        ? `待投递 ${syncState.pending} · 重试 ${syncState.retry} · 已同步 ${syncState.synced}`
+        : (syncState.configured ? '已关闭' : '未配置'));
+      $('hotSyncRetry').disabled = !syncState.enabled || !syncState.retry;
+    } catch (error) {
+      $('hotSyncStatus').textContent = `状态读取失败：${error.message}`;
+    }
+  }
   async function act(path, payload) {
     if (busy) return;
     actionError = '';
@@ -48,6 +67,7 @@
     try {
       await apiRequest(path, {method:'POST', body:JSON.stringify(payload)});
       await refresh();
+      if (path.endsWith('/refresh')) await refreshSync();
       return true;
     } catch (error) { actionError = error.message; toast(error.message); return false; }
     finally { busy = false; render(); }
@@ -59,6 +79,35 @@
     act('/api/hot-insights/watch', {term}).then(saved => { if (saved) $('hotWatchTerm').value = ''; });
   });
   $('hotInsightsRefresh').addEventListener('click', () => act('/api/hot-insights/refresh', {}));
+  $('hotAutoForm').addEventListener('submit', event => {
+    event.preventDefault();
+    act('/api/hot-insights/auto-refresh', {enabled:$('hotAutoEnabled').checked,
+      paused:$('hotAutoPaused').checked, intervalMinutes:Number($('hotAutoInterval').value)});
+  });
+  $('hotSyncForm').addEventListener('submit', async event => {
+    event.preventDefault();
+    if (busy) return;
+    busy = true;
+    syncError = '';
+    $('hotSyncStatus').textContent = '正在保存';
+    try {
+      await apiRequest('/api/hot-insights/sync/config', {method:'POST', body:JSON.stringify({
+        enabled:$('hotSyncEnabled').checked, appId:$('hotSyncAppId').value.trim(),
+        appSecret:$('hotSyncSecret').value, tableUrl:$('hotSyncTable').value.trim()})});
+      $('hotSyncAppId').value = '';
+      $('hotSyncSecret').value = '';
+      $('hotSyncTable').value = '';
+      await refreshSync();
+    } catch (error) { syncError = error.message; $('hotSyncStatus').textContent = error.message; toast(error.message); }
+    finally { busy = false; render(); }
+  });
+  $('hotSyncRetry').addEventListener('click', async () => {
+    try {
+      await apiRequest('/api/hot-insights/sync/retry', {method:'POST', body:'{}'});
+      syncError = '';
+      await refreshSync();
+    } catch (error) { syncError = error.message; $('hotSyncStatus').textContent = error.message; toast(error.message); }
+  });
   $('hotWatchRows').addEventListener('click', event => {
     const button = event.target.closest('[data-hot-unwatch]');
     if (button) act('/api/hot-insights/unwatch', {term:button.dataset.hotUnwatch});
@@ -77,6 +126,6 @@
     }
     downloadCsv('热词监控与场次.csv', rows);
   });
-  window.LiveHotInsights = {refresh};
-  if (location.hash === '#keywords') refresh();
+  window.LiveHotInsights = {refresh: async () => { await refresh(); await refreshSync(); }};
+  if (location.hash === '#keywords') window.LiveHotInsights.refresh();
 })();

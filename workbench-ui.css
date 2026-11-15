@@ -387,6 +387,13 @@ tbody tr.selected { background: #f1f8e8; }
 .insights-toolbar > input { flex: 1 1 190px; min-width: 0; min-height: 37px; border: 1px solid var(--line); border-radius: 4px; padding: 7px 9px; }
 .insights-toolbar label { display: grid; gap: 4px; color: var(--muted); font-size: 11px; }
 .insights-toolbar label input { min-height: 36px; border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; }
+#hotAutoForm, #hotSyncForm { padding-top: 10px; border-top: 1px solid var(--line); align-items: center; }
+#hotAutoForm label:has(input[type="checkbox"]), #hotSyncForm label:has(input[type="checkbox"]) { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 12px; }
+#hotAutoForm input[type="checkbox"], #hotSyncForm input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; padding: 0; margin: 0; accent-color: var(--accent); }
+#hotAutoInterval { width: 86px; min-height: 36px; }
+#hotAutoStatus, #hotSyncStatus { flex: 1 1 140px; font-size: 12px; }
+#hotSyncForm > input { flex: 1 1 145px; }
+#hotSyncTable { flex-grow: 2 !important; }
 .insights-trend { display: flex; align-items: end; gap: 2px; height: 32px; width: 110px; max-width: 100%; }
 .insights-trend span { flex: 1 1 0; min-width: 4px; background: #458a78; border-radius: 2px 2px 0 0; }
 .insights-trend span.missing { background: #cad4d0; }

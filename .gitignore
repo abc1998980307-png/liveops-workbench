@@ -26,6 +26,7 @@
 !/dependency-ui.js
 !/hot_service.py
 !/hot_insights.py
+!/hot_feishu_sync.py
 !/team_overview.py
 !/hot-service-ui.js
 !/hot-insights-ui.js
