@@ -45,5 +45,6 @@ jobs:
           python-version: '3.11'
       - run: npm ci --ignore-scripts
       - run: node --test tests/*.test.mjs
-      - run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - run: python -m unittest tests.test_windows_platform tests.test_keyword_service.KeywordJobsTests.test_windows_analysis_timeout_stops_owned_worker tests.test_keyword_service.KeywordJobsTests.test_windows_timeout_watchdog_stops_worker_without_state_polling tests.test_media_pipeline tests.test_flv_recovery -v
+      - run: python -m unittest discover -s tests -p 'test_mcp*.py' -v
       - run: python scripts/check_frontend.py

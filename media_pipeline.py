@@ -85,7 +85,7 @@ def _write_jobs(jobs):
     temp = JOBS_FILE.with_suffix(".tmp")
     # Keep source identities: forgetting a failed/retained job re-enqueues it.
     temp.write_text(json.dumps(jobs, ensure_ascii=False, indent=2), encoding="utf-8")
-    with temp.open("rb") as handle:
+    with temp.open("r+b") as handle:
         os.fsync(handle.fileno())
     temp.replace(JOBS_FILE)
     if sys.platform != "win32":
@@ -523,7 +523,7 @@ def _compress(job, config):
         _validate_video(temp)
         if _signature(source) != before or _is_open(source):
             raise RuntimeError("压缩期间原录屏发生变化或仍被使用，已保留原文件")
-        with temp.open("rb") as handle:
+        with temp.open("r+b") as handle:
             os.fsync(handle.fileno())
         pending = {"path": str(compressed), "sourceSignature": list(before),
                    "outputSignature": list(_signature(temp)[:4]), "tailRecovery": recovery}
