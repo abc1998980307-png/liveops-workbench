@@ -81,6 +81,33 @@ class SessionReviewsTests(unittest.TestCase):
         self.assertIn("沿用先前接口结果：historyCore（2026-11-09T11:00:00Z）", exported)
         self.assertNotIn("沿用先前接口结果：historyTrade", exported)
 
+    def test_structured_action_and_evidence_survive_reopen_and_export(self):
+        payload = {"sessionId": SESSION_ID, "summary": "核对结束时的录屏", "issues": "订单口径待核对",
+                   "evidenceAt": "2026-11-09T11:35:00+00:00", "owner": "当班运营",
+                   "actions": "检查原始记录", "dueDate": "2026-11-15"}
+        saved = self.store.save(payload)
+        self.assertEqual(saved["evidenceAt"], payload["evidenceAt"])
+        reopened = SessionReviews(self.temp.name, self.sessions, self.archives)
+        review = reopened.list(SESSION_ID)["reviews"][0]
+        self.assertEqual(review["owner"], "当班运营")
+        exported = reopened.export_markdown(SESSION_ID).decode("utf-8")
+        for value in ("订单口径待核对", "2026-11-09T11:35:00+00:00", "当班运营", "2026-11-15"):
+            self.assertIn(value, exported)
+        with self.assertRaisesRegex(ValueError, "证据时间"):
+            self.store.save({**payload, "evidenceAt": "2026-11-09T11:35:00"})
+        with self.assertRaisesRegex(ValueError, "截止日期"):
+            self.store.save({**payload, "dueDate": "2026-02-30"})
+
+    def test_legacy_review_without_structured_fields_remains_editable(self):
+        self.store.file.parent.mkdir(parents=True, exist_ok=True)
+        old = {"sessionId": SESSION_ID, "summary": "旧版复盘", "actions": "核对",
+               "createdAt": "2026-11-09T10:00:00+00:00", "updatedAt": "2026-11-09T10:00:00+00:00"}
+        self.store.file.write_text(json.dumps({"version": 1, "reviews": [old]}), encoding="utf-8")
+        self.assertEqual(self.store.list(SESSION_ID)["reviews"][0]["summary"], "旧版复盘")
+        saved = self.store.save({"sessionId": SESSION_ID, "summary": "新版复盘", "actions": "核对"})
+        self.assertEqual(saved["createdAt"], old["createdAt"])
+        self.assertEqual(saved["issues"], "")
+
     def test_rejects_unknown_session_invalid_fields_and_empty_review(self):
         valid = {"sessionId": SESSION_ID, "summary": "有效", "actions": ""}
         invalid = [

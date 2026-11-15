@@ -12,6 +12,8 @@ from pathlib import Path
 
 
 SESSION_ID = re.compile(r"[0-9a-f]{32}\Z")
+DATE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
+EXTRA_FIELDS = {"issues": 3000, "evidenceAt": 64, "owner": 100, "dueDate": 10}
 MAX_REVIEWS = 1000
 MAX_FILE_BYTES = 10 * 1024 * 1024
 
@@ -47,11 +49,13 @@ class SessionReviews:
 
     @staticmethod
     def _valid_saved(item):
-        return (isinstance(item, dict) and set(item) ==
-                {"sessionId", "summary", "actions", "createdAt", "updatedAt"}
+        base = {"sessionId", "summary", "actions", "createdAt", "updatedAt"}
+        return (isinstance(item, dict) and set(item) in (base, base | set(EXTRA_FIELDS))
                 and isinstance(item["sessionId"], str) and SESSION_ID.fullmatch(item["sessionId"])
                 and isinstance(item["summary"], str) and len(item["summary"]) <= 5000
                 and isinstance(item["actions"], str) and len(item["actions"]) <= 3000
+                and all(isinstance(item.get(key, ""), str) and len(item.get(key, "")) <= limit
+                        for key, limit in EXTRA_FIELDS.items())
                 and all(isinstance(item[key], str) and len(item[key]) <= 64
                         for key in ("createdAt", "updatedAt")))
 
@@ -95,8 +99,9 @@ class SessionReviews:
         return {"reviews": reviews, "total": len(reviews), "truncated": False}
 
     def save(self, payload):
-        if not isinstance(payload, dict) or set(payload) != {"sessionId", "summary", "actions"}:
-            raise ValueError("仅接受录制场次 ID、复盘摘要和后续动作")
+        base = {"sessionId", "summary", "actions"}
+        if not isinstance(payload, dict) or set(payload) not in (base, base | set(EXTRA_FIELDS)):
+            raise ValueError("复盘字段无效")
         session_id = payload["sessionId"]
         self._session(session_id)
         summary, actions = payload["summary"], payload["actions"]
@@ -105,6 +110,25 @@ class SessionReviews:
                 or "\x00" in summary or "\x00" in actions):
             raise ValueError("复盘摘要最多 5000 字，后续动作最多 3000 字")
         summary, actions = summary.strip(), actions.strip()
+        extra = {key: payload.get(key, "") for key in EXTRA_FIELDS}
+        if any(not isinstance(value, str) or len(value) > EXTRA_FIELDS[key] or "\x00" in value
+               for key, value in extra.items()):
+            raise ValueError("复盘问题、证据时间、负责人或截止日期无效")
+        extra = {key: value.strip() for key, value in extra.items()}
+        if extra["evidenceAt"]:
+            try:
+                evidence = datetime.fromisoformat(extra["evidenceAt"].replace("Z", "+00:00"))
+                if evidence.tzinfo is None:
+                    raise ValueError()
+            except ValueError as error:
+                raise ValueError("证据时间必须包含时区") from error
+        if extra["dueDate"]:
+            try:
+                if not DATE.fullmatch(extra["dueDate"]):
+                    raise ValueError()
+                datetime.fromisoformat(extra["dueDate"])
+            except ValueError as error:
+                raise ValueError("截止日期无效") from error
         if not summary and not actions:
             raise ValueError("请填写复盘摘要或后续动作")
         now = self.now().astimezone(timezone.utc).isoformat()
@@ -116,7 +140,7 @@ class SessionReviews:
                     raise ReviewStoreError("复盘记录已达上限，请先导出并整理旧记录")
                 existing = {"sessionId": session_id, "createdAt": now}
                 value["reviews"].append(existing)
-            existing.update(summary=summary, actions=actions, updatedAt=now)
+            existing.update(summary=summary, actions=actions, **extra, updatedAt=now)
             self._write(value)
             return copy.deepcopy(existing)
 
@@ -146,7 +170,8 @@ class SessionReviews:
             raw_unit = self._inline(metric.get("rawUnit") or "")
             lines.append("- " + label + "：" + display + (" " + unit if unit else "")
                          + "；原值 " + self._inline(original if original is not None else "未返回")
-                         + (" " + raw_unit if raw_unit else ""))
+                         + (" " + raw_unit if raw_unit else "")
+                         + ("；缺失，不按零计算" if original is None and display == "—" else ""))
         failed = [name for name, result in endpoints.items()
                   if isinstance(result, dict) and not result.get("ok")]
         if failed:
@@ -184,7 +209,35 @@ class SessionReviews:
                 if archive.get(key):
                     lines.append("- " + label + "（录屏目录内相对路径）：" + self._inline(archive[key]))
             lines.append("")
+        segments = session.get("segments") or []
+        lines.extend(["## 录制片段与缺口", "",
+                      "- 片段时间是录制器观察边界，不能当作精确画面起止；未知区间未补成连续画面。"])
+        for index, segment in enumerate(segments, 1):
+            lines.append("- 片段 " + str(index) + "：" + self._inline(segment.get("path") or "文件未记录")
+                         + "；首次观察 " + self._inline(segment.get("firstSeenAt") or "未知")
+                         + "；最后观察 " + self._inline(segment.get("lastSeenAt") or "未知"))
+        if segments and session.get("startedAt") != segments[0].get("firstSeenAt"):
+            lines.append("- 首次观察前：起点是否有录屏未知。")
+        for before, after in zip(segments, segments[1:]):
+            lines.append("- 文件切换区间：" + self._inline(before.get("lastSeenAt") or "未知")
+                         + " 至 " + self._inline(after.get("firstSeenAt") or "未知")
+                         + "；画面连续性未知。")
+        for event in session.get("events") or []:
+            if event.get("type") == "observation_gap":
+                lines.append("- 观察中断：" + self._inline(event.get("from") or "未知")
+                             + " 至 " + self._inline(event.get("to") or "未知")
+                             + "；不能据此判定断流。")
+        if segments and session.get("endedAt") and session["endedAt"] != segments[-1].get("lastSeenAt"):
+            lines.append("- 最后观察至结束：是否有录屏未知。")
+        if not segments:
+            lines.append("- 未观察到录制片段；本场画面范围无法确认。")
+        lines.append("")
         lines.extend(["## 复盘摘要", "", self._quote(review["summary"] or "未填写"), "",
+                      "## 待解决问题", "", self._quote(review.get("issues") or "未填写"), "",
+                      "## 证据与负责人", "",
+                      "- 证据时间点：" + self._inline(review.get("evidenceAt") or "未记录"),
+                      "- 负责人：" + self._inline(review.get("owner") or "未指定"),
+                      "- 截止日期：" + self._inline(review.get("dueDate") or "未指定"), "",
                       "## 后续动作", "", self._quote(review["actions"] or "未填写"), ""])
         business = self.links.business_snapshot(session_id) if self.links else {"linked": False, "status": "unlinked"}
         lines.extend(["## 经营场次", ""])
@@ -212,7 +265,14 @@ class SessionReviews:
                 lines.append("- 缺失说明：" + self._inline(business.get("note") or "经营快照不可用"))
         else:
             lines.append("- 尚未确认与罗盘经营场次的对应关系。")
-        lines.extend(["", "## 数据边界", "",
+        lines.extend(["", "## 来源、缺失与口径", "",
+                      "- 本机录制：bililive-go 观察记录；片段时间未逐帧校准。",
+                      "- 字幕：本机转写文件如已归档，仅有媒体相对时间，未校准为直播墙钟时间。",
+                      "- 评论：尚无经核验的场次级采集来源。",
+                      "- 商品事件与实际轮班：尚无已确认的场次级时间记录。",
+                      "- 店铺订单、退款：平台授权状态未核验，本机商品登记不作为实绩。",
+                      "- 千川消耗：按要求暂停采集，不计算归因 ROI。",
+                      "", "## 数据边界", "",
                       ("- 经营指标来自已确认关联的本机罗盘实时快照及/或按读取时间保存的历史报表；结算值可能变化，历史报表不进入飞书自动同步；不把整体成交除以消耗当作官方归因 ROI。"
                        if business.get("status") == "ready" else
                        "- 此文档只依据本机录制观察、归档状态与手工填写的复盘内容；尚未关联罗盘经营场次或经营快照不可用，不包含成交、消耗等经营指标。"),
