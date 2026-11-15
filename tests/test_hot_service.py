@@ -132,6 +132,7 @@ class HotServiceTests(unittest.TestCase):
         self.assertEqual(json.loads((target/'package.json').read_text())['version'],'old')
 
 
+@unittest.skipIf(sys.platform == 'win32', 'synthetic process fixture uses a POSIX shebang')
 class HotProcessTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -141,6 +142,7 @@ class HotProcessTests(unittest.TestCase):
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
         self.service = HotService(root, Path(__file__).resolve().parents[1], 'http://127.0.0.1:' + str(port))
+        self.service.node = root / 'tools/node/node.exe' if sys.platform == 'win32' else self.service.node
         self.service.node.parent.mkdir(parents=True)
         self.service.plugin.mkdir(parents=True)
         self.installed = mock.patch.object(self.service, 'installed', return_value=True)

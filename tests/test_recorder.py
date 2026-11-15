@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import sys
 import tarfile
 import tempfile
@@ -19,6 +20,11 @@ class RecorderTests(unittest.TestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        if sys.platform == 'win32':
+            self.stack.enter_context(mock.patch.dict(os.environ, {
+                'LIVEOPS_RECORDER': str(self.root / 'plugins/bililive-go/bililive-windows-amd64.exe'),
+                'LIVEOPS_FFMPEG': str(self.root / 'tools/ffmpeg.exe'),
+            }))
         self.manager = RecorderManager(self.root)
         self.manager.plugin.mkdir(parents=True)
         self.manager.binary.touch()
@@ -39,10 +45,13 @@ live_rooms: []
 special_template_default:
   nested: keep-me
 """
-        with tarfile.open(self.manager.archive, "w:gz") as archive:
-            member = tarfile.TarInfo("config.yml")
-            member.size = len(template)
-            archive.addfile(member, io.BytesIO(template))
+        if sys.platform == 'win32':
+            (self.manager.plugin / 'config.yml').write_bytes(template)
+        else:
+            with tarfile.open(self.manager.archive, "w:gz") as archive:
+                member = tarfile.TarInfo("config.yml")
+                member.size = len(template)
+                archive.addfile(member, io.BytesIO(template))
         self.live = False
         self.rooms = []
         self.identity = ("Fri Nov 6 08:00:00 2026 " + str(self.manager.binary)

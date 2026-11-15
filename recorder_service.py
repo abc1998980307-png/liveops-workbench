@@ -7,6 +7,7 @@ import re
 import signal
 import socket
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -14,6 +15,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from platform_support import tool_path
 
 
 class RecorderError(RuntimeError):
@@ -43,7 +45,7 @@ class RecorderManager:
         self.port = parsed.port or 80
         self.base_url = "http://127.0.0.1:" + str(self.port)
         self.plugin = self.root / "plugins" / "bililive-go"
-        self.binary = self.plugin / "bililive-darwin-arm64"
+        self.binary = tool_path("recorder", root=self.root)
         self.archive = self.plugin / "v0.8.3-darwin-arm64.tar.gz"
         self.settings_file = self.root / "plugin-settings" / "bililive-go.json"
         self.runtime_file = self.root / "plugin-settings" / "bililive-runtime.yml"
@@ -81,7 +83,7 @@ class RecorderManager:
         defaults = {
             "interval": 20,
             "out_put_path": dashboard.get("recordingDirectory", str(self.root / "recordings")),
-            "ffmpeg_path": str(self.root / "tools/imageio-ffmpeg/imageio_ffmpeg/binaries/ffmpeg-macos-aarch64-v7.1"),
+            "ffmpeg_path": str(tool_path("ffmpeg", root=self.root)),
             "out_put_tmpl": "",
             "video_split_strategies": {"on_room_name_changed": False, "max_duration": 0, "max_file_size": "0"},
             "on_record_finished": {"convert_to_mp4": False, "delete_flv_after_convert": False,
@@ -127,10 +129,16 @@ class RecorderManager:
         if not isinstance(pid, int) or pid <= 1:
             return None
         try:
-            result = subprocess.run(
-                ["/bin/ps", "-ww", "-p", str(pid), "-o", "lstart=", "-o", "command="],
-                capture_output=True, text=True, timeout=3,
-            )
+            if sys.platform == "win32":
+                command = ("[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); "
+                           "$p=Get-CimInstance Win32_Process -Filter 'ProcessId=" + str(pid) +
+                           "'; if ($p) { $p.CreationDate; $p.CommandLine }")
+                args = ["powershell.exe", "-NoProfile", "-Command", command]
+            else:
+                args = ["/bin/ps", "-ww", "-p", str(pid), "-o", "lstart=", "-o", "command="]
+            result = subprocess.run(args, capture_output=True, text=True,
+                                    timeout=5 if sys.platform == "win32" else 3,
+                                    encoding="utf-8" if sys.platform == "win32" else None, errors="replace")
         except (OSError, subprocess.TimeoutExpired):
             return None
         return result.stdout.strip() if result.returncode == 0 else None
@@ -215,11 +223,17 @@ class RecorderManager:
 
     def _write_runtime(self):
         try:
-            with tarfile.open(self.archive, "r:gz") as archive:
-                members = [m for m in archive.getmembers() if m.name == "config.yml" or m.name.endswith("/config.yml")]
-                if len(members) != 1 or not members[0].isfile():
-                    raise RecorderError("安装包缺少唯一的录制器配置模板")
-                template = archive.extractfile(members[0]).read().decode("utf-8")
+            if sys.platform == "win32":
+                template_path = self.plugin / "config.yml"
+                if not template_path.is_file():
+                    template_path = self.binary.parent / "config.yml"
+                template = template_path.read_text(encoding="utf-8")
+            else:
+                with tarfile.open(self.archive, "r:gz") as archive:
+                    members = [m for m in archive.getmembers() if m.name == "config.yml" or m.name.endswith("/config.yml")]
+                    if len(members) != 1 or not members[0].isfile():
+                        raise RecorderError("安装包缺少唯一的录制器配置模板")
+                    template = archive.extractfile(members[0]).read().decode("utf-8")
         except (OSError, tarfile.TarError, UnicodeError) as error:
             raise RecorderError("无法读取录制器配置模板：" + str(error)) from error
         config = self.desired_config()
@@ -229,7 +243,7 @@ class RecorderManager:
         output.mkdir(parents=True, exist_ok=True)
         config["out_put_path"] = str(output)
         if not config.get("ffmpeg_path"):
-            config["ffmpeg_path"] = str(self.root / "tools/imageio-ffmpeg/imageio_ffmpeg/binaries/ffmpeg-macos-aarch64-v7.1")
+            config["ffmpeg_path"] = str(tool_path("ffmpeg", root=self.root))
         if not Path(config["ffmpeg_path"]).is_file():
             raise RecorderError("找不到 FFmpeg，请在设置中指定程序路径", 400)
         # The JSON API represents Go time.Duration as nanoseconds, while its
@@ -287,7 +301,8 @@ class RecorderManager:
             child = subprocess.Popen(
                 [str(self.binary), "--no-launcher", "--config=" + str(self.runtime_file)],
                 cwd=self.plugin, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                start_new_session=True,
+                start_new_session=sys.platform != "win32",
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
             )
         self._child = child
         identity = self._identity(child.pid)
@@ -327,7 +342,7 @@ class RecorderManager:
         if pid != state["pid"]:
             raise RecorderError("录制器进程已变化，请重新检查连接", 409)
         try:
-            os.kill(pid, signal.SIGTERM)
+            os.kill(pid, signal.CTRL_BREAK_EVENT if sys.platform == "win32" else signal.SIGTERM)
         except ProcessLookupError:
             pass
         deadline = time.monotonic() + self.stop_timeout

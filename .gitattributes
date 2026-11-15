@@ -7,4 +7,5 @@
 *.html text eol=lf
 *.css text eol=lf
 *.command text eol=lf
+*.bat text eol=crlf
 *.yml text eol=lf

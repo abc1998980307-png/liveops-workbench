@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.install import InstallError, checksum, download, installation_lock
 from keyword_service import save_json, stamp
+from runtime_config import data_root
 
 PROJECT = Path(__file__).resolve().parents[1]
 MANIFEST = json.loads((PROJECT / 'scripts/keyword-model.json').read_text())
@@ -31,7 +32,7 @@ def check_environment(python):
 
 def install(root):
     envdir = root / 'tools/keywords-env'
-    python = envdir / 'bin/python3'
+    python = envdir / ('Scripts/python.exe' if sys.platform == 'win32' else 'bin/python3')
     model = root / 'tools/keyword-model'
     with installation_lock(root):
         if envdir.exists():
@@ -85,7 +86,7 @@ def main():
         raise SystemExit('安装已取消，未发布的文件已清理')
     signal.signal(signal.SIGTERM, interrupted)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--data-root', type=Path, default=Path.home() / 'Library/Application Support/LiveOps')
+    parser.add_argument('--data-root', type=Path, default=data_root())
     parser.add_argument('--apply', action='store_true')
     args = parser.parse_args()
     root = args.data_root.expanduser()
@@ -94,8 +95,10 @@ def main():
     if not args.apply:
         print('将安装 KeyBERT 0.9.0、中文分词与约 480 MB 的固定版本多语言模型。添加 --apply 执行。')
         return
-    if sys.platform != 'darwin' or platform.machine() != 'arm64' or not (3, 9) <= sys.version_info[:2] <= (3, 11):
-        parser.error('需要 macOS Apple Silicon 和 Python 3.9—3.11')
+    supported = (sys.platform == 'darwin' and platform.machine() == 'arm64') or \
+                (sys.platform == 'win32' and platform.machine().lower() in {'amd64', 'x86_64'})
+    if not supported or not (3, 9) <= sys.version_info[:2] <= (3, 11):
+        parser.error('需要 macOS Apple Silicon 或 Windows x64，及 Python 3.9—3.11')
     install(root.resolve())
 
 

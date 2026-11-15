@@ -40,6 +40,7 @@ class InstallerTests(unittest.TestCase):
                     archive.addfile(item, io.BytesIO(content))
         return path
 
+    @unittest.skipIf(sys.platform == 'win32', 'Windows symlinks require developer privileges')
     def test_extracts_node_style_relative_links_and_preserves_executable(self):
         archive = self.tar([("node/lib/npm.js", "fixture", "file"),
                             ("node/bin/npm", "../lib/npm.js", "link")])
@@ -97,14 +98,15 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(original.read_text(), "keep")
 
     def test_outdated_node_is_not_reported_compatible_or_overwritten(self):
-        binary = self.root / 'tools/node/bin/node'
+        binary = self.root / install.MANIFEST['node']['target'] / install.MANIFEST['node']['binary']
         binary.parent.mkdir(parents=True)
-        binary.write_text('#!/bin/sh\necho v22.9.0\n')
-        binary.chmod(0o755)
+        binary.write_bytes(b'user-installed node')
         instance = install.Installer(self.root, self.root / 'cache')
-        with self.assertRaisesRegex(install.InstallError, '未覆盖'):
-            instance.install('node')
-        self.assertIn('v22.9.0', binary.read_text())
+        with mock.patch.object(install, 'probe', return_value=True), \
+                mock.patch.object(install.subprocess, 'run', return_value=mock.Mock(stdout='v22.9.0')):
+            with self.assertRaisesRegex(install.InstallError, '未覆盖'):
+                instance.install('node')
+        self.assertEqual(binary.read_bytes(), b'user-installed node')
 
     def test_lock_blocks_concurrent_installer_and_releases(self):
         with install.installation_lock(self.root):
@@ -156,6 +158,7 @@ class InstallerTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("安装验收失败：synthetic failure", result.stderr)
 
+    @unittest.skipIf(sys.platform == 'win32', 'macOS verifier uses symbolic links')
     def test_install_verifier_creates_fresh_business_root_for_each_attempt(self):
         installed = self.root / "installed"
         for relative in verify_install.RUNTIME_COMPONENTS:

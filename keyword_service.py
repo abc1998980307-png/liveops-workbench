@@ -6,6 +6,7 @@ import signal
 import subprocess
 import sys
 import threading
+import platform
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
@@ -131,7 +132,7 @@ def corpus(root):
             if total_chars + chars > MAX_CHARACTERS:
                 warnings.append('语料超过 50 万字上限，部分文件未分析')
                 continue
-            relative = str(path.relative_to(root))
+            relative = path.relative_to(root).as_posix()
             documents.append({'file': relative, 'account': path.parent.name,
                               'sourceUrl': '/transcripts/' + urllib.parse.quote(relative), 'units': units})
             total_chars += chars
@@ -145,7 +146,8 @@ class KeywordService:
     def __init__(self, root, project):
         self.root, self.project = Path(root), Path(project)
         self.directory = self.root / 'keywords'
-        self.python = self.root / 'tools/keywords-env/bin/python3'
+        self.python = self.root / ('tools/keywords-env/Scripts/python.exe' if sys.platform == 'win32' else
+                                   'tools/keywords-env/bin/python3')
         self.model = self.root / 'tools/keyword-model'
         self.process = None
         self.lock = threading.RLock()
@@ -155,6 +157,17 @@ class KeywordService:
 
     def state(self):
         with self.lock:
+            if sys.platform == 'win32' and self.process and self.process.poll() is None and self.job.get('action') == 'analyze':
+                try:
+                    started = datetime.fromisoformat(self.job['startedAt'])
+                    expired = (datetime.now(timezone.utc) - started).total_seconds() >= 600
+                except (KeyError, TypeError, ValueError):
+                    expired = False
+                if expired:
+                    self.close()
+                    self.job.update(status='failed', finishedAt=stamp(),
+                                    error='关键词分析超过十分钟，可缩小语料范围后重试')
+                    save_json(self.directory / 'job.json', self.job)
             if self.process and self.process.poll() is not None:
                 code = self.process.returncode
                 if code == 0 and self.job.get('action') == 'analyze':
@@ -178,7 +191,9 @@ class KeywordService:
             return {'installed': installed, 'busy': bool(self.process), 'job': dict(self.job),
                     'result': result, 'log': tail, 'engine': 'KeyBERT 0.9.0',
                     'model': 'paraphrase-multilingual-MiniLM-L12-v2',
-                    'canInstall': sys.platform == 'darwin' and os.uname().machine == 'arm64' and (3, 9) <= sys.version_info[:2] <= (3, 11)}
+                    'canInstall': ((sys.platform == 'darwin' and platform.machine() == 'arm64') or
+                                   (sys.platform == 'win32' and platform.machine().lower() in {'amd64', 'x86_64'}))
+                                  and (3, 9) <= sys.version_info[:2] <= (3, 11)}
 
     def start(self, action):
         with self.lock:
@@ -190,7 +205,7 @@ class KeywordService:
                 return state
             if action == 'install':
                 if not state['canInstall']:
-                    raise ValueError('关键词组件需要 macOS Apple Silicon 和 Python 3.9—3.11')
+                    raise ValueError('关键词组件需要 macOS Apple Silicon 或 Windows x64，及 Python 3.9—3.11')
                 command = [sys.executable, str(self.project / 'scripts/install_keywords.py'), '--apply', '--data-root', str(self.root)]
             elif action == 'analyze':
                 if not state['installed']:
@@ -204,23 +219,52 @@ class KeywordService:
             try:
                 with (self.directory / 'worker.log').open('wb') as log:
                     self.process = subprocess.Popen(command, cwd=self.project, stdin=subprocess.DEVNULL,
-                                                    stdout=log, stderr=log, start_new_session=True,
+                                                    stdout=log, stderr=log, start_new_session=sys.platform != 'win32',
+                                                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0,
                                                     env=dict(os.environ, PYTHONUNBUFFERED='1'))
+                if sys.platform == 'win32' and action == 'analyze':
+                    threading.Thread(target=self._watch_analysis_timeout, args=(self.process,), daemon=True).start()
             except OSError:
                 self.job.update(status='failed', error='无法启动关键词任务')
                 save_json(self.directory / 'job.json', self.job)
                 raise
             return self.state()
 
+    def _watch_analysis_timeout(self, child):
+        try:
+            child.wait(timeout=600)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        with self.lock:
+            if self.process is not child or child.poll() is not None:
+                return
+            child.terminate()
+            try:
+                child.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=5)
+            self.process = None
+            self.job.update(status='failed', finishedAt=stamp(),
+                            error='关键词分析超过十分钟，可缩小语料范围后重试')
+            save_json(self.directory / 'job.json', self.job)
+
     def close(self):
         with self.lock:
             if self.process and self.process.poll() is None:
                 # Installer children share this dedicated process group.
-                os.killpg(self.process.pid, signal.SIGTERM)
+                if sys.platform == 'win32':
+                    self.process.terminate()
+                else:
+                    os.killpg(self.process.pid, signal.SIGTERM)
                 try:
                     self.process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
-                    os.killpg(self.process.pid, signal.SIGKILL)
+                    if sys.platform == 'win32':
+                        self.process.kill()
+                    else:
+                        os.killpg(self.process.pid, signal.SIGKILL)
                     self.process.wait(timeout=5)
                 self.process = None
                 self.job.update(status='interrupted', error='任务已停止，可重新运行')

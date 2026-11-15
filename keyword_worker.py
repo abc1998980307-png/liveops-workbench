@@ -1,6 +1,5 @@
 """Offline Chinese KeyBERT analysis; launched as one bounded subprocess."""
 import argparse
-import fcntl
 import os
 import re
 import signal
@@ -11,6 +10,7 @@ from pathlib import Path
 os.environ.update(HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', HF_HUB_DISABLE_TELEMETRY='1',
                   TOKENIZERS_PARALLELISM='false', OMP_NUM_THREADS='2', MKL_NUM_THREADS='2')
 from keyword_service import corpus, save_json, stamp, MAX_REFERENCES
+from platform_support import file_lock
 
 STOP = frozenset('大家 这个 那个 一些 一下 时候 什么 怎么 现在 今天 明天 昨天 我们 你们 他们 自己 这样 那样 因为 所以 但是 然后 一个 两个 这边 那边 里面 外面 朋友 同学 好的 没有 可以 不是 就是 需要 进行 真的 已经 还是 还有'.split())
 
@@ -118,16 +118,16 @@ def extract(data_root, model=None):
 
 
 def main():
-    signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError('关键词分析超过十分钟，可缩小语料范围后重试')))
-    signal.alarm(600)
+    if hasattr(signal, 'SIGALRM'):
+        signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError('关键词分析超过十分钟，可缩小语料范围后重试')))
+        signal.alarm(600)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--data-root', type=Path, required=True)
     parser.add_argument('--model', type=Path)
     args = parser.parse_args()
     root = args.data_root.expanduser().resolve()
     (root / 'keywords').mkdir(parents=True, exist_ok=True)
-    with (root / 'keywords/analysis.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with file_lock(root / 'keywords/analysis.lock'):
         result = extract(root, args.model)
         save_json(root / 'keywords/result.json', result)
 

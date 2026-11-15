@@ -2,7 +2,6 @@
 """Install pinned tools into LiveOps; never start services or replace existing tools."""
 import argparse
 import contextlib
-import fcntl
 import hashlib
 import json
 import os
@@ -21,8 +20,13 @@ import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from platform_support import file_lock
+from runtime_config import data_root
+
 PROJECT = Path(__file__).resolve().parents[1]
-MANIFEST = json.loads((Path(__file__).with_name("dependencies.json")).read_text())
+MANIFEST_FILE = "dependencies-windows.json" if sys.platform == "win32" else "dependencies.json"
+MANIFEST = json.loads((Path(__file__).with_name(MANIFEST_FILE)).read_text(encoding="utf-8"))
 COMPONENTS = ("node", "collector", "ffmpeg", "recorder", "cmake", "whisper", "model", "dailyhot")
 
 
@@ -176,12 +180,11 @@ def probe(binary, args):
 @contextlib.contextmanager
 def installation_lock(root):
     root.mkdir(parents=True, exist_ok=True)
-    with (root / ".install.lock").open("a") as handle:
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise InstallError("此目录已有安装任务，请等待完成") from error
-        yield
+    try:
+        with file_lock(root / ".install.lock"):
+            yield
+    except BlockingIOError as error:
+        raise InstallError("此目录已有安装任务，请等待完成") from error
 
 
 class Installer:
@@ -216,8 +219,11 @@ class Installer:
             version = re.fullmatch(r"v(\d+)\.\d+\.\d+", output.stdout.strip())
             valid = bool(version and int(version[1]) >= 24)
         if name == "recorder":
-            archive = target / "v0.8.3-darwin-arm64.tar.gz"
-            valid = valid and archive.is_file() and checksum(archive) == spec["sha256"]
+            if sys.platform == "win32":
+                valid = valid and (target / "config.yml").is_file()
+            else:
+                archive = target / "v0.8.3-darwin-arm64.tar.gz"
+                valid = valid and archive.is_file() and checksum(archive) == spec["sha256"]
         if valid:
             print(f"[已存在] {name}，保留现有安装", flush=True)
             return True
@@ -246,17 +252,21 @@ class Installer:
             unpack(archive, stage, spec["format"])
             content = stage / spec.get("prefix", "")
             if name == "whisper":
-                compiler = subprocess.run(["xcrun", "--find", "clang"], capture_output=True)
-                if compiler.returncode:
-                    raise InstallError("请先运行 xcode-select --install 安装 Apple 命令行工具，再重试")
+                if sys.platform != "win32":
+                    compiler = subprocess.run(["xcrun", "--find", "clang"], capture_output=True)
+                    if compiler.returncode:
+                        raise InstallError("请先运行 xcode-select --install 安装 Apple 命令行工具，再重试")
                 cmake = self.root / MANIFEST["cmake"]["target"] / MANIFEST["cmake"]["binary"]
+                flags = (["-A", "x64", "-DGGML_NATIVE=OFF"] if sys.platform == "win32" else
+                         ["-DGGML_METAL_EMBED_LIBRARY=ON"])
                 self.run([cmake, "-S", content, "-B", content / "build", "-DCMAKE_BUILD_TYPE=Release",
-                          "-DBUILD_SHARED_LIBS=OFF", "-DGGML_METAL_EMBED_LIBRARY=ON",
+                          "-DBUILD_SHARED_LIBS=OFF", *flags,
                           "-DWHISPER_BUILD_TESTS=OFF", "-DWHISPER_CURL=OFF"], "whisper.log")
                 self.run([cmake, "--build", content / "build", "--config", "Release",
                           "--target", "whisper-cli", "-j", "2"], "whisper.log")
             if name == "recorder":
-                shutil.copyfile(archive, content / "v0.8.3-darwin-arm64.tar.gz")
+                if sys.platform != "win32":
+                    shutil.copyfile(archive, content / "v0.8.3-darwin-arm64.tar.gz")
             binary = content / spec["binary"]
             if binary.is_file():
                 binary.chmod(0o755)
@@ -267,7 +277,7 @@ class Installer:
         print(f"[完成] {name}", flush=True)
 
     def validate_dailyhot(self, target):
-        node = self.root / "tools/node/bin/node"
+        node = self.node_path()
         package = json.loads((target / "package.json").read_text())
         if package.get("name") != "dailyhot-api" or package.get("version") != MANIFEST["dailyhot"]["version"]:
             raise InstallError("已有热点服务版本不匹配，未覆盖")
@@ -292,8 +302,8 @@ class Installer:
             unpack(archive, stage, spec["format"])
             content = stage / spec["prefix"]
             shutil.copyfile(PROJECT / "scripts/dailyhot-package-lock.json", content / "package-lock.json")
-            node = self.root / "tools/node/bin/node"
-            npm = self.root / "tools/node/lib/node_modules/npm/bin/npm-cli.js"
+            node = self.node_path()
+            npm = self.npm_path()
             env = dict(os.environ, PATH=str(node.parent) + os.pathsep + os.environ.get("PATH", ""))
             self.run([node, npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
                      "dailyhot-install.log", cwd=content, env=env, timeout=900)
@@ -306,8 +316,8 @@ class Installer:
 
     def collector(self):
         target = self.root / "tools/collector"
-        node = self.root / "tools/node/bin/node"
-        npm = self.root / "tools/node/lib/node_modules/npm/bin/npm-cli.js"
+        node = self.node_path()
+        npm = self.npm_path()
         if target.exists():
             if not (target / "node_modules/playwright-core/index.mjs").is_file():
                 raise InstallError(f"采集组件目录不完整，未覆盖：{target}")
@@ -334,6 +344,15 @@ class Installer:
                   + json.dumps(expected) + ") process.exit(1);")
         self.run([node, "--input-type=module", "-e", script], "collector-check.log", cwd=target, timeout=30)
 
+    def node_path(self):
+        return self.root / MANIFEST["node"]["target"] / MANIFEST["node"]["binary"]
+
+    def npm_path(self):
+        base = self.root / MANIFEST["node"]["target"]
+        relative = ("node_modules/npm/bin/npm-cli.js" if sys.platform == "win32" else
+                    "lib/node_modules/npm/bin/npm-cli.js")
+        return base / relative
+
 
 def expand_components(selected):
     requested = set(selected)
@@ -354,7 +373,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="执行安装；缺省只预览")
     parser.add_argument("--components", default="node,collector,ffmpeg,recorder,whisper,model,dailyhot")
-    parser.add_argument("--data-root", type=Path, default=Path(os.environ.get("LIVEOPS_DATA_ROOT", str(Path.home() / "Library/Application Support/LiveOps"))))
+    parser.add_argument("--data-root", type=Path, default=data_root())
     parser.add_argument("--cache", type=Path, help="已校验下载包缓存，可用于离线重试")
     parser.add_argument("--rate-kib", type=int, default=1024, help="下载限速 KiB/s，默认 1024")
     args = parser.parse_args()
@@ -370,8 +389,9 @@ def main():
         if not args.apply:
             print("添加 --apply 执行。Chrome 请从 https://www.google.com/chrome/ 安装。")
             return 0
-        if sys.platform != "darwin" or platform.machine() != "arm64":
-            raise InstallError("此安装清单仅适用于 macOS Apple Silicon")
+        if not ((sys.platform == "darwin" and platform.machine() == "arm64") or
+                (sys.platform == "win32" and platform.machine().lower() in {"amd64", "x86_64"})):
+            raise InstallError("安装清单仅支持 macOS Apple Silicon 或 Windows x64")
         with installation_lock(root):
             installer = Installer(root, cache, args.rate_kib)
             for name in selected:

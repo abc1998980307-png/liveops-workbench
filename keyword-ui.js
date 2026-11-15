@@ -23,7 +23,7 @@
     if (!target) return;
     document.getElementById('keywordLocalCount').textContent = `${rows().length} 个关键词`;
     host.querySelector('[data-keyword-action="export"]').disabled = !rows().length;
-    target.innerHTML = rows().map(row => `<article class="keyword-result"><strong>${esc(row.term)}</strong><p class="boundary-copy">语义分数 ${Number(row.score).toFixed(3)} · 出现 ${Number(row.count)} 次 · ${Number(row.documents)} 份文件</p><details><summary>查看原话与出处</summary>${(row.references || []).map(ref => `<blockquote>${esc(ref.text)}</blockquote><small>${esc(ref.account)} · ${esc(ref.timestamp || 'TXT 无时间码')}<br>${esc(ref.file.split('/').at(-1))}</small><br>${ref.sourceUrl?.startsWith('/transcripts/') ? `<a class="source-link" href="${esc(ref.sourceUrl)}" target="_blank" rel="noopener noreferrer">打开${ref.timestamp ? '字幕' : '文本'}原文 ↗</a>` : ''}`).join('')}</details></article>`).join('') || '<div class="table-empty">没有匹配结果。</div>';
+    target.innerHTML = rows().map(row => `<article class="keyword-result"><strong>${esc(row.term)}</strong><p class="boundary-copy">语义分数 ${Number(row.score).toFixed(3)} · 出现 ${Number(row.count)} 次 · ${Number(row.documents)} 份文件</p><details><summary>查看原话与出处</summary>${(row.references || []).map(ref => `<blockquote>${esc(ref.text)}</blockquote><small>${esc(ref.account)} · ${esc(ref.timestamp || 'TXT 无时间码')}<br>${esc(ref.file.split(/[\\/]/).at(-1))}</small><br>${ref.sourceUrl?.startsWith('/transcripts/') ? `<a class="source-link" href="${esc(ref.sourceUrl)}" target="_blank" rel="noopener noreferrer">打开${ref.timestamp ? '字幕' : '文本'}原文 ↗</a>` : ''}`).join('')}</details></article>`).join('') || '<div class="table-empty">没有匹配结果。</div>';
   }
   function refresh() {
     if (loading) return loading;

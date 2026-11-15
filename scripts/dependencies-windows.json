@@ -1,0 +1,68 @@
+{
+  "platform": "win32-amd64",
+  "node": {
+    "version": "24.22.2",
+    "url": "https://nodejs.org/dist/v24.22.2/node-v24.22.2-win-x64.zip",
+    "sha256": "ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2",
+    "format": "zip",
+    "prefix": "node-v24.22.2-win-x64",
+    "target": "tools/node",
+    "binary": "node.exe",
+    "args": ["--version"]
+  },
+  "ffmpeg": {
+    "version": "7.1 (imageio-ffmpeg 0.6.0)",
+    "url": "https://files.pythonhosted.org/packages/2c/c6/fa760e12a2483469e2bf5058c5faff664acf66cadb4df2ad6205b016a73d/imageio_ffmpeg-0.6.0-py3-none-win_amd64.whl",
+    "sha256": "02fa47c83703c37df6bfe4896aab339013f62bf02c5ebf2dce6da56af04ffc0a",
+    "format": "zip",
+    "target": "tools/imageio-ffmpeg",
+    "binary": "imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v7.1.exe",
+    "args": ["-version"]
+  },
+  "recorder": {
+    "version": "0.8.3",
+    "url": "https://github.com/bililive-go/bililive-go/releases/download/v0.8.3/bililive-windows-amd64.zip",
+    "sha256": "df6177b3547b517b983535637a5f839367591eb3ff9717641bc81e32e1991dc6",
+    "format": "zip",
+    "target": "plugins/bililive-go",
+    "binary": "bililive-windows-amd64.exe",
+    "args": ["--version"]
+  },
+  "cmake": {
+    "version": "3.31.6",
+    "url": "https://files.pythonhosted.org/packages/18/58/909d6d99acb4e0886d0f660cf4e0fb26f586590e370b2e4ce7a10d06b145/cmake-3.31.6-py3-none-win_amd64.whl",
+    "sha256": "bbaed969cef3c427f4f17591feb28db4ae595e3a4bbd45cb35522cee14df6a32",
+    "format": "zip",
+    "target": "tools/cmake",
+    "binary": "cmake/data/bin/cmake.exe",
+    "args": ["--version"]
+  },
+  "whisper": {
+    "version": "1.9.5",
+    "commit": "d1be6fde11ac6e0407606b4e42fe72d34add8037",
+    "url": "https://codeload.github.com/ggml-org/whisper.cpp/tar.gz/d1be6fde11ac6e0407606b4e42fe72d34add8037",
+    "sha256": "645445da884df6dbd52b30f82d7be7c01d1767c938714e477e786b88d529e9f4",
+    "format": "tar",
+    "prefix": "whisper.cpp-d1be6fde11ac6e0407606b4e42fe72d34add8037",
+    "target": "plugins/buzz/whisper.cpp",
+    "binary": "build/bin/Release/whisper-cli.exe",
+    "args": ["--help"]
+  },
+  "model": {
+    "version": "small-q5_1",
+    "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small-q5_1.bin",
+    "sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+    "format": "file",
+    "target": "plugins/buzz/whisper.cpp/models/ggml-small-q5_1.bin"
+  },
+  "dailyhot": {
+    "version": "2.0.8",
+    "commit": "36c77e3bd891c11642d314cfb229bf31646704de",
+    "url": "https://codeload.github.com/imsyy/DailyHotApi/tar.gz/36c77e3bd891c11642d314cfb229bf31646704de",
+    "sha256": "aa4b4b89e62f2939afcd42c3c76827529e59652decee006c73f7933d7e82f54b",
+    "format": "tar",
+    "prefix": "DailyHotApi-36c77e3bd891c11642d314cfb229bf31646704de",
+    "target": "plugins/dailyhot-api",
+    "binary": "dist/app.js"
+  }
+}

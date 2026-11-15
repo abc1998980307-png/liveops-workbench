@@ -1,12 +1,12 @@
 """Manage the local public-hotlist service without confusing it with upstream data."""
 import contextlib
-import fcntl
 import json
 import os
 from pathlib import Path
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -15,6 +15,7 @@ import urllib.request
 import uuid
 
 from recorder_service import RecorderManager
+from platform_support import file_lock, tool_path
 
 
 class HotServiceError(RuntimeError):
@@ -36,7 +37,7 @@ class HotService:
         # This URL is validated loopback traffic, regardless of system proxies.
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         self.plugin = self.root / "plugins/dailyhot-api"
-        self.node = self.root / "tools/node/bin/node"
+        self.node = tool_path("node", root=self.root)
         self.runner = self.project / "scripts/dailyhot_runner.mjs"
         self.owner_file = self.root / "plugin-settings/dailyhot-process.json"
         self.settings_file = self.root / "plugin-settings/dailyhot.env"
@@ -163,12 +164,12 @@ class HotService:
     @contextlib.contextmanager
     def operation(self):
         self.owner_file.parent.mkdir(parents=True, exist_ok=True)
-        with self.lock, self.owner_file.with_suffix(".lock").open("a") as handle:
+        with self.lock:
             try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with file_lock(self.owner_file.with_suffix(".lock")):
+                    yield
             except BlockingIOError as error:
                 raise HotServiceError("另一个热点服务操作正在进行，请稍后检查", 409) from error
-            yield
 
     def start(self):
         with self.operation():
@@ -196,7 +197,8 @@ class HotService:
         with self.log_file.open("ab") as log:
             child = subprocess.Popen([str(self.node), str(self.runner), str(self.plugin), str(self.port), instance],
                                      cwd=self.plugin, env=env, stdin=subprocess.DEVNULL,
-                                     stdout=log, stderr=log, start_new_session=True)
+                                     stdout=log, stderr=log, start_new_session=sys.platform != "win32",
+                                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0)
         self.process = child
         identity = RecorderManager._identity(child.pid)
         if not identity:
@@ -239,7 +241,7 @@ class HotService:
         if pid != state["pid"]:
             raise HotServiceError("热点进程身份已变化，请重新检查", 409)
         try:
-            os.kill(pid, signal.SIGTERM)
+            os.kill(pid, signal.CTRL_BREAK_EVENT if sys.platform == "win32" else signal.SIGTERM)
         except ProcessLookupError:
             pass
         deadline = time.monotonic() + self.stop_timeout

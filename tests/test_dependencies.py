@@ -20,7 +20,7 @@ class DependencyServiceTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         self.manager = DependencyManager(self.root, Path(__file__).resolve().parents[1])
         platform = mock.patch('dependency_service.sys.platform', 'darwin')
-        machine = mock.patch('dependency_service.os.uname', return_value=mock.Mock(machine='arm64'))
+        machine = mock.patch('dependency_service.platform.machine', return_value='arm64')
         platform.start()
         machine.start()
         self.addCleanup(platform.stop)

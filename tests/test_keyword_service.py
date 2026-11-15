@@ -152,6 +152,31 @@ class KeywordJobsTests(unittest.TestCase):
             kill.assert_called_once_with(child.pid, keywords.signal.SIGTERM)
         self.assertEqual(self.service.state()['job']['status'], 'interrupted')
 
+    def test_windows_analysis_timeout_stops_owned_worker(self):
+        child = mock.Mock()
+        child.poll.return_value = None
+        self.service.process = child
+        self.service.job = {'action': 'analyze', 'status': 'running',
+                            'startedAt': '2020-01-01T00:00:00+00:00'}
+        with mock.patch.object(keywords.sys, 'platform', 'win32'):
+            state = self.service.state()
+        child.terminate.assert_called_once()
+        self.assertFalse(state['busy'])
+        self.assertEqual(state['job']['status'], 'failed')
+        self.assertIn('十分钟', state['job']['error'])
+
+    def test_windows_timeout_watchdog_stops_worker_without_state_polling(self):
+        child = mock.Mock()
+        child.wait.side_effect = [keywords.subprocess.TimeoutExpired('worker', 600), None]
+        child.poll.return_value = None
+        self.service.process = child
+        self.service.job = {'action': 'analyze', 'status': 'running',
+                            'startedAt': keywords.stamp()}
+        self.service._watch_analysis_timeout(child)
+        child.terminate.assert_called_once()
+        self.assertIsNone(self.service.process)
+        self.assertEqual(self.service.job['status'], 'failed')
+
 
 class KeywordHTTPTests(unittest.TestCase):
     def test_local_read_start_and_rejection(self):

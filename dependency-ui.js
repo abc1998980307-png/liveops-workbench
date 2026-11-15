@@ -11,8 +11,8 @@
       $('dependencyItems').innerHTML = state.items.map(item => `<span class="tag ${item.found ? 'ready' : ''}">${esc(item.name)} · ${item.found ? '已找到' : '待安装'}</span>`).join('');
       $('installDependencies').disabled = state.busy || acting || !state.canInstall;
       $('installDependencies').textContent = state.busy ? '安装中…' : '安装缺少的组件';
-      $('dependencyMessage').textContent = state.error || (state.busy ? '下载和编译会持续几分钟，可以切换页面。' : state.completed ? '安装检查已完成。可启动录制器，并在经营数据中登录账号。' : !state.canInstall ? '此安装器目前仅支持 macOS Apple Silicon。' : '状态表示本机已找到文件，实际录制与登录连接仍需分别检查。');
-      if (!state.chromeFound) $('dependencyMessage').textContent += ' 罗盘采集还需要安装 Google Chrome。';
+      $('dependencyMessage').textContent = state.error || (state.busy ? '下载和编译会持续几分钟，可以切换页面。' : state.completed ? '安装检查已完成。可启动录制器，并在经营与复盘 → 经营数据中登录账号。' : !state.canInstall ? '此安装器支持 macOS Apple Silicon 和 Windows x64。' : '状态表示本机已找到文件，实际录制与登录连接仍需分别检查。');
+      if (!state.chromeFound) $('dependencyMessage').textContent += ' 罗盘采集还需要安装 Chrome 或 Edge。';
       $('dependencyLogWrap').hidden = !state.log;
       $('dependencyLog').textContent = state.log || '';
     } catch (error) {

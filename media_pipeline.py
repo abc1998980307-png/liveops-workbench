@@ -7,6 +7,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -19,6 +20,7 @@ from pathlib import Path
 from flv_recovery import inspect_tail
 from mp4_metadata import inspect_mp4
 from runtime_config import DATA_ROOT
+from platform_support import tool_path
 
 
 PLUGIN_ROOT = DATA_ROOT / "plugins" / "media-pipeline"
@@ -26,8 +28,8 @@ CONFIG_FILE = DATA_ROOT / "plugin-settings" / "media-pipeline.json"
 JOBS_FILE = DATA_ROOT / "plugin-settings" / "media-jobs.json"
 RECORDINGS = DATA_ROOT / "recordings"
 TRANSCRIPTS = DATA_ROOT / "transcripts"
-FFMPEG = DATA_ROOT / "tools" / "imageio-ffmpeg" / "imageio_ffmpeg" / "binaries" / "ffmpeg-macos-aarch64-v7.1"
-WHISPER = DATA_ROOT / "plugins" / "buzz" / "whisper.cpp" / "build" / "bin" / "whisper-cli"
+FFMPEG = tool_path("ffmpeg")
+WHISPER = tool_path("whisper")
 MODEL = DATA_ROOT / "plugins" / "buzz" / "whisper.cpp" / "models" / "ggml-small-q5_1.bin"
 POLL_SECONDS = 30
 MIN_IDLE_SECONDS = 60
@@ -44,7 +46,7 @@ _worker_error = None
 def read_config():
     defaults = {
         "enabled": True,
-        "codec": "hevc_videotoolbox",
+        "codec": "libx264" if sys.platform == "win32" else "hevc_videotoolbox",
         "videoBitrateKbps": 2500,
         "audioBitrateKbps": 96,
         "language": "zh",
@@ -86,11 +88,12 @@ def _write_jobs(jobs):
     with temp.open("rb") as handle:
         os.fsync(handle.fileno())
     temp.replace(JOBS_FILE)
-    parent_fd = os.open(JOBS_FILE.parent, os.O_RDONLY)
-    try:
-        os.fsync(parent_fd)
-    finally:
-        os.close(parent_fd)
+    if sys.platform != "win32":
+        parent_fd = os.open(JOBS_FILE.parent, os.O_RDONLY)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
 
 
 def job_snapshot():
@@ -106,7 +109,7 @@ def job_snapshot():
         root = Path(config["recordingDirectory"]).expanduser().resolve()
         job["compressedPath"] = _relative_file(job.get("compressed"), root)
         job["sourcePath"] = _relative_file(job.get("source"), root)
-        job["compressedUrl"] = None  # Video actions reveal files in Finder.
+        job["compressedUrl"] = None  # Video actions reveal files in the system file manager.
         for key in ("transcript", "subtitles"):
             relative = _relative_file(job.get(key), TRANSCRIPTS.resolve())
             job[key + "Url"] = "/transcripts/" + urllib.parse.quote(relative) if relative else None
@@ -169,7 +172,7 @@ def _relative_file(value, root):
         return None
     try:
         path = _checked_path(value, root)
-        return str(path.relative_to(root)) if path.is_file() else None
+        return path.relative_to(root).as_posix() if path.is_file() else None
     except (OSError, ValueError):
         return None
 
@@ -251,6 +254,23 @@ def _has_job(source):
 
 
 def _is_open(source):
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.windll.kernel32
+        kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                       wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        handle = kernel.CreateFileW(str(source), 0x80000000, 0, None, 3, 0, None)
+        if handle == wintypes.HANDLE(-1).value:
+            error = kernel.GetLastError()
+            if error == 32:  # ERROR_SHARING_VIOLATION
+                return True
+            raise RuntimeError("无法确认录屏是否仍被使用，已保留原文件")
+        kernel.CloseHandle(handle)
+        return False
     result = subprocess.run(["/usr/sbin/lsof", "-t", "--", str(source)], capture_output=True, text=True, timeout=10)
     if result.returncode not in (0, 1) or result.stderr.strip():
         raise RuntimeError("无法确认录屏是否仍被使用，已保留原文件")
@@ -301,7 +321,8 @@ def _run(command, input_path=None, input_limit=None, cancel_event=None):
     feeder_errors = []
     with tempfile.TemporaryFile() as log:
         child = subprocess.Popen(command, stdin=subprocess.PIPE if input_path else subprocess.DEVNULL,
-                                 stdout=log, stderr=log, start_new_session=True)
+                                 stdout=log, stderr=log, start_new_session=sys.platform != "win32",
+                                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0)
         def feed():
             try:
                 with Path(input_path).open("rb") as source:
@@ -330,14 +351,20 @@ def _run(command, input_path=None, input_limit=None, cancel_event=None):
                 if stop.wait(.2):
                     interrupted = True
                     try:
-                        os.killpg(child.pid, signal.SIGTERM)
+                        if sys.platform == "win32":
+                            child.terminate()
+                        else:
+                            os.killpg(child.pid, signal.SIGTERM)
                     except ProcessLookupError:
                         pass
                     try:
                         child.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         try:
-                            os.killpg(child.pid, signal.SIGKILL)
+                            if sys.platform == "win32":
+                                child.kill()
+                            else:
+                                os.killpg(child.pid, signal.SIGKILL)
                         except ProcessLookupError:
                             pass
                     break

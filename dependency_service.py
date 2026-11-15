@@ -1,11 +1,13 @@
 """Local dependency inventory and a single bounded installer subprocess."""
-import fcntl
 import json
 import os
+import platform
 from pathlib import Path
 import subprocess
 import sys
 import threading
+from platform_support import file_lock
+from platform_support import browser_path
 
 
 class DependencyManager:
@@ -15,18 +17,18 @@ class DependencyManager:
         self.process = None
         self.error = None
         self.log = self.root / "logs/install/web-install.log"
-        self.manifest = json.loads((self.project / "scripts/dependencies.json").read_text())
+        manifest = "dependencies-windows.json" if sys.platform == "win32" else "dependencies.json"
+        self.manifest = json.loads((self.project / "scripts" / manifest).read_text(encoding="utf-8"))
 
     def external_busy(self):
         path = self.root / ".install.lock"
         if not path.exists():
             return False
-        with path.open("a") as handle:
-            try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            with file_lock(path):
                 return False
-            except BlockingIOError:
-                return True
+        except BlockingIOError:
+            return True
 
     def state(self):
         with self.lock:
@@ -44,7 +46,8 @@ class DependencyManager:
                 if name == "dailyhot":
                     found = found and (self.root / spec["target"] / "node_modules/@hono/node-server/package.json").is_file()
                 if name == "recorder":
-                    found = found and (target.parent / "v0.8.3-darwin-arm64.tar.gz").is_file()
+                    template = "config.yml" if sys.platform == "win32" else "v0.8.3-darwin-arm64.tar.gz"
+                    found = found and (target.parent / template).is_file()
                 items.append({"id": name, "name": labels[name], "found": found, "version": spec.get("version", "项目锁文件")})
             tail = ""
             try:
@@ -53,10 +56,11 @@ class DependencyManager:
                     tail = handle.read(6000).decode("utf-8", errors="replace")
             except OSError:
                 pass
-            chrome = Path(os.environ.get("LIVEOPS_CHROME", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")).expanduser()
+            chrome = browser_path()
             return {"items": items, "busy": busy, "error": self.error, "log": tail,
-                    "canInstall": sys.platform == "darwin" and os.uname().machine == "arm64",
-                    "chromeFound": chrome.is_file(), "dataDirectory": str(self.root),
+                    "canInstall": (sys.platform == "darwin" and platform.machine() == "arm64") or
+                                  (sys.platform == "win32" and platform.machine().lower() in {"amd64", "x86_64"}),
+                    "chromeFound": bool(chrome), "dataDirectory": str(self.root),
                     "completed": bool(self.process and code == 0)}
 
     def install(self, hotwords_only=False):
@@ -65,7 +69,7 @@ class DependencyManager:
             if state["busy"]:
                 return state
             if not state["canInstall"]:
-                raise ValueError("目前只支持 macOS Apple Silicon")
+                raise ValueError("目前只支持 macOS Apple Silicon 或 Windows x64")
             self.log.parent.mkdir(parents=True, exist_ok=True)
             self.error = None
             with self.log.open("wb") as output:
