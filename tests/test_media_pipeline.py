@@ -59,7 +59,7 @@ class MediaPipelineTests(unittest.TestCase):
             Path(command[-1]).write_bytes(b"synthetic compressed video")
 
     def saved_job(self):
-        return next(job for job in pipeline._read_jobs() if job["id"] == self.job["id"])
+        return next(job for job in pipeline.archive_jobs() if job["id"] == self.job["id"])
 
     def assert_source_preserved(self):
         self.assertEqual(self.source.read_bytes(), self.original)
@@ -182,10 +182,10 @@ class MediaPipelineTests(unittest.TestCase):
             pipeline.JOBS_FILE.write_bytes(original_jobs)
             pipeline._wake.set()
             for _ in range(200):
-                if pipeline._read_jobs()[0]["status"] == "completed":
+                if pipeline.archive_jobs()[0]["status"] == "completed":
                     break
                 threading.Event().wait(.01)
-        self.assertEqual(pipeline._read_jobs()[0]["status"], "completed")
+        self.assertEqual(pipeline.archive_jobs()[0]["status"], "completed")
         self.assertIsNone(pipeline.job_snapshot()["workerError"])
 
     def test_malformed_job_ledger_and_partial_write_never_replace_saved_jobs(self):
@@ -237,10 +237,10 @@ class MediaPipelineTests(unittest.TestCase):
             writable.set()
             pipeline._wake.set()
             for _ in range(200):
-                if pipeline._read_jobs()[0]["status"] == "completed":
+                if pipeline.archive_jobs()[0]["status"] == "completed":
                     break
                 threading.Event().wait(.01)
-        self.assertEqual(pipeline._read_jobs()[0]["status"], "completed")
+        self.assertEqual(pipeline.archive_jobs()[0]["status"], "completed")
         self.assertIsNone(pipeline.job_snapshot()["workerError"])
 
     def test_published_video_recovers_after_ledger_write_fails_without_reencoding(self):
