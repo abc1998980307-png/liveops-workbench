@@ -42,6 +42,9 @@ class RecordingRevealTests(unittest.TestCase):
         self.open_file = mock.patch.object(server.subprocess, "run")
         self.open_file.start()
         self.addCleanup(self.open_file.stop)
+        self.start_file = mock.patch.object(server.os, "startfile", create=True)
+        self.start_file.start()
+        self.addCleanup(self.start_file.stop)
 
     def request(self, method, route, body=None, headers=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
@@ -73,9 +76,9 @@ class RecordingRevealTests(unittest.TestCase):
     def test_reveals_existing_unicode_file_inside_recording_directory(self):
         server.reveal_recording("主播 名称/2026-11-09 直播.mp4")
 
-        server.subprocess.run.assert_called_once_with(
-            ["/usr/bin/open", "-R", str(self.video.resolve())], check=True, timeout=10,
-        )
+        command = (["explorer.exe", "/select,", str(self.video.resolve())] if sys.platform == "win32" else
+                   ["/usr/bin/open", "-R", str(self.video.resolve())])
+        server.subprocess.run.assert_called_once_with(command, check=True, timeout=10)
 
     def test_rejects_paths_outside_recording_directory(self):
         outside = Path(self.directory.name) / "outside.mp4"
@@ -138,9 +141,11 @@ class RecordingRevealTests(unittest.TestCase):
     def test_opens_current_recording_directory_in_finder(self):
         server.open_recording_directory()
 
-        server.subprocess.run.assert_called_once_with(
-            ["/usr/bin/open", str(self.root.resolve())], check=True, timeout=10,
-        )
+        if sys.platform == "win32":
+            server.os.startfile.assert_called_once_with(str(self.root.resolve()))
+        else:
+            server.subprocess.run.assert_called_once_with(
+                ["/usr/bin/open", str(self.root.resolve())], check=True, timeout=10)
 
     def test_directory_route_opens_configured_recording_directory(self):
         status, data = self.request(
@@ -152,9 +157,11 @@ class RecordingRevealTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(data), {"ok": True})
-        server.subprocess.run.assert_called_once_with(
-            ["/usr/bin/open", str(self.root.resolve())], check=True, timeout=10,
-        )
+        if sys.platform == "win32":
+            server.os.startfile.assert_called_once_with(str(self.root.resolve()))
+        else:
+            server.subprocess.run.assert_called_once_with(
+                ["/usr/bin/open", str(self.root.resolve())], check=True, timeout=10)
 
 
 if __name__ == "__main__":

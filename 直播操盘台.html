@@ -228,7 +228,7 @@
     #sessionReviewPanel { scroll-margin-top: 76px; }
     .review-form { display: grid; gap: 12px; }
     .review-form label { display: grid; gap: 6px; color: #5f6d68; font-size: 11px; font-weight: 600; }
-    .review-form select, .review-form textarea { width: 100%; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--ink); padding: 9px; font: inherit; font-size: 12px; font-weight: 400; }
+    .review-form select, .review-form textarea, .review-form input[type="text"], .review-form input[type="date"] { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--ink); padding: 9px; font: inherit; font-size: 12px; font-weight: 400; }
     .review-form textarea { min-height: 96px; resize: vertical; line-height: 1.55; }
     .review-form select:focus, .review-form textarea:focus { outline: none; border-color: #80b7ad; box-shadow: 0 0 0 3px rgb(20 125 112 / 9%); }
     .review-form .button-row { flex-wrap: wrap; }
@@ -274,6 +274,33 @@
     .settings-status { color: #7c8984; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
     .settings-status.pending { color: #9a6a25; }
     .settings-note { margin: 0 16px 15px; }
+    .business-subnav { display: flex; width: max-content; max-width: 100%; gap: 3px; padding: 3px; margin: 0 0 16px; border: 1px solid #dfe7e3; border-radius: 6px; background: #edf2ef; }
+    .business-subnav button { min-height: 34px; min-width: 112px; padding: 0 14px; border: 0; border-radius: 4px; background: transparent; color: #5b6a65; font-size: 12px; font-weight: 600; }
+    .business-subnav button:hover { background: #f8fbf9; color: var(--ink); }
+    .business-subnav button[aria-selected="true"] { background: #fff; color: #126c61; box-shadow: 0 1px 2px rgb(18 40 35 / 8%); }
+    .business-connect-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 0 0 13px; }
+    .business-connect-row .settings-status { margin: 0; }
+    .ops-tabs { display: flex; gap: 4px; overflow-x: auto; margin-bottom: 16px; border-bottom: 1px solid var(--line); scrollbar-width: thin; }
+    .ops-tabs button { flex: 0 0 auto; min-height: 38px; border: 0; border-bottom: 2px solid transparent; padding: 0 12px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 600; }
+    .ops-tabs button[aria-selected="true"] { border-bottom-color: var(--teal); color: var(--teal); }
+    .ops-pane[hidden] { display: none; }
+    .ops-grid { display: grid; grid-template-columns: minmax(260px, .75fr) minmax(0, 1.5fr); gap: 16px; align-items: start; }
+    .ops-form { display: grid; gap: 10px; padding: 15px; }
+    .ops-form label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; font-weight: 600; }
+    .ops-form label:has(input[type="checkbox"]) > span { display: flex; align-items: center; gap: 8px; }
+    .ops-form input:not([type="checkbox"]), .ops-form select, .ops-form textarea { width: 100%; min-height: 36px; border: 1px solid var(--line); border-radius: 4px; background: #fff; padding: 7px 9px; color: var(--ink); font-size: 12px; }
+    .ops-form input[type="checkbox"] { width: 16px; min-height: 16px; margin: 0; padding: 0; accent-color: var(--teal); }
+    .ops-form textarea { min-height: 66px; resize: vertical; }
+    .ops-record-list { display: grid; gap: 0; }
+    .ops-record { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 15px; border-bottom: 1px solid var(--line); }
+    .ops-record:last-child { border-bottom: 0; }
+    .ops-record strong { display: block; font-size: 12px; overflow-wrap: anywhere; }
+    .ops-record small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
+    .ops-record-actions { display: flex; gap: 6px; }
+    .ops-state { display: inline-flex; align-items: center; min-height: 22px; padding: 2px 7px; border-radius: 4px; background: #f1f4f2; color: #66736e; font-size: 10px; }
+    .ops-empty { padding: 28px 15px; color: var(--muted); text-align: center; font-size: 12px; }
+    .ops-note { margin: 0 0 15px; padding: 11px 13px; border-left: 3px solid #d89b2c; background: #fffaf0; color: #745a2e; font-size: 11px; line-height: 1.7; }
+    .ops-split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
     .recorder-strip { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; margin-bottom: 14px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
     .recorder-heading { display: flex; align-items: center; gap: 9px; font-size: 12px; font-weight: 650; }
     .recorder-status { display: inline-flex; align-items: center; gap: 5px; color: #8b7754; font-size: 10px; font-weight: 500; }
@@ -315,6 +342,10 @@
     }
     @media (max-width: 720px) {
       .review-link-pickers { grid-template-columns: minmax(0, 1fr); }
+      .business-subnav { width: 100%; }
+      .business-subnav button { flex: 1; min-width: 0; }
+      .business-connect-row { align-items: flex-start; flex-direction: column; }
+      .ops-grid, .ops-split { grid-template-columns: minmax(0, 1fr); }
       .app-shell { display: block; }
       .sidebar { position: fixed; z-index: 8; left: 0; top: 0; bottom: 0; width: 248px; transform: translateX(-101%); transition: transform .2s; box-shadow: 15px 0 45px rgb(20 40 35 / 12%); }
       .sidebar.mobile-open { transform: translateX(0); }
@@ -371,9 +402,9 @@
       <div class="nav-label">工作台</div>
       <nav class="nav-list" aria-label="主导航">
         <button class="nav-button active" data-view="monitor" aria-current="page"><svg class="ui-icon" aria-hidden="true"><use href="#icon-monitor"/></svg><span>直播监控</span><span class="nav-count" id="navLiveCount">00</span></button>
-        <button class="nav-button" data-view="business"><svg class="ui-icon" aria-hidden="true"><use href="#icon-business"/></svg><span>经营数据</span><span class="nav-count">罗盘</span></button>
+        <button class="nav-button" data-view="business"><svg class="ui-icon" aria-hidden="true"><use href="#icon-business"/></svg><span>经营与复盘</span><span class="nav-count">罗盘</span></button>
+        <button class="nav-button" data-view="operations"><svg class="ui-icon" aria-hidden="true"><use href="#icon-accounts"/></svg><span>团队与店铺</span></button>
         <button class="nav-button" data-view="keywords"><svg class="ui-icon" aria-hidden="true"><use href="#icon-keywords"/></svg><span>热词洞察</span></button>
-        <button class="nav-button" data-view="sessions"><svg class="ui-icon" aria-hidden="true"><use href="#icon-sessions"/></svg><span>场次复盘</span></button>
       </nav>
       <div class="nav-label" style="margin-top:20px">设置</div>
       <nav class="nav-list" aria-label="设置导航">
@@ -449,14 +480,6 @@
           <div class="footer-note">开播与录制状态读取本机 bililive-go；热点榜读取 DailyHotApi。成交与观看人数未接入时显示为空。</div>
         </section>
 
-        <section class="view" id="view-business">
-          <div class="page-head"><div><div class="eyebrow">LIVE BUSINESS DATA</div><h1>经营数据</h1><p class="page-desc">连接自己的罗盘账号，自动同步直播场次、核心指标和商品表现。</p></div><button class="btn primary" id="rpaConnect">＋ 连接罗盘账号</button></div>
-          <div id="rpaStatus" class="rpa-status" role="status" aria-live="polite">正在连接本机采集服务…</div>
-          <div id="rpaWorkspace"></div>
-          <div id="egoWorkspace" style="margin-top:16px"></div>
-          <div id="feishuWorkspace"></div>
-        </section>
-
         <section class="view" id="view-keywords">
           <div class="page-head">
             <div><div class="eyebrow">KEYWORD INTELLIGENCE</div><h1>热词洞察</h1><p class="page-desc">看看大家在聊什么，再从直播字幕里发现你的内容灵感。</p></div>
@@ -474,14 +497,29 @@
             </section>
             <div class="side-stack">
               <section class="panel"><div class="panel-head"><div><div class="panel-title">热词来源</div><div class="panel-subtitle">建议交叉验证，不混算指标</div></div></div><div class="panel-body"><div class="side-list" id="keywordSources"></div></div></section>
-              <section class="panel"><div class="panel-head"><div><div class="panel-title">观察方法</div><div class="panel-subtitle">词热不等于成交</div></div></div><div class="panel-body"><div class="boundary-copy"><strong>趋势：</strong>巨量算数观察平台内容热度。<br><strong>联想：</strong>抖音搜索补充用户问法。<br><strong>竞品：</strong>飞瓜、蝉妈妈观察内容与直播动向。<br><strong>转化：</strong>电商罗盘验证自家搜索流量和成交。<br><br>建议将“相关度”“趋势指数”“搜索来源”和“转化结果”作为不同字段展示。</div><a class="source-link" href="https://www.5118.com/ci/douyin" target="_blank" rel="noreferrer">打开 5118 抖音关键词工具 →</a></div></section>
+              <section class="panel"><div class="panel-head"><div><div class="panel-title">观察方法</div><div class="panel-subtitle">词热不等于成交</div></div></div><div class="panel-body"><div class="boundary-copy"><strong>趋势：</strong>参考公开内容热度。<br><strong>联想：</strong>搜索建议补充用户问法。<br><strong>行业：</strong>经授权的行业报告可辅助观察内容与直播动向。<br><strong>转化：</strong>在自有账号后台核对搜索流量和成交。<br><br>建议将“相关度”“趋势指数”“搜索来源”和“转化结果”作为不同字段展示。</div></div></section>
             </div>
           </div>
           <section id="keywordWorkspace" class="panel transcript-keywords-panel" aria-label="本机转写关键词"></section>
           <div class="footer-note">长尾词仅作为选题线索。热点热度、语料相关度、搜索量和成交结果保持独立口径；本机关键词不会冒充抖音搜索量。</div>
         </section>
 
-        <section class="view" id="view-sessions">
+        <section class="view" id="view-business">
+          <div class="page-head"><div><div class="eyebrow">LIVE BUSINESS & REVIEW</div><h1>经营与复盘</h1><p class="page-desc">把经营表现、录屏素材和场次结论放在同一处查看。</p></div></div>
+          <div class="business-subnav" role="tablist" aria-label="经营与复盘模块">
+            <button id="businessDataTab" type="button" role="tab" aria-selected="true" aria-controls="businessDataPane" tabindex="0" data-business-view="business">经营数据</button>
+            <button id="businessReviewTab" type="button" role="tab" aria-selected="false" aria-controls="view-sessions" tabindex="-1" data-business-view="sessions">场次复盘</button>
+          </div>
+          <div id="businessDataPane" class="business-pane" role="tabpanel" aria-labelledby="businessDataTab">
+            <div class="business-connect-row"><span class="settings-status" id="qianchuanHomeStatus">千川登录：待确认 · 消耗字段待官网核验，未开始对账</span><div class="business-connect-actions"><button class="btn" type="button" data-qianchuan-login>登录千川</button><button class="btn" type="button" data-qianchuan-check>检查登录</button><button class="btn primary" id="rpaConnect">＋ 连接罗盘账号</button></div></div>
+            <section class="rpa-identity" id="rpaIdentity" aria-label="罗盘账号校正"></section>
+            <div id="rpaStatus" class="rpa-status" role="status" aria-live="polite">正在连接本机采集服务…</div>
+            <div id="rpaWorkspace"></div>
+            <div id="egoWorkspace" style="margin-top:16px"></div>
+            <div id="feishuWorkspace"></div>
+          </div>
+
+        <section class="business-pane" id="view-sessions" role="tabpanel" aria-labelledby="businessReviewTab" hidden>
           <div class="page-head"><div><div class="eyebrow">SESSION REVIEW</div><h1>场次复盘</h1><p class="page-desc">找回精彩片段，整理字幕与经营数据，把经验留给下一场。</p></div><div class="button-row"><button class="btn" id="refreshSessions">刷新录屏</button><button class="btn" id="exportSessions">导出清单</button></div></div>
           <div class="notice"><div><strong>录制状态：</strong>此处仅列出本机录制目录中的实际文件。bililive-go 只会对已绑定的直播间链接启动监测和录制。</div></div>
           <section class="panel session-search">
@@ -489,11 +527,20 @@
             <div class="panel-body"><div class="session-search-meta" id="recordingSessionStatus" role="status" aria-live="polite">正在检查录制场次</div><div id="recordingSessionRows"></div></div>
           </section>
           <section class="panel session-search" id="sessionReviewPanel">
-            <div class="panel-head"><div><div class="panel-title">场次复盘记录</div><div class="panel-subtitle">按本机录制场次保存摘要与后续行动</div></div></div>
+            <div class="panel-head"><div><div class="panel-title">场次复盘记录</div><div class="panel-subtitle">按本机录制场次保存摘要、证据与行动</div></div></div>
             <div class="panel-body">
               <form class="review-form" id="sessionReviewForm">
                 <label>录制场次<select id="sessionReviewSelect" required><option value="">选择录制场次</option></select></label>
                 <div class="session-search-meta" id="sessionReviewSource">选择场次后查看录制与归档状态。</div>
+                <section class="review-timeline" aria-label="场次同步时间轴">
+                  <div class="review-timeline-head"><strong>场次时间轴</strong><span id="reviewTimelineStatus" role="status">选择录制场次</span></div>
+                  <div class="review-identity" id="reviewTimelineIdentity"></div>
+                  <div class="review-health" id="reviewTimelineHealth"></div>
+                  <div class="review-cursor"><label for="reviewTimelineCursor">时间光标</label><input id="reviewTimelineCursor" type="range" min="0" max="0" value="0" disabled><output id="reviewTimelineTime">—</output></div>
+                  <div class="review-range"><label>从<input id="reviewTimelineFrom" type="datetime-local" disabled></label><label>至<input id="reviewTimelineTo" type="datetime-local" disabled></label><button class="btn small" id="reviewTimelineFull" type="button" disabled>全场</button></div>
+                  <div class="review-timeline-grid"><div><div class="review-timeline-label">录制片段与事件</div><div id="reviewTimelineSegments"></div><div id="reviewTimelineEvents"></div></div><div><div class="review-timeline-label">经营曲线</div><label class="review-metric-picker">指标<select id="reviewTimelineMetric" disabled></select></label><div id="reviewTimelineChart"></div><div class="review-metric-values" id="reviewTimelineValues"></div></div></div>
+                  <div class="review-timeline-feeds"><div><div class="review-timeline-label">字幕</div><div id="reviewTimelineSubtitles"></div></div><div><div class="review-timeline-label">评论</div><div id="reviewTimelineComments"></div></div><div><div class="review-timeline-label">商品与轮班</div><div id="reviewTimelineProducts"></div></div></div>
+                </section>
                 <div class="review-link" aria-label="罗盘经营场次关联">
                   <div class="review-link-title">关联罗盘经营场次</div>
                   <div class="session-search-meta" id="sessionLinkCurrent">选择录制场次后查看经营数据关联。</div>
@@ -507,7 +554,10 @@
                   <div class="session-search-meta" id="sessionLinkStatus" role="status" aria-live="polite">关联操作不会启动已暂停的罗盘采集。</div>
                 </div>
                 <label>复盘摘要<textarea id="sessionReviewSummary" maxlength="5000" required placeholder="记录可从录屏或字幕核对的事实与判断"></textarea></label>
+                <label>待解决问题<textarea id="sessionReviewIssues" maxlength="3000" placeholder="写下仍需核对的事实或口径"></textarea></label>
+                <div class="review-link-pickers"><label>证据时间点<div class="button-row"><input id="sessionReviewEvidenceAt" type="text" readonly placeholder="—"><button class="btn small" id="sessionReviewUseCursor" type="button" disabled>采用光标</button></div></label><label>负责人<input id="sessionReviewOwner" type="text" maxlength="100" placeholder="填写姓名或岗位"></label></div>
                 <label>后续行动<textarea id="sessionReviewActions" maxlength="3000" placeholder="记录负责人、跟进事项或待核对的问题"></textarea></label>
+                <label>截止日期<input id="sessionReviewDueDate" type="date"></label>
                 <div class="button-row"><button class="btn primary" id="saveSessionReview" type="submit" disabled>保存复盘</button><button class="btn" id="exportSessionReview" type="button" disabled>导出复盘</button></div>
                 <div class="session-search-meta" id="sessionReviewStatus" role="status" aria-live="polite">尚未选择场次。</div>
               </form>
@@ -527,13 +577,47 @@
           </div>
           <div class="footer-note">真实指标应标注来源及更新时间；竞品指标以第三方估算为准，自有账号成交以商家后台为准。</div>
         </section>
+        </section>
+
+        <section class="view" id="view-operations">
+          <div class="page-head"><div><div class="eyebrow">TEAM & COMMERCE</div><h1>团队与店铺</h1><p class="page-desc">在本机维护团队、店铺和排期基础资料。</p></div><div class="button-row"><button class="btn" data-go-view="monitor">管理直播账号</button><button class="btn" data-go-view="business">经营数据</button></div></div>
+          <div class="ops-tabs" role="tablist" aria-label="团队与店铺模块">
+            <button type="button" role="tab" aria-selected="true" aria-controls="ops-team" tabindex="0" data-ops-tab="team">团队与排班</button>
+            <button type="button" role="tab" aria-selected="false" aria-controls="ops-stores" tabindex="-1" data-ops-tab="stores">店铺与商品</button>
+            <button type="button" role="tab" aria-selected="false" aria-controls="ops-brands" tabindex="-1" data-ops-tab="brands">品牌</button>
+            <button type="button" role="tab" aria-selected="false" aria-controls="ops-calendar" tabindex="-1" data-ops-tab="calendar">日历与目标</button>
+          </div>
+          <div class="ops-note"><strong>数据边界：</strong>这里保存的是你在本机维护的人员、排班、店铺、商品、品牌和目标配置。保存这些资料不会授权抖店/快手/微信店铺，也不会生成实际成交、主播排行或退款数据。</div>
+          <section class="ops-pane" id="ops-team" role="tabpanel">
+            <div class="ops-split">
+              <section class="panel"><div class="panel-head"><div><div class="panel-title">团队成员</div><div class="panel-subtitle">维护主播、助播及场控等岗位</div></div></div><form id="opsMemberForm" class="ops-form"><input type="hidden" name="id"><label>成员姓名<input name="name" maxlength="80" required></label><label>岗位<select name="role"><option>主播</option><option>助播</option><option>场控</option><option>中控</option><option>投手</option><option>其他</option></select></label><label>平台<input name="platform" maxlength="40" placeholder="例如：抖音电商"></label><label>关联直播账号<input name="account" maxlength="120" placeholder="只记本地备注，尚未绑定平台身份"></label><label><span><input type="checkbox" name="active" checked> 在职</span></label><div class="button-row"><button class="btn primary" type="submit">保存成员</button><button class="btn" type="reset">清空</button></div><p class="settings-status" id="opsMemberStatus" role="status"></p></form></section>
+              <section class="panel"><div class="panel-head"><div><div class="panel-title">成员列表</div><div class="panel-subtitle">本机基础资料</div></div></div><div id="opsMemberRows" class="ops-record-list"></div></section>
+            </div>
+            <section class="panel session-search"><div class="panel-head"><div><div class="panel-title">主播排行与退款统计</div><div class="panel-subtitle">等待接入已核验的场次负责人、有效订单和退款字段</div></div><span class="ops-state">待经营数据接入</span></div><div class="panel-body"><div class="session-search-meta">目前只有排班成员配置，没有足够的真实场次归属和退款口径；不会用录制时长或排班数量替代主播业绩。</div></div></section>
+            <section class="panel session-search"><div class="panel-head"><div><div class="panel-title">班次安排</div><div class="panel-subtitle">按日期和岗位维护计划；保存后出现在日历</div></div></div><form id="opsShiftForm" class="ops-form ops-split"><input type="hidden" name="id"><label>日期<input type="date" name="date" required></label><label>成员<select name="memberId" id="opsShiftMember" required></select></label><label>开始<input type="time" name="start"></label><label>结束<input type="time" name="end"></label><label>岗位<select name="role"><option>主播</option><option>助播</option><option>场控</option><option>中控</option><option>投手</option></select></label><label>关联直播号<input name="liveAccount" maxlength="120"></label><label>状态<select name="status"><option value="planned">计划</option><option value="live">上播</option><option value="completed">已完成</option><option value="invalid">无效排班</option></select></label><label>备注<input name="notes" maxlength="500"></label><div class="button-row"><button class="btn primary" type="submit">保存排班</button><button class="btn" type="reset">清空</button></div><p class="settings-status" id="opsShiftStatus" role="status"></p></form><div id="opsShiftRows" class="ops-record-list"></div></section>
+          </section>
+          <section class="ops-pane" id="ops-stores" role="tabpanel" hidden>
+            <div class="ops-note">可按店铺所属平台整理本机资料；本地登记不代表平台授权或数据已同步。</div>
+            <div class="ops-grid"><section class="panel"><div class="panel-head"><div><div class="panel-title">店铺资料</div><div class="panel-subtitle">可登记抖店、快手小店、微信小店</div></div></div><form id="opsStoreForm" class="ops-form"><input type="hidden" name="id"><label>店铺名称<input name="name" maxlength="100" required></label><label>平台<select name="platform"><option value="douyin">抖店</option><option value="kuaishou">快手小店</option><option value="wechat">微信小店</option></select></label><label>店铺 ID / 备注<input name="shopId" maxlength="100"></label><label><span><input type="checkbox" name="active" checked> 正在经营</span></label><div class="button-row"><button class="btn primary" type="submit">保存店铺</button><button class="btn" type="reset">清空</button></div><p class="settings-status" id="opsStoreStatus" role="status"></p></form></section><section class="panel"><div class="panel-head"><div><div class="panel-title">已登记店铺</div><div class="panel-subtitle">授权状态需通过平台连接检查确认</div></div></div><div id="opsStoreRows" class="ops-record-list"></div></section></div>
+            <section class="panel session-search"><div class="panel-head"><div><div class="panel-title">商品目录</div><div class="panel-subtitle">本地 SKU 台账，不代表实时库存或成交</div></div></div><form id="opsProductForm" class="ops-form ops-split"><input type="hidden" name="id"><label>所属店铺<select name="storeId" id="opsProductStore" required></select></label><label>商品名称<input name="name" maxlength="120" required></label><label>SKU / 货号<input name="sku" maxlength="100"></label><label>标价<input name="price" maxlength="30" inputmode="decimal"></label><label>状态<select name="status"><option value="active">在售</option><option value="inactive">停售</option></select></label><div class="button-row"><button class="btn primary" type="submit">保存商品</button><button class="btn" type="reset">清空</button></div><p class="settings-status" id="opsProductStatus" role="status"></p></form><div id="opsProductRows" class="ops-record-list"></div></section>
+          </section>
+          <section class="ops-pane" id="ops-brands" role="tabpanel" hidden>
+            <div class="ops-grid"><section class="panel"><div class="panel-head"><div><div class="panel-title">品牌资料</div><div class="panel-subtitle">将品牌与本机登记的店铺建立备注关系</div></div></div><form id="opsBrandForm" class="ops-form"><input type="hidden" name="id"><label>品牌名称<input name="name" maxlength="100" required></label><label>关联店铺<select name="storeId" id="opsBrandStore"></select></label><label>备注<textarea name="notes" maxlength="500"></textarea></label><label><span><input type="checkbox" name="active" checked> 启用</span></label><div class="button-row"><button class="btn primary" type="submit">保存品牌</button><button class="btn" type="reset">清空</button></div><p class="settings-status" id="opsBrandStatus" role="status"></p></form></section><section class="panel"><div class="panel-head"><div><div class="panel-title">品牌列表</div><div class="panel-subtitle">本机配置</div></div></div><div id="opsBrandRows" class="ops-record-list"></div></section></div>
+            <section class="panel session-search"><div class="panel-head"><div><div class="panel-title">投放账号</div><div class="panel-subtitle">巨量千川自动接入当前暂停</div></div><span class="ops-state">等待恢复选户</span></div><div class="panel-body"><div class="session-search-meta">此前确认保持暂停。不会自动选择广告账户或把投放数据绑定到相似名称的主播。</div><button class="btn" type="button" data-go-view="sources">查看数据源状态</button></div></section>
+          </section>
+          <section class="ops-pane" id="ops-calendar" role="tabpanel" hidden>
+            <div class="ops-grid"><section class="panel"><div class="panel-head"><div><div class="panel-title">直播目标</div><div class="panel-subtitle">目标与实绩分开保存</div></div></div><form id="opsGoalForm" class="ops-form"><input type="hidden" name="id"><label>日期<input type="date" name="date" required></label><label>账号<input name="account" maxlength="120" required></label><label>目标成交额（元）<input name="targetGmv" maxlength="16" inputmode="numeric"></label><label>目标订单数<input name="targetOrders" maxlength="16" inputmode="numeric"></label><label>备注<textarea name="notes" maxlength="500"></textarea></label><div class="button-row"><button class="btn primary" type="submit">保存目标</button><button class="btn" type="reset">清空</button></div><p class="settings-status" id="opsGoalStatus" role="status"></p></form></section><section class="panel"><div class="panel-head"><div><div class="panel-title">目标与排班日历</div><div class="panel-subtitle">显示本机保存的计划，尚未与平台场次自动同步</div></div></div><div id="opsCalendarRows" class="ops-record-list"></div></section></div>
+            <section class="panel session-search"><div class="panel-head"><div><div class="panel-title">直播号与直播间</div><div class="panel-subtitle">已有主页检测和录制流程</div></div></div><div class="panel-body"><div class="session-search-meta">账号监测、直播间发现、录制状态和本场复盘继续使用现有功能。跨平台账号导入和本机分组仍待接入。</div><button class="btn primary" type="button" data-go-view="monitor">打开直播监控</button></div></section>
+          </section>
+          <div class="footer-note">成员、店铺、品牌、商品、排班和目标仅保存在本机数据目录；不纳入 GitHub 源码。直播账号和实时经营数据仍分别读取现有监控与罗盘连接。</div>
+        </section>
 
         <section class="view" id="view-sources">
           <div class="page-head"><div><div class="eyebrow">DATA CONNECTORS</div><h1>数据源接入</h1><p class="page-desc">查看本机组件、账号采集和表格同步的实际状态。</p></div><button class="btn" id="checkSourceStatus">检查数据源状态</button></div>
-          <div class="notice"><div><strong>本机服务：</strong>状态和热点数据通过回环地址转发，服务仅监听本机。罗盘请到“经营数据”登录；其他经营报表和第三方数据源需各自授权或接口，未接入项会明确显示状态。</div></div>
+          <div class="notice"><div><strong>本机服务：</strong>状态和热点数据通过回环地址转发，服务仅监听本机。罗盘请到“经营与复盘 → 经营数据”登录；其他经营报表和第三方数据源需各自授权或接口，未接入项会明确显示状态。</div></div>
           <p class="settings-status" id="sourceCheckedAt" role="status">等待本机状态检查</p>
           <div class="data-source-grid" id="sourceCards"></div>
-          <div class="footer-note">bililive-go、DailyHotApi、FFmpeg 与 whisper.cpp 的连接状态可在本页或运行设置中查看；罗盘采集请在“经营数据”中登录并管理。KeyBERT 可在热词洞察安装并分析本机转写语料；巨量算数、飞瓜和蝉妈妈尚未接入。</div>
+          <div class="footer-note">bililive-go、DailyHotApi、FFmpeg 与 whisper.cpp 的连接状态可在本页或运行设置中查看；罗盘采集请在“经营与复盘 → 经营数据”中登录并管理。KeyBERT 可在热词洞察安装并分析本机转写语料；外部行业报告和平台内容趋势尚未接入。</div>
         </section>
 
         <section class="view" id="view-settings">
@@ -543,7 +627,7 @@
               <div class="panel-head"><div><div class="panel-title">本机组件安装</div><div class="panel-subtitle">为录制、压缩、离线字幕和罗盘采集准备运行工具</div></div><span class="tag" id="dependencyBadge" role="status">检查中</span></div>
               <div class="panel-body">
                 <div id="dependencyItems" class="button-row" style="flex-wrap:wrap"></div>
-                <p class="recorder-description">支持 Apple Silicon Mac。首次下载数百 MB，并编译离线转写工具；需要 Apple 命令行工具。已有工具与保存设置会保留，安装完成后再连接账号和录制器。</p>
+                <p class="recorder-description">支持 Apple Silicon Mac 与 Windows x64。首次下载数百 MB，并编译离线转写工具；Mac 需要 Apple 命令行工具，Windows 需要 Visual Studio C++ Build Tools。已有工具与保存设置会保留，安装完成后再连接账号和录制器。</p>
                 <div class="button-row" style="flex-wrap:wrap"><button class="btn primary" id="installDependencies" type="button" disabled>安装缺少的组件</button><button class="btn" id="checkDependencies" type="button">检查安装状态</button><a class="source-link" href="https://www.google.com/chrome/" target="_blank" rel="noopener noreferrer">安装 Google Chrome ↗</a></div>
                 <p class="settings-status" id="dependencyMessage" role="status" aria-live="polite"></p>
                 <details id="dependencyLogWrap" hidden><summary>查看安装日志</summary><pre id="dependencyLog" style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:240px;overflow:auto"></pre></details>
@@ -583,7 +667,7 @@
               <div class="panel-head"><div><div class="panel-title">bililive-go</div><div class="panel-subtitle">直播监测、录制、分段与录制后处理</div></div><span class="tag" id="bgoSettingsBadge">读取中</span></div>
               <div class="settings-grid">
                 <div class="setting-field"><label for="bgoInterval">开播检查间隔（秒）</label><input id="bgoInterval" type="number" min="5" max="300" step="1"></div>
-                <div class="setting-field"><label for="recordingPath">录制保存目录</label><div class="input-action"><input id="recordingPath" type="text" autocomplete="off"><div class="button-row"><button class="btn small" id="openRecordingPath" type="button" title="在 Finder 中打开当前保存目录">打开文件夹</button><button class="btn small" id="chooseRecordingPath" type="button" title="更改保存目录">更改…</button></div></div><div class="setting-help">打开文件夹可直接查看录屏；更改目录后保存并应用，正在录制的场次不受影响。</div></div>
+                <div class="setting-field"><label for="recordingPath">录制保存目录</label><div class="input-action"><input id="recordingPath" type="text" autocomplete="off"><div class="button-row"><button class="btn small" id="openRecordingPath" type="button" title="在文件管理器中打开当前保存目录">打开文件夹</button><button class="btn small" id="chooseRecordingPath" type="button" title="更改保存目录">更改…</button></div></div><div class="setting-help">打开文件夹可直接查看录屏；更改目录后保存并应用，正在录制的场次不受影响。</div></div>
                 <div class="setting-field"><label for="ffmpegPath">FFmpeg 程序路径</label><input id="ffmpegPath" type="text" autocomplete="off"><div class="setting-help">留空使用插件默认查找方式。</div></div>
                 <div class="setting-field"><label for="outputTemplate">录制文件名模板</label><input id="outputTemplate" type="text" autocomplete="off"><div class="setting-help">留空使用 bililive-go 默认模板。</div></div>
                 <div class="setting-field"><label for="maxDuration">单文件最长时长（秒）</label><input id="maxDuration" type="number" min="0" max="86400" step="60"><div class="setting-help">长时间连续录制请设为 0（不限时长）；3600 表示每段最多一小时。断流重连仍可能生成新文件。</div></div>
@@ -612,7 +696,7 @@
             </section>
             <div class="button-row"><button class="btn primary" id="saveSettings">保存设置</button></div>
           </div>
-          <div class="footer-note">罗盘账号和采集频率在“经营数据”页面管理。录制参数保存后，可通过上方“保存并应用设置”生效；录制器离线时，点击“启动并连接”即可使用已保存设置。处理队列会等待录屏结束后压缩，源文件清理设置保存后生效；压缩视频、转写文本和字幕会保留。</div>
+          <div class="footer-note">罗盘账号和采集频率在“经营与复盘 → 经营数据”中管理。录制参数保存后，可通过上方“保存并应用设置”生效；录制器离线时，点击“启动并连接”即可使用已保存设置。处理队列会等待录屏结束后压缩，源文件清理设置保存后生效；压缩视频、转写文本和字幕会保留。</div>
         </section>
       </div>
     </main>
@@ -629,13 +713,13 @@
       {id:"dailyhot", name:"DailyHotApi", short:"热", desc:"抖音当前热点榜", status:"检查中", cls:"", note:"公开热点榜", detail:"读取公开热点榜及热度值；不提供关键词搜索量、长尾词扩展或关联度。"},
       {id:"buzz", name:"whisper.cpp", short:"转", desc:"Apple Silicon 本地语音转写", status:"检查中", cls:"", note:"离线中文转写", detail:"本地运行多语言 Whisper 模型；录屏先压缩，再从压缩视频提取音轨转写为 TXT 和 SRT。"},
       {id:"keybert", name:"KeyBERT", short:"词", desc:"转写语料关键词提取", status:"检查中", cls:"", note:"本地文本分析", detail:"从本机 TXT / SRT 转写语料抽取关键词并保留出处；不会提供抖音实时热搜或真实搜索量。"},
-      {id:"playwright", name:"本机采集器", short:"RPA", desc:"罗盘后台自动同步", status:"检查中", cls:"", note:"数据保存在本机", detail:"在独立浏览器窗口登录罗盘后，自动采集直播场次和经营指标。在“经营数据”中管理连接与同步频率。"},
+      {id:"playwright", name:"本机采集器", short:"RPA", desc:"罗盘后台自动同步", status:"检查中", cls:"", note:"数据保存在本机", detail:"在独立浏览器窗口登录罗盘后，自动采集直播场次和经营指标。在“经营与复盘 → 经营数据”中管理连接与同步频率。"},
       {id:"compass", name:"电商罗盘", short:"罗", desc:"自己账号的直播经营数据", status:"检查中", cls:"", note:"第一方实绩", detail:"使用你在本机登录的罗盘会话，采集该账号可查看的直播指标、商品表现和场次状态。"},
-      {id:"feishu", name:"飞书多维表格", short:"表", desc:"罗盘场次自动同步", status:"检查中", cls:"", note:"官方开放接口", detail:"按账号和场次更新同一行；同步开关、目标表格、字段与失败原因在经营数据中管理。"},
+      {id:"feishu", name:"飞书多维表格", short:"表", desc:"罗盘场次自动同步", status:"检查中", cls:"", note:"官方开放接口", detail:"按账号和场次更新同一行；同步开关、目标表格、字段与失败原因在经营与复盘 → 经营数据中管理。"},
       {id:"qianchuan", name:"巨量千川", short:"川", desc:"广告消耗与投放报表", status:"未接入", cls:"", note:"自动采集待接入", detail:"尚未集成自动消耗采集或广告账户绑定。经营数据中的 Ego 记录只表示此前人工核验结果，不代表实时连接。"},
-      {id:"feigua", name:"飞瓜数据", short:"飞", desc:"竞品内容与直播数据", status:"未接入", cls:"estimate", note:"第三方估算", detail:"需有效产品账号和授权方式；第三方估算不能当作自家真实成交。"},
-      {id:"chanmama", name:"蝉妈妈", short:"蝉", desc:"行业与商品趋势", status:"未接入", cls:"estimate", note:"第三方估算", detail:"需有效产品账号和授权方式；本机尚未建立官方连接。"},
-      {id:"juliang", name:"巨量算数", short:"巨", desc:"平台内容趋势洞察", status:"未接入", cls:"", note:"趋势指数", detail:"可用于平台趋势参照；指数不等同于店铺搜索量或成交数据。"}
+      {id:"industryContent", name:"行业内容数据", short:"行", desc:"行业内容与直播趋势", status:"未接入", cls:"estimate", note:"第三方估算", detail:"需要合法数据来源和授权；行业估算不能当作自家真实成交。"},
+      {id:"industryProduct", name:"行业商品数据", short:"商", desc:"行业与商品趋势", status:"未接入", cls:"estimate", note:"第三方估算", detail:"需要合法数据来源和授权；本机尚未建立连接。"},
+      {id:"platformTrends", name:"平台内容趋势", short:"趋", desc:"公开内容趋势", status:"未接入", cls:"", note:"趋势指数", detail:"趋势指数不等同于店铺搜索量或成交数据。"}
     ];
     let accounts = [];
     let selectedId = null;
@@ -756,7 +840,7 @@
         playwright: [serviceState.playwright?.label || "状态待确认", serviceState.playwright?.connected ? "ready" : ""],
         compass: [serviceState.compass?.label || "状态待确认", serviceState.compass?.state === "ready" ? "ready" : ""],
         feishu: [serviceState.feishu?.label || "状态待确认", serviceState.feishu?.state === "ready" ? "ready" : ""],
-        qianchuan: ["未接入", ""], feigua: ["未接入", "estimate"], chanmama: ["未接入", "estimate"], juliang: ["未接入", ""]
+        qianchuan: ["未接入", ""], industryContent: ["未接入", "estimate"], industryProduct: ["未接入", "estimate"], platformTrends: ["未接入", ""]
       };
       const actions = {bililive:"管理录制器", dailyhot:"管理热点服务", buzz:"安装 / 检查组件", keybert:"打开关键词分析", playwright:"管理采集账号", compass:"管理罗盘采集", feishu:"管理表格同步"};
       sources.forEach(source => {
@@ -995,7 +1079,7 @@
       button.disabled = true;
       try {
         await apiRequest("/api/recordings/open-directory", {method:"POST", body:"{}"});
-        toast("已在 Finder 中打开录制保存目录");
+        toast("已在文件管理器中打开录制保存目录");
       } catch (error) {
         toast(error.message);
       } finally {
@@ -1086,7 +1170,7 @@
       });
     }
     function renderSessions() {
-      document.getElementById("sessionRows").innerHTML = sessions.length ? sessions.map(file => `<tr><td><div class="account-name">${esc(file.name)}</div><div class="account-id">${esc(file.path)}</div></td><td>${formatTime(file.modified)}</td><td>${formatBytes(file.size)}</td><td><button class="table-action" type="button" data-recording-path="${esc(file.path)}" title="在 Finder 中显示此文件">打开文件位置</button></td></tr>`).join("") : `<tr><td colspan="4"><div class="table-empty">录制目录中还没有视频文件</div></td></tr>`;
+      document.getElementById("sessionRows").innerHTML = sessions.length ? sessions.map(file => `<tr><td><div class="account-name">${esc(file.name)}</div><div class="account-id">${esc(file.path)}</div></td><td>${formatTime(file.modified)}</td><td>${formatBytes(file.size)}</td><td><button class="table-action" type="button" data-recording-path="${esc(file.path)}" title="在文件管理器中显示此文件">打开文件位置</button></td></tr>`).join("") : `<tr><td colspan="4"><div class="table-empty">录制目录中还没有视频文件</div></td></tr>`;
       refreshMediaJobs();
     }
     async function searchSessionSubtitles() {
@@ -1164,13 +1248,21 @@
     function switchView(name) {
       const fromMobileNavigation = document.body.classList.contains("nav-open");
       currentView = name;
-      document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === `view-${name}`));
+      const topLevelView = name === "sessions" ? "business" : name;
+      document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === `view-${topLevelView}`));
+      const showingReview = name === "sessions";
+      document.getElementById("businessDataPane").hidden = showingReview;
+      document.getElementById("view-sessions").hidden = !showingReview;
+      document.getElementById("businessDataTab").setAttribute("aria-selected", String(!showingReview));
+      document.getElementById("businessDataTab").tabIndex = showingReview ? -1 : 0;
+      document.getElementById("businessReviewTab").setAttribute("aria-selected", String(showingReview));
+      document.getElementById("businessReviewTab").tabIndex = showingReview ? 0 : -1;
       document.querySelectorAll(".nav-button[data-view]").forEach(b => {
-        b.classList.toggle("active", b.dataset.view === name);
-        if (b.dataset.view === name) b.setAttribute("aria-current", "page");
+        b.classList.toggle("active", b.dataset.view === topLevelView);
+        if (b.dataset.view === topLevelView) b.setAttribute("aria-current", "page");
         else b.removeAttribute("aria-current");
       });
-      const labels = {monitor:"直播监控", business:"经营数据", keywords:"热词洞察", sessions:"场次复盘", sources:"数据源接入", settings:"运行设置"};
+      const labels = {monitor:"直播监控", business:"经营与复盘", operations:"团队与店铺", keywords:"热词洞察", sessions:"经营与复盘", sources:"数据源接入", settings:"运行设置"};
       document.getElementById("breadcrumbTitle").textContent = labels[name];
       setNavigation(false);
       if (fromMobileNavigation) document.getElementById("mainContent").focus({preventScroll:true});
@@ -1180,10 +1272,11 @@
       if (name === "settings") refreshSettings();
       if (["monitor", "settings"].includes(name)) refreshRecorder();
       if (name === "business") { window.LiveRpa?.refresh(); window.LiveFeishu?.refresh(); }
+      if (name === "operations") window.LiveOperations?.refresh();
       history.replaceState(null, "", "#" + name);
       window.scrollTo({top:0, behavior:matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth"});
     }
-    const validViews = new Set(["monitor", "business", "keywords", "sessions", "sources", "settings"]);
+    const validViews = new Set(["monitor", "business", "operations", "keywords", "sessions", "sources", "settings"]);
     window.addEventListener("hashchange", () => {
       const view = window.location.hash.slice(1);
       if (validViews.has(view) && view !== currentView) switchView(view);
@@ -1242,6 +1335,16 @@
     }
     document.querySelectorAll(".nav-button[data-view]").forEach(b => b.addEventListener("click", () => switchView(b.dataset.view)));
     document.querySelectorAll("[data-go-view]").forEach(b => b.addEventListener("click", () => switchView(b.dataset.goView)));
+    document.querySelectorAll("[data-business-view]").forEach(tab => tab.addEventListener("click", () => switchView(tab.dataset.businessView)));
+    document.querySelector(".business-subnav[role='tablist']").addEventListener("keydown", event => {
+      const tabs = [...event.currentTarget.querySelectorAll("[role='tab']")];
+      const current = tabs.indexOf(document.activeElement);
+      if (current < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (current + (event.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length;
+      tabs[next].focus();
+      switchView(tabs[next].dataset.businessView);
+    });
     document.querySelectorAll("[data-recorder-action]").forEach(b => b.addEventListener("click", () => runRecorderAction(b.dataset.recorderAction)));
     function setNavigation(open) {
       const mobile = matchMedia("(max-width: 720px)").matches;
@@ -1304,7 +1407,7 @@
       button.disabled = true;
       try {
         await apiRequest("/api/recordings/reveal", {method:"POST", body:JSON.stringify({path:button.dataset.recordingPath})});
-        toast("已在 Finder 中显示录屏文件");
+        toast("已在文件管理器中显示录屏文件");
       } catch (error) { toast(error.message); }
       finally { button.disabled = false; }
     });
@@ -1328,6 +1431,8 @@
   <script src="/dependency-ui.js"></script>
   <script src="/hot-service-ui.js"></script>
   <script src="/recording-sessions-ui.js"></script>
+  <script src="/session-timeline-ui.js"></script>
+  <script src="/operations-ui.js"></script>
   <script src="/keyword-ui.js"></script>
 </body>
 </html>

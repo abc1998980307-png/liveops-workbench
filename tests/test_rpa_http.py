@@ -10,6 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import server
+from qianchuan_account import QianchuanAccountStore
 
 
 class FakeCollector:
@@ -61,6 +62,13 @@ class RpaHttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(data)["method"], "history.summary")
         self.assertEqual(json.loads(data)["args"], {"account": "a", "startDate": "2026-08-13", "endDate": "2026-11-10"})
+        status, data = self.request("GET", "/api/rpa/room-workspace?accounts=a,b&startDate=2026-11-01&endDate=2026-11-10&omitLive=1&sortBy=pay_amt&sortDirection=asc&offset=10&limit=20")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data)["method"], "room.workspace")
+        self.assertEqual(json.loads(data)["args"], {"accounts": ["a", "b"], "startDate": "2026-11-01",
+                                                      "endDate": "2026-11-10", "omitLive": True,
+                                                      "sortBy": "pay_amt", "sortDirection": "asc",
+                                                      "offset": "10", "limit": "20"})
 
     def test_cross_site_and_untrusted_host_rejected(self):
         status, _ = self.request("GET", "/api/rpa/state", headers={"Host": "attacker.example"})
@@ -77,6 +85,22 @@ class RpaHttpTests(unittest.TestCase):
         status, _ = self.request("POST", "/api/rpa/accounts/x/login", "{}", {"Content-Type":"application/json"})
         self.assertEqual(status, 404)
 
+    def test_target_and_live_identity_verification_routes(self):
+        headers = {"Content-Type": "application/json"}
+        status, data = self.request("POST", "/api/rpa/target", json.dumps({"name": "目标直播号"}).encode(), headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data)["method"], "target.set")
+        self.assertEqual(json.loads(data)["args"], {"name": "目标直播号"})
+        account = "0" * 8 + "-" + "0" * 4 + "-4000-8000-" + "0" * 11 + "1"
+        status, data = self.request("POST", f"/api/rpa/accounts/{account}/verify", b"{}", headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data)["method"], "verify")
+        status, data = self.request("POST", "/api/rpa/target", json.dumps({"verifiedAccount": account}).encode(), headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data)["method"], "target.confirm")
+        self.assertEqual(self.request("POST", "/api/rpa/target", b"{}", {**headers,
+            "Origin": "https://attacker.example"})[0], 403)
+
     def test_history_route_is_explicit_and_same_origin_only(self):
         account = "00000000-0000-4000-8000-000000000001"
         route = f"/api/rpa/accounts/{account}/history"
@@ -84,6 +108,7 @@ class RpaHttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(data)["method"], "history.page")
         self.assertEqual(json.loads(data)["args"], {"reset": True, "id": account})
+
         status, data = self.request("POST", route,
                                     b'{"reset":true,"startDate":"2026-11-01","endDate":"2026-11-10"}',
                                     {"Content-Type": "application/json"})
@@ -109,6 +134,75 @@ class RpaHttpTests(unittest.TestCase):
         status, _ = self.request("POST", report_route, b"{}",
                                  {"Origin": "https://attacker.example", "Content-Type": "application/json"})
         self.assertEqual(status, 403)
+
+    def test_qianchuan_login_route_uses_fixed_local_provider_action(self):
+        status, data = self.request("POST", "/api/rpa/providers/qianchuan/login", "{}", {"Content-Type": "application/json"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data), {"method": "provider.qianchuan.login", "args": {}, "accounts": []})
+        self.assertEqual(self.request("POST", "/api/rpa/providers/qianchuan/login", "{}", {
+            "Content-Type": "application/json", "Origin": "https://attacker.example",
+        })[0], 403)
+        status, data = self.request("GET", "/api/rpa/providers/qianchuan/status")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data)["method"], "provider.qianchuan.status")
+
+    def test_qianchuan_current_account_is_local_and_masked(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(server, "QIANCHUAN_ACCOUNT", QianchuanAccountStore(directory)):
+            account_id = "8" * 12
+            route = "/api/rpa/providers/qianchuan/account"
+            status, data = self.request("GET", route)
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(data), {"configured": False, "name": "", "maskedId": ""})
+            payload = json.dumps({"name": "合成户", "accountId": account_id}).encode()
+            status, data = self.request("POST", route, payload, {"Content-Type": "application/json"})
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(data), {"configured": True, "name": "合成户", "maskedId": "********8888"})
+            self.assertNotIn(account_id.encode(), data)
+            status, data = self.request("GET", route)
+            self.assertEqual(status, 200)
+            self.assertNotIn(account_id.encode(), data)
+            self.assertEqual(json.loads(data)["name"], "合成户")
+            self.assertEqual(self.request("POST", route, payload, {"Content-Type": "application/json",
+                "Origin": "https://attacker.example"})[0], 403)
+            self.assertEqual(self.request("GET", route, headers={"Host": "attacker.example"})[0], 403)
+            status, data = self.request("POST", route, b'{"clear":true}', {"Content-Type": "application/json"})
+            self.assertEqual(status, 200)
+            self.assertFalse(json.loads(data)["configured"])
+            self.assertEqual(json.loads(self.request("GET", route)[1]), {"configured": False, "name": "", "maskedId": ""})
+        status, data = self.request("POST", "/api/rpa/providers/qianchuan/check", "{}", {"Content-Type": "application/json"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data)["method"], "provider.qianchuan.check")
+        self.assertEqual(self.request("GET", "/api/rpa/providers/qianchuan/status", headers={"Host": "attacker.example"})[0], 403)
+        self.assertEqual(self.request("POST", "/api/rpa/providers/qianchuan/check", "{}", {
+            "Content-Type": "application/json", "Origin": "https://attacker.example",
+        })[0], 403)
+
+    def test_qianchuan_enter_uses_only_saved_id(self):
+        route = "/api/rpa/providers/qianchuan/enter"
+        headers = {"Content-Type": "application/json"}
+        account_id = "0" * 16
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(server, "QIANCHUAN_ACCOUNT", QianchuanAccountStore(directory)), \
+             mock.patch.object(server, "COLLECTOR") as collector:
+            collector.call.return_value = {"state": "entered"}
+            status, data = self.request("POST", route, "{}", headers)
+            self.assertEqual(status, 400)
+            self.assertIn("填写并保存户 ID", json.loads(data)["error"])
+            collector.call.assert_not_called()
+            server.QIANCHUAN_ACCOUNT.save({"name": "仅名称", "accountId": ""})
+            self.assertEqual(self.request("POST", route, "{}", headers)[0], 400)
+            server.QIANCHUAN_ACCOUNT.save({"name": "合成户", "accountId": account_id})
+            status, data = self.request("POST", route, json.dumps({"accountId": "1" * 16}), headers)
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(data), {"state": "entered"})
+            self.assertNotIn(account_id.encode(), data)
+            collector.call.assert_called_once_with("provider.qianchuan.enter", {"accountId": account_id}, timeout=60)
+            self.assertEqual(self.request("POST", route, "{}", {**headers, "Origin": "https://attacker.example"})[0], 403)
+            self.assertEqual(self.request("POST", route, "{}", {**headers, "Host": "attacker.example"})[0], 403)
+            collector.call.side_effect = RuntimeError("切换失败 " + account_id)
+            status, data = self.request("POST", route, "{}", headers)
+            self.assertEqual(status, 503)
+            self.assertNotIn(account_id.encode(), data)
 
     def test_profile_link_account_can_be_created_and_monitored_without_room_url(self):
         profile_id = "MS4wLjABAAAA1234567890"

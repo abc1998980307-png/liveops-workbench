@@ -218,7 +218,7 @@ class RecordingArchiveManager:
         if not ffmpeg:
             raise RuntimeError("FFmpeg 未配置")
         list_path = output.with_suffix(".concat.txt")
-        list_path.write_text("\n".join("file '" + str(path).replace("'", "'\\''") + "'" for path in inputs) + "\n", encoding="utf-8")
+        list_path.write_text("\n".join("file '" + str(path).replace("\\", "/").replace("'", "'\\''") + "'" for path in inputs) + "\n", encoding="utf-8")
         runner = getattr(self.pipeline, "run_command", None)
 
         def run(command):
@@ -577,7 +577,7 @@ class RecordingArchiveManager:
             path = value.pop(key, None)
             if path:
                 try:
-                    value[key + "Path"] = str(self._safe_file(path, root).relative_to(root))
+                    value[key + "Path"] = self._safe_file(path, root).relative_to(root).as_posix()
                 except (OSError, ValueError):
                     value[key + "Path"] = None
         for key in ("segments", "temp", "outputSignatures"):

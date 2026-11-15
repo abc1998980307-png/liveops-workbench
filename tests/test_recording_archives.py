@@ -127,6 +127,31 @@ class RecordingArchiveTests(unittest.TestCase):
         self.assertEqual(manifest["gaps"][0]["status"], "unknown")
         self.assertIn("没有被补回", manifest["note"])
 
+    def test_concat_list_uses_ffmpeg_compatible_slashes_for_windows_paths(self):
+        import recording_archives
+        recorded = {}
+
+        class CapturePath:
+            def __init__(self, text):
+                self.text = text
+            def __str__(self):
+                return self.text
+
+        def capture(path, text, encoding):
+            recorded["text"] = text
+            self.assertEqual(encoding, "utf-8")
+
+        original_run = self.pipeline.run_command
+        def run(command, cancel_event=None):
+            original_run(command, cancel_event=cancel_event)
+
+        self.pipeline.run_command = run
+        with mock.patch.object(recording_archives.Path, "write_text", autospec=True,
+                               side_effect=capture):
+            self.manager._merge_video([CapturePath(r"C:\录屏目录\一.mp4")],
+                                      self.recordings / "joined.mp4")
+        self.assertIn("file 'C:/录屏目录/一.mp4'", recorded["text"])
+
     def test_archive_is_idempotent_and_rejects_active_or_changed_input(self):
         self.manager.create(self.session["id"])
         self.manager.create(self.session["id"])
@@ -365,6 +390,8 @@ class RecordingArchiveTests(unittest.TestCase):
         self.assertEqual(self.manager.file.read_text(), "broken queue")
 
     def test_real_ffmpeg_merge_preserves_audio_and_uses_container_duration(self):
+        if not media_pipeline.FFMPEG.is_file():
+            self.skipTest("FFmpeg is not installed in the isolated test data root")
         ffmpeg = str(media_pipeline.FFMPEG)
         real_root = self.recordings / "real"
         real_root.mkdir()

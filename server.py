@@ -19,6 +19,7 @@ import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from platform_support import tool_path
 from douyin_profile import ProfileLookupError, normalize_profile_link, profile_state_from_response
 from rpa_bridge import COLLECTOR
 from recorder_service import RecorderManager, RecorderError
@@ -28,9 +29,12 @@ from recording_sessions import RecordingSessions
 from recording_archives import RecordingArchiveManager
 from session_reviews import SessionReviews, ReviewStoreError
 from session_links import SessionLinks, LinkStoreError
+from session_timeline import SessionTimeline
 from keyword_service import KeywordService
 from hot_service import HotService, HotServiceError
 from service_status import compass_status, feishu_status
+from operations_workspace import OperationsWorkspace, WorkspaceError
+from qianchuan_account import QianchuanAccountStore
 
 
 ROOT = Path(__file__).resolve().parent
@@ -84,6 +88,9 @@ RECORDING_ARCHIVES = RecordingArchiveManager(DATA_ROOT, RECORDING_SESSIONS, MEDI
 SESSION_LINKS = SessionLinks(DATA_ROOT, RECORDING_SESSIONS,
                              lambda account, room: COLLECTOR.call("room.review", {"account": account, "room": room}, timeout=5))
 SESSION_REVIEWS = SessionReviews(DATA_ROOT, RECORDING_SESSIONS, RECORDING_ARCHIVES, links=SESSION_LINKS)
+SESSION_TIMELINE = SessionTimeline(RECORDING_SESSIONS, RECORDING_ARCHIVES, SESSION_LINKS)
+OPERATIONS_WORKSPACE = OperationsWorkspace(DATA_ROOT)
+QIANCHUAN_ACCOUNT = QianchuanAccountStore(DATA_ROOT)
 
 
 def read_accounts():
@@ -193,7 +200,7 @@ def selected_bgo_settings(config):
     return {
         "interval": config.get("interval", 20),
         "out_put_path": config.get("out_put_path", str(RECORDINGS)),
-        "ffmpeg_path": config.get("ffmpeg_path") or str(DATA_ROOT / "tools/imageio-ffmpeg/imageio_ffmpeg/binaries/ffmpeg-macos-aarch64-v7.1"),
+        "ffmpeg_path": config.get("ffmpeg_path") or str(tool_path("ffmpeg")),
         "out_put_tmpl": config.get("out_put_tmpl", ""),
         "split_on_title": bool(split.get("on_room_name_changed", False)),
         "max_duration": duration_seconds(split.get("max_duration", 0)),
@@ -553,16 +560,16 @@ def recording_files():
             continue
         results.append({
             "name": path.name,
-            "path": str(path.relative_to(root)),
+            "path": path.relative_to(root).as_posix(),
             "size": stat.st_size,
             "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
-            "url": "/recordings/" + urllib.parse.quote(str(path.relative_to(root))),
+            "url": "/recordings/" + urllib.parse.quote(path.relative_to(root).as_posix()),
         })
     return sorted(results, key=lambda item: item["modified"], reverse=True)
 
 
 def reveal_recording(relative_path):
-    """Ask Finder to reveal a file listed inside the configured recordings directory."""
+    """Reveal a file listed inside the configured recordings directory."""
     if not isinstance(relative_path, str) or not relative_path.strip():
         raise ValueError("请选择一个录屏文件")
     relative = Path(relative_path)
@@ -575,14 +582,20 @@ def reveal_recording(relative_path):
         raise PermissionError("只能打开录制目录内的文件")
     if not candidate.is_file():
         raise IsADirectoryError("请选择一个录屏文件")
-    subprocess.run(["/usr/bin/open", "-R", str(candidate)], check=True, timeout=10)
+    if sys.platform == "win32":
+        subprocess.run(["explorer.exe", "/select,", str(candidate)], check=True, timeout=10)
+    else:
+        subprocess.run(["/usr/bin/open", "-R", str(candidate)], check=True, timeout=10)
 
 
 def open_recording_directory():
     directory = recording_directory().resolve(strict=True)
     if not directory.is_dir():
         raise NotADirectoryError("录制保存目录不可用")
-    subprocess.run(["/usr/bin/open", str(directory)], check=True, timeout=10)
+    if sys.platform == "win32":
+        os.startfile(str(directory))
+    else:
+        subprocess.run(["/usr/bin/open", str(directory)], check=True, timeout=10)
 
 
 def _subtitle_seconds(value):
@@ -596,7 +609,7 @@ def _subtitle_seconds(value):
 
 
 def _playable_video_index():
-    """Match local media for Finder; omit ambiguous cross-platform matches."""
+    """Match local media for file-manager actions; omit ambiguous cross-platform matches."""
     root = recording_directory().resolve()
     index = {}
     media_extensions = {".mp4", ".m4v", ".mov", ".flv", ".mkv", ".ts", ".aac", ".mp3"}
@@ -754,12 +767,24 @@ def recording_directory():
 
 
 def choose_recording_directory():
-    script = 'POSIX path of (choose folder with prompt "选择直播录屏保存文件夹")'
-    result = subprocess.run(["/usr/bin/osascript", "-e", script], capture_output=True, text=True, timeout=180)
-    if result.returncode != 0:
-        if "-128" in result.stderr:
+    if sys.platform == "win32":
+        script = ('[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); '
+                  'Add-Type -AssemblyName System.Windows.Forms; '
+                  '$dialog=New-Object System.Windows.Forms.FolderBrowserDialog; '
+                  'if ($dialog.ShowDialog() -eq "OK") { [Console]::Write($dialog.SelectedPath) }')
+        result = subprocess.run(["powershell.exe", "-NoProfile", "-STA", "-Command", script],
+                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+        if result.returncode != 0:
+            raise RuntimeError("无法打开系统文件夹选择器")
+        if not result.stdout.strip():
             return None
-        raise RuntimeError("无法打开系统文件夹选择器")
+    else:
+        script = 'POSIX path of (choose folder with prompt "选择直播录屏保存文件夹")'
+        result = subprocess.run(["/usr/bin/osascript", "-e", script], capture_output=True, text=True, timeout=180)
+        if result.returncode != 0:
+            if "-128" in result.stderr:
+                return None
+            raise RuntimeError("无法打开系统文件夹选择器")
     selected = Path(result.stdout.strip()).expanduser()
     if not selected.is_absolute() or not selected.is_dir():
         raise ValueError("选择的录屏目录不存在")
@@ -811,11 +836,68 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, RuntimeError, ValueError) as error:
             self.send_json({"error": str(error)}, 503)
 
+    def mcp_read(self, query):
+        """Read existing state without starting or reconnecting the collector."""
+        if not self.rpa_request_allowed():
+            self.send_json({"error": "仅允许从本机工作台读取 MCP 数据"}, 403)
+            return
+        resource = (query.get("resource") or [""])[0]
+        fields = {
+            "state": set(), "qianchuan": set(), "feishu": set(), "links": set(),
+            "sessions": {"accounts", "startDate", "endDate", "omitLive", "sortBy", "sortDirection", "offset", "limit"},
+            "session": {"account", "room"}, "timeline": {"recordingSessionId"},
+        }
+        if (resource not in fields or set(query) - (fields[resource] | {"resource"})
+                or any(len(values) != 1 for values in query.values())):
+            self.send_json({"error": "MCP 只读资源或参数无效"}, 400)
+            return
+        value = lambda key, default="": (query.get(key) or [default])[0]
+
+        def read_business(account, room):
+            try:
+                return COLLECTOR.call("room.review", {"account": account, "room": room},
+                                      timeout=5, allow_start=False)
+            except Exception:
+                # SessionLinks embeds lookup failures in its note; mask them here too.
+                raise RuntimeError("采集器不可用；只读请求不会启动或重连采集器") from None
+
+        try:
+            if resource == "links":
+                result = SESSION_LINKS.list()
+            elif resource == "timeline":
+                links = SessionLinks(DATA_ROOT, RECORDING_SESSIONS, read_business)
+                result = SessionTimeline(RECORDING_SESSIONS, RECORDING_ARCHIVES, links).detail(value("recordingSessionId"))
+            else:
+                methods = {"state": "state", "qianchuan": "provider.qianchuan.status",
+                           "feishu": "feishu.state", "sessions": "room.workspace", "session": "detail"}
+                args = None
+                if resource == "sessions":
+                    args = {"accounts": [item for item in value("accounts").split(",") if item],
+                            "startDate": value("startDate"), "endDate": value("endDate"),
+                            "omitLive": value("omitLive", "0") == "1", "sortBy": value("sortBy", "startedAt"),
+                            "sortDirection": value("sortDirection", "desc"),
+                            "offset": value("offset", "0"), "limit": value("limit", "50")}
+                elif resource == "session":
+                    args = {"account": value("account"), "room": value("room"), "raw": False}
+                result = COLLECTOR.call(methods[resource], args, allow_start=False)
+            self.send_json(result)
+        except FileNotFoundError:
+            self.send_json({"error": "本机已保存的场次不存在"}, 404)
+        except ValueError:
+            self.send_json({"error": "MCP 只读请求参数或本机记录无效"}, 400)
+        except (OSError, RuntimeError, LinkStoreError):
+            self.send_json({"error": "本机数据暂不可读取；只读请求不会启动或重连采集器"}, 503)
+        except Exception:
+            self.send_json({"error": "本机数据格式异常；原始错误已隐藏"}, 503)
+
     def do_GET(self):
         path = urllib.parse.urlsplit(self.path).path
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
         if path == "/api/health":
-            self.send_json({"service": "liveops-dashboard", "ready": True})
+            self.send_json({"service": "liveops-dashboard", "ready": True, "readOnlyMcp": True})
+            return
+        if path == "/api/mcp/read":
+            self.mcp_read(urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True))
             return
         if path == "/api/dependencies/state":
             if not self.rpa_request_allowed():
@@ -845,6 +927,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.rpa_call("state")
             elif path == "/api/rpa/ego/state":
                 self.send_json(ego_setup_snapshot())
+            elif path == "/api/rpa/providers/qianchuan/status":
+                self.rpa_call("provider.qianchuan.status")
+            elif path == "/api/rpa/providers/qianchuan/account":
+                self.send_json(QIANCHUAN_ACCOUNT.state())
             elif path in ("/api/rpa/feishu", "/api/rpa/feishu/state"):
                 self.rpa_call("feishu.state")
             elif path == "/api/rpa/session":
@@ -853,6 +939,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.rpa_call("rooms.list", {"account": (query.get("account") or [""])[0],
                                              "offset": (query.get("offset") or ["0"])[0],
                                              "limit": (query.get("limit") or ["50"])[0]})
+            elif path == "/api/rpa/room-workspace":
+                raw_accounts = (query.get("accounts") or [""])[0]
+                self.rpa_call("room.workspace", {
+                    "accounts": [item for item in raw_accounts.split(",") if item],
+                    "startDate": (query.get("startDate") or [""])[0],
+                    "endDate": (query.get("endDate") or [""])[0],
+                    "omitLive": (query.get("omitLive") or ["0"])[0] == "1",
+                    "sortBy": (query.get("sortBy") or ["startedAt"])[0],
+                    "sortDirection": (query.get("sortDirection") or ["desc"])[0],
+                    "offset": (query.get("offset") or ["0"])[0],
+                    "limit": (query.get("limit") or ["50"])[0],
+                })
             elif path == "/api/rpa/history-summary":
                 self.rpa_call("history.summary", {"account": (query.get("account") or [""])[0],
                                                   "startDate": (query.get("startDate") or [""])[0],
@@ -908,6 +1006,15 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, ValueError, urllib.error.URLError) as error:
                 self.send_json({"error": str(error)}, 502)
             return
+        if path == "/api/operations-workspace":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台读取经营配置"}, 403)
+                return
+            try:
+                self.send_json(OPERATIONS_WORKSPACE.snapshot())
+            except WorkspaceError as error:
+                self.send_json({"error": str(error)}, 500)
+            return
         if path == "/api/media/jobs":
             if not self.rpa_request_allowed():
                 self.send_json({"error": "仅允许从本机操盘台访问处理队列"}, 403)
@@ -955,6 +1062,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(error)}, 400)
             except (LinkStoreError, OSError) as error:
                 self.send_json({"error": str(error)}, 500)
+            return
+        if path == "/api/session-timeline":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台读取复盘时间轴"}, 403)
+                return
+            try:
+                self.send_json(SESSION_TIMELINE.detail((query.get("recordingSessionId") or [""])[0]))
+            except FileNotFoundError as error:
+                self.send_json({"error": str(error)}, 404)
+            except ValueError as error:
+                self.send_json({"error": str(error)}, 400)
+            except (LinkStoreError, OSError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, 503)
             return
         if path == "/api/session-reviews/export":
             if not self.rpa_request_allowed():
@@ -1038,6 +1158,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_HEAD(self):
         path = urllib.parse.urlsplit(self.path).path
+        if path == "/api/mcp/read":
+            self.send_response(405)
+            self.send_header("Allow", "GET")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if path.startswith("/recordings/"):
             self.serve_recording(path[len("/recordings/"):], head_only=True)
         elif path.startswith("/transcripts/"):
@@ -1046,6 +1172,9 @@ class Handler(BaseHTTPRequestHandler):
             self.serve_static(path, head_only=True)
 
     def do_POST(self):
+        if urllib.parse.urlsplit(self.path).path == "/api/mcp/read":
+            self.send_json({"error": "MCP 只读入口仅允许 GET"}, 405)
+            return
         if not self.mutation_origin_allowed():
             self.send_json({"error": "跨站请求已拒绝"}, 403)
             return
@@ -1126,6 +1255,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "无法保存重试任务：" + str(error)}, 500)
             return
 
+        workspace_match = re.fullmatch(r"/api/operations-workspace/([A-Za-z]+)", path)
+        if workspace_match:
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台保存经营配置"}, 403)
+                return
+            if not isinstance(payload, dict):
+                self.send_json({"error": "记录必须是 JSON 对象"}, 400)
+                return
+            try:
+                self.send_json({"record": OPERATIONS_WORKSPACE.save(workspace_match[1], payload)}, 200)
+            except WorkspaceError as error:
+                self.send_json({"error": str(error)}, 400)
+            except OSError as error:
+                self.send_json({"error": "无法保存本机经营配置：" + str(error)}, 500)
+            return
+
         if path == "/api/recording-sessions/archive":
             if not self.rpa_request_allowed():
                 self.send_json({"error": "仅允许从本机工作台生成录制归档"}, 403)
@@ -1192,7 +1337,7 @@ class Handler(BaseHTTPRequestHandler):
             except IsADirectoryError as error:
                 self.send_json({"error": str(error)}, 400)
             except (OSError, subprocess.SubprocessError) as error:
-                self.send_json({"error": "Finder 无法定位文件：" + str(error)}, 500)
+                self.send_json({"error": "文件管理器无法定位文件：" + str(error)}, 500)
             return
 
         if path == "/api/recordings/open-directory":
@@ -1210,7 +1355,7 @@ class Handler(BaseHTTPRequestHandler):
             except NotADirectoryError as error:
                 self.send_json({"error": str(error)}, 400)
             except (OSError, subprocess.SubprocessError) as error:
-                self.send_json({"error": "Finder 无法打开录制保存目录：" + str(error)}, 500)
+                self.send_json({"error": "文件管理器无法打开录制保存目录：" + str(error)}, 500)
             return
 
         if path == "/api/choose-recording-directory":
@@ -1252,17 +1397,53 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/rpa/accounts":
                 self.rpa_call("create", {"label": str(payload.get("label", ""))})
                 return
+            if path == "/api/rpa/target":
+                if "verifiedAccount" in payload:
+                    self.rpa_call("target.confirm", {"id": payload["verifiedAccount"]})
+                else:
+                    self.rpa_call("target.set", {"name": payload.get("name")})
+                return
+            if path == "/api/rpa/providers/qianchuan/login":
+                self.rpa_call("provider.qianchuan.login", {}, timeout=45)
+                return
+            if path == "/api/rpa/providers/qianchuan/check":
+                self.rpa_call("provider.qianchuan.check", {}, timeout=45)
+                return
+            if path == "/api/rpa/providers/qianchuan/enter":
+                try:
+                    account_id = QIANCHUAN_ACCOUNT.current_id()
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, 400)
+                    return
+                try:
+                    result = COLLECTOR.call("provider.qianchuan.enter", {"accountId": account_id}, timeout=60)
+                    self.send_json(result)
+                except (OSError, RuntimeError, ValueError) as error:
+                    self.send_json({"error": str(error).replace(account_id, "[已隐藏]")}, 503)
+                return
+            if path == "/api/rpa/providers/qianchuan/account":
+                try:
+                    self.send_json(QIANCHUAN_ACCOUNT.clear() if payload.get("clear") is True else QIANCHUAN_ACCOUNT.save(payload))
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, 400)
+                except OSError:
+                    self.send_json({"error": "保存当前户失败"}, 500)
+                return
+            if path == "/api/rpa/hourly/refresh":
+                self.rpa_call("hourly.refresh", {"account": str(payload.get("account", "")),
+                                                 "room": str(payload.get("room", ""))}, timeout=45)
+                return
             feishu_match = re.fullmatch(r"/api/rpa/feishu/(config|settings|destination|test|check|sync|monitor|history-monitor)", path)
             if feishu_match:
                 action = {"settings": "config", "check": "test", "history-monitor": "history.monitor"}.get(feishu_match[1], feishu_match[1])
                 self.rpa_call("feishu." + action, payload)
                 return
-            match = re.fullmatch(r"/api/rpa/accounts/([a-f0-9-]{36})/(login|sync|monitor|settings|history|history-report|history-batch-start|history-batch-resume|history-batch-pause)", path)
+            match = re.fullmatch(r"/api/rpa/accounts/([a-f0-9-]{36})/(login|verify|sync|monitor|settings|history|history-report|history-batch-start|history-batch-resume|history-batch-pause)", path)
             if match:
                 action = {"history": "history.page", "history-report": "history.report",
                           "history-batch-start": "history.batch.start", "history-batch-resume": "history.batch.resume",
                           "history-batch-pause": "history.batch.pause"}.get(match[2], match[2])
-                self.rpa_call(action, {**payload, "id": match[1]}, timeout=60 if match[2] in ("history", "history-report") else 45 if match[2] == "login" else 12)
+                self.rpa_call(action, {**payload, "id": match[1]}, timeout=60 if match[2] in ("history", "history-report") else 45 if match[2] in ("login", "verify", "monitor") else 12)
             else:
                 self.send_json({"error": "not found"}, 404)
             return
@@ -1371,7 +1552,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("热点请求超时需为 1000–60000 毫秒")
                 video_bitrate = int(media.get("videoBitrateKbps", 2500))
                 audio_bitrate = int(media.get("audioBitrateKbps", 96))
-                codec = str(media.get("codec", "hevc_videotoolbox"))
+                codec = str(media.get("codec", (MEDIA_PIPELINE.read_config() if MEDIA_PIPELINE else {}).get("codec", "libx264")))
                 keep_original = media.get("keepOriginal", (MEDIA_PIPELINE.read_config() if MEDIA_PIPELINE else {}).get("keepOriginal", True))
                 if not isinstance(keep_original, bool):
                     raise ValueError("源文件保留选项必须为布尔值")
@@ -1519,6 +1700,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"error": "not found"}, 404)
 
     def do_DELETE(self):
+        if urllib.parse.urlsplit(self.path).path == "/api/mcp/read":
+            self.send_json({"error": "MCP 只读入口仅允许 GET"}, 405)
+            return
         if not self.mutation_origin_allowed():
             self.send_json({"error": "跨站请求已拒绝"}, 403)
             return
@@ -1571,7 +1755,8 @@ class Handler(BaseHTTPRequestHandler):
     def serve_static(self, url_path, head_only=False):
         requested = urllib.parse.unquote(url_path)
         resources = ("/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/dependency-ui.js",
-                     "/recording-sessions-ui.js", "/keyword-ui.js", "/hot-service-ui.js", "/workbench-ui.css", "/workbench-hero.svg")
+                     "/recording-sessions-ui.js", "/session-timeline-ui.js", "/operations-ui.js", "/keyword-ui.js", "/hot-service-ui.js",
+                     "/workbench-ui.css", "/workbench-hero.svg")
         if requested not in ("", "/", "/直播操盘台.html", *resources):
             self.send_json({"error": "not found"}, 404)
             return

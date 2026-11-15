@@ -83,7 +83,7 @@ class RecordingSessions:
         if not path.is_file() or path.suffix.lower() not in {".flv", ".ts", ".mp4", ".mkv", ".aac"}:
             raise ValueError("录制器返回的文件类型不支持")
         stat = path.stat()
-        return {"path": str(path.relative_to(root)), "root": str(root), "device": stat.st_dev,
+        return {"path": path.relative_to(root).as_posix(), "root": str(root), "device": stat.st_dev,
                 "inode": stat.st_ino, "bytes": stat.st_size}
 
     def observe(self):

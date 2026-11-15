@@ -40,12 +40,14 @@
     return Number.isNaN(Date.parse(raw)) ? raw : formatTime(raw);
   }
   function reviewFields() {
-    return {summary: $('sessionReviewSummary').value.trim(), actions: $('sessionReviewActions').value.trim()};
+    return {summary: $('sessionReviewSummary').value.trim(), issues: $('sessionReviewIssues').value.trim(),
+      evidenceAt: $('sessionReviewEvidenceAt').value, owner: $('sessionReviewOwner').value.trim(),
+      actions: $('sessionReviewActions').value.trim(), dueDate: $('sessionReviewDueDate').value};
   }
   function updateReviewControls() {
     const saved = reviews.get(selectedReviewId);
     const fields = reviewFields();
-    const changed = !saved || fields.summary !== saved.summary || fields.actions !== saved.actions;
+    const changed = !saved || Object.entries(fields).some(([key, value]) => value !== (saved[key] || ''));
     $('saveSessionReview').disabled = reviewSaving || !selectedReviewId || !fields.summary || !changed;
     $('exportSessionReview').disabled = reviewSaving || !saved || changed;
     if (selectedReviewId && !reviewSaving) {
@@ -95,7 +97,7 @@
     $('saveSessionLink').disabled = $('sessionLinkConfirmed').disabled || !$('sessionLinkConfirmed').checked;
     $('saveSessionLink').textContent = businessBusy ? '正在保存…' : linked ? same ? '已关联' : '确认改绑' : '确认关联';
     $('removeSessionLink').disabled = !selectedReviewId || !linked || businessBusy;
-    $('sessionLinkStatus').textContent = businessActionMessage || businessError || (selectedReviewId && !businessAccounts.length ? '尚无可选罗盘账号；请先在经营数据页添加账号并保存场次。' : selectedReviewId && businessAccountId && !account?.uid ? '该经营账号尚未核验 UID，暂不能关联。' : '关联只读取本机记录，不会启动已暂停的罗盘采集。');
+    $('sessionLinkStatus').textContent = businessActionMessage || businessError || (selectedReviewId && !businessAccounts.length ? '尚无可选罗盘账号；请先在经营与复盘 → 经营数据中添加账号并保存场次。' : selectedReviewId && businessAccountId && !account?.uid ? '该经营账号尚未核验 UID，暂不能关联。' : '关联只读取本机记录，不会启动已暂停的罗盘采集。');
     if (!selectedReviewId) {
       $('sessionLinkCurrent').textContent = '选择录制场次后查看经营数据关联。';
     } else if (!linked) {
@@ -209,6 +211,7 @@
   }
   function selectReview(id) {
     selectedReviewId = id;
+    currentReviewCursor = '';
     ++businessRoomsVersion;
     ++businessDetailVersion;
     const link = businessLinks.get(id);
@@ -222,14 +225,18 @@
     businessActionMessage = '';
     $('sessionLinkConfirmed').checked = false;
     $('sessionReviewSelect').value = id;
-    const source = reviewDrafts.get(id) || reviews.get(id) || {summary:'', actions:''};
-    $('sessionReviewSummary').value = source.summary;
-    $('sessionReviewActions').value = source.actions;
+    const source = reviewDrafts.get(id) || reviews.get(id) || {};
+    for (const [key, field] of Object.entries({summary:'sessionReviewSummary', issues:'sessionReviewIssues',
+      evidenceAt:'sessionReviewEvidenceAt', owner:'sessionReviewOwner', actions:'sessionReviewActions', dueDate:'sessionReviewDueDate'})) {
+      $(field).value = source[key] || '';
+    }
+    $('sessionReviewUseCursor').disabled = true;
     $('sessionReviewStatus').textContent = id ? '正在读取复盘记录。' : '尚未选择场次。';
     renderReviewSource();
     renderBusinessLink();
     if (id) refreshBusinessIndex();
     updateReviewControls();
+    document.dispatchEvent(new CustomEvent('liveops:review-session', {detail:{sessionId:id}}));
   }
   function renderReviewOptions() {
     const options = [{value:'', label:'选择录制场次'}, ...recordingSessions.map(session => ({value:session.id, label:`${session.account || '未命名直播间'} · ${formatTime(session.startedAt)}`}))];
@@ -256,6 +263,7 @@
       const data = await apiRequest('/api/recording-sessions');
       recordingSessions = data.sessions || [];
       recordingArchives = data.archives || [];
+      document.dispatchEvent(new CustomEvent('liveops:recording-sessions-refreshed', {detail:{sessionId:selectedReviewId}}));
       renderReviewOptions();
       if (!reviewsFetchedAt || Date.now() - reviewsFetchedAt >= 60000) {
         try {
@@ -357,6 +365,7 @@
         businessDetail = null;
         renderReviewSource();
         await loadBusinessDetail();
+        document.dispatchEvent(new CustomEvent('liveops:review-session', {detail:{sessionId:recordingSessionId}}));
       }
       toast(message);
     } catch (error) {
@@ -379,18 +388,30 @@
         $('sessionLinkConfirmed').checked = false;
         businessActionMessage = '已解除经营场次关联。';
         renderReviewSource();
+        document.dispatchEvent(new CustomEvent('liveops:review-session', {detail:{sessionId:recordingSessionId}}));
       }
       toast('已解除经营场次关联。');
     } catch (error) {
       if (recordingSessionId === selectedReviewId) businessActionMessage = '解除失败：' + error.message;
     } finally { businessBusy = false; renderBusinessLink(); }
   });
-  for (const field of [$('sessionReviewSummary'), $('sessionReviewActions')]) {
+  for (const field of [$('sessionReviewSummary'), $('sessionReviewIssues'), $('sessionReviewOwner'), $('sessionReviewActions'), $('sessionReviewDueDate')]) {
     field.addEventListener('input', () => {
       if (selectedReviewId) reviewDrafts.set(selectedReviewId, reviewFields());
       updateReviewControls();
     });
   }
+  let currentReviewCursor = '';
+  document.addEventListener('liveops:review-cursor', event => {
+    currentReviewCursor = event.detail.at || '';
+    $('sessionReviewUseCursor').disabled = !selectedReviewId || !currentReviewCursor;
+  });
+  $('sessionReviewUseCursor').addEventListener('click', () => {
+    if (!selectedReviewId || !currentReviewCursor) return;
+    $('sessionReviewEvidenceAt').value = currentReviewCursor;
+    reviewDrafts.set(selectedReviewId, reviewFields());
+    updateReviewControls();
+  });
   $('sessionReviewForm').addEventListener('submit', async event => {
     event.preventDefault();
     if (!selectedReviewId || reviewSaving) return;
