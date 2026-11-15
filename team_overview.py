@@ -67,6 +67,10 @@ def build_team_overview(workspace, business, reviews, *, available=True):
     mappings = workspace.get("accountMappings", [])
     by_alias = {item["sourceAlias"].casefold(): item for item in mappings if item.get("active")}
     source_ids = {}
+    for account in (business or {}).get("accounts", []):
+        if isinstance(account, dict) and isinstance(account.get("id"), str):
+            alias = str(account.get("name") or "").casefold()
+            source_ids.setdefault(alias, set()).add(account["id"])
     for row in (business or {}).get("rows", []):
         alias = str(row.get("accountName") or "").casefold()
         source_ids.setdefault(alias, set()).add(row.get("accountId"))

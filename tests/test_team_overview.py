@@ -67,6 +67,14 @@ class TeamOverviewTests(unittest.TestCase):
         self.assertEqual(result["unmappedSessions"], 2)
         self.assertEqual(result["groups"]["accounts"][0]["sessions"], 0)
 
+    def test_same_display_name_in_account_inventory_is_ambiguous_even_before_second_room(self):
+        business = {"rows": [{**self.row("one", 10), "accountId": "source-one"}], "total": 1,
+                    "accounts": [{"id": "source-one", "name": "本机来源别名"},
+                                 {"id": "source-two", "name": "本机来源别名"}]}
+        result = build_team_overview(self.workspace.snapshot(), business, [])
+        self.assertEqual(result["ambiguousSessions"], 1)
+        self.assertEqual(result["groups"]["accounts"][0]["sessions"], 0)
+
     def test_mapping_requires_existing_local_relationships_and_unique_alias(self):
         with self.assertRaises(WorkspaceError):
             self.workspace.save("accountMappings", {"name": "重复", "sourceAlias": "本机来源别名", "active": True})
