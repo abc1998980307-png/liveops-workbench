@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "liveops-readonly": {
+      "command": "C:\\Python311\\python.exe",
+      "args": ["-B", "-u", "C:\\Projects\\liveops-workbench\\mcp_server.py"],
+      "env": {"LIVEOPS_MCP_PORT": "8765", "PYTHONUTF8": "1"}
+    }
+  }
+}

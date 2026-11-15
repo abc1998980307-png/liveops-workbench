@@ -29,3 +29,22 @@ jobs:
       - run: node --test tests/*.test.mjs
       - run: python3 -m unittest discover -s tests -p 'test_*.py' -v
       - run: python3 scripts/check_frontend.py
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      LIVEOPS_DATA_ROOT: ${{ runner.temp }}\liveops-test-data
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: npm ci --ignore-scripts
+      - run: node --test tests/*.test.mjs
+      - run: python -m unittest tests.test_windows_platform tests.test_keyword_service.KeywordJobsTests.test_windows_analysis_timeout_stops_owned_worker tests.test_keyword_service.KeywordJobsTests.test_windows_timeout_watchdog_stops_worker_without_state_polling -v
+      - run: python -m unittest discover -s tests -p 'test_mcp*.py' -v
+      - run: python scripts/check_frontend.py

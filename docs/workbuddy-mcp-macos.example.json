@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "liveops-readonly": {
+      "command": "/usr/bin/python3",
+      "args": ["-B", "-u", "/Users/your-name/Library/Application Support/LiveOps/dashboard/mcp_server.py"],
+      "env": {"LIVEOPS_MCP_PORT": "8765", "PYTHONUTF8": "1"}
+    }
+  }
+}
