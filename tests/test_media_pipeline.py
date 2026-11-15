@@ -237,7 +237,8 @@ class MediaPipelineTests(unittest.TestCase):
             writable.set()
             pipeline._wake.set()
             for _ in range(200):
-                if pipeline.archive_jobs()[0]["status"] == "completed":
+                if (pipeline.archive_jobs()[0]["status"] == "completed"
+                        and pipeline.job_snapshot()["workerError"] is None):
                     break
                 threading.Event().wait(.01)
         self.assertEqual(pipeline.archive_jobs()[0]["status"], "completed")
