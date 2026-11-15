@@ -25,7 +25,11 @@
 !/dependency_service.py
 !/dependency-ui.js
 !/hot_service.py
+!/hot_insights.py
+!/team_overview.py
 !/hot-service-ui.js
+!/hot-insights-ui.js
+!/team-overview-ui.js
 !/media_pipeline.py
 !/flv_recovery.py
 !/recorder_service.py

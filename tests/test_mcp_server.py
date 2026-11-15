@@ -30,11 +30,13 @@ PRIVATE_APP = "cli_synthetic_private_app"
 TOOLS = {
     "get_health", "list_sessions", "get_session",
     "get_spend_reconciliation", "get_hourly_metrics", "get_session_timeline",
+    "get_hot_keywords", "list_team_overview",
 }
 READ_RESOURCES = {
     "state": "/api/rpa/state", "feishu": "/api/rpa/feishu/state",
     "qianchuan": "/api/rpa/providers/qianchuan/status", "sessions": "/api/rpa/room-workspace",
     "session": "/api/rpa/session", "links": "/api/session-links", "timeline": "/api/session-timeline",
+    "hot_keywords": "/api/hot-insights", "team_overview": "/api/team-overview",
 }
 
 
@@ -140,6 +142,21 @@ def fixtures():
         "/api/session-links": {"links": [{"accountId": ACCOUNT, "accountUid": UID, "roomId": ROOM,
                                            "recordingSessionId": RECORDING, "roomTitle": SECRET}]},
         "/api/session-timeline": timeline,
+        "/api/hot-insights": {"terms": [{"term": "合成话题", "firstSeenAt": TIME,
+                              "lastSeenAt": TIME, "currentHot": 120, "currentRank": 3,
+                              "trend": [{"sampledAt": TIME, "hot": 120, "rank": 3}]}],
+                              "sampleCount": 1, "latest": {"items": [{"title": SECRET, "url": PRIVATE_URL}]},
+                              "sessions": [{"title": SECRET, "reviewActions": SECRET}]},
+        "/api/team-overview": {"available": True, "startDate": "2026-11-01", "endDate": "2026-11-14",
+                               "totalSessions": 1, "loadedSessions": 1, "truncated": False, "unmappedSessions": 0,
+                               "groups": {"accounts": [{"id": ACCOUNT, "name": SECRET, "sessions": 1,
+                                          "watch": {"value": 40, "coveredRooms": 1},
+                                          "sales": {"value": 12.34, "coveredRooms": 1},
+                                          "spend": {"value": "5.00", "coveredRooms": 1},
+                                          "reconciliation": {"matched": 1, "compared": 1, "rate": 1.0}}],
+                                          "stores": [], "members": []},
+                               "mappings": [{"sourceAlias": SECRET, "accountId": ACCOUNT}],
+                               "todos": [{"memberId": ACCOUNT, "actions": SECRET}]},
     }
 
 
@@ -274,6 +291,19 @@ class McpTests(unittest.TestCase):
         self.assertEqual(value["feishu"]["hourlySynced"], 4)
         self.assertEqual({call[1] for call in self.http.calls}, {
             "/api/health", "/api/rpa/state", "/api/rpa/providers/qianchuan/status", "/api/rpa/feishu/state"})
+
+    def test_hot_and_team_tools_project_only_approved_fields(self):
+        hot = self.payload(self.call("get_hot_keywords"))
+        self.assertEqual(hot["terms"][0]["term"], "合成话题")
+        self.assertEqual(hot["terms"][0]["trend"][0]["hot"], 120)
+        self.assertNotIn("latest", hot)
+        team = self.payload(self.call("list_team_overview"))
+        group = team["groups"]["accounts"][0]
+        self.assertTrue(group["groupRef"].startswith("group_"))
+        self.assertEqual(group["watch"]["coveredRooms"], 1)
+        self.assertNotIn("name", group)
+        self.assertNotIn("mappings", team)
+        self.assertNotIn("todos", team)
 
     def test_list_detail_and_account_filter_are_opaque(self):
         account_ref = find_ref(self.payload(self.call("get_health")), "accountRef")
@@ -567,8 +597,10 @@ class McpStdioTests(unittest.TestCase):
         self.assertEqual({item["name"] for item in send("tools/list")["result"]["tools"]}, TOOLS)
         call("get_health")
         reference = find_ref(call("list_sessions"), "sessionRef")
-        for name in TOOLS - {"get_health", "list_sessions"}:
+        for name in TOOLS - {"get_health", "list_sessions", "get_hot_keywords", "list_team_overview"}:
             call(name, {"sessionRef": reference})
+        call("get_hot_keywords")
+        call("list_team_overview")
         process.stdin.close()
         self.assertEqual(process.wait(timeout=8), 0)
         reader.join(timeout=5)

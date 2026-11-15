@@ -38,7 +38,7 @@ def main():
     with tempfile.TemporaryDirectory() as directory:
         inline = Path(directory) / "dashboard.js"
         inline.write_text("".join(parser.parts), encoding="utf-8")
-        for source in [inline, root / "rpa-ui.js", root / "feishu-ui.js", root / "dependency-ui.js", root / "hot-service-ui.js", root / "scripts/dailyhot_runner.mjs", root / "recording-sessions-ui.js", root / "session-timeline-ui.js", root / "keyword-ui.js", *sorted((root / "rpa").glob("*.mjs"))]:
+        for source in [inline, root / "rpa-ui.js", root / "feishu-ui.js", root / "dependency-ui.js", root / "hot-service-ui.js", root / "scripts/dailyhot_runner.mjs", root / "recording-sessions-ui.js", root / "session-timeline-ui.js", root / "operations-ui.js", root / "team-overview-ui.js", root / "hot-insights-ui.js", root / "keyword-ui.js", *sorted((root / "rpa").glob("*.mjs"))]:
             subprocess.run([node, "--check", str(source)], check=True)
     print("Frontend and collector JavaScript syntax passed.")
 

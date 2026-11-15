@@ -143,7 +143,8 @@ class LocalAPI:
     RESOURCES = {"/api/rpa/state": "state", "/api/rpa/feishu/state": "feishu",
                  "/api/rpa/providers/qianchuan/status": "qianchuan",
                  "/api/rpa/room-workspace": "sessions", "/api/rpa/session": "session",
-                 "/api/session-links": "links", "/api/session-timeline": "timeline"}
+                 "/api/session-links": "links", "/api/session-timeline": "timeline",
+                 "/api/hot-insights": "hot_keywords", "/api/team-overview": "team_overview"}
 
     def __init__(self, port=8765, timeout=15):
         if type(port) is not int or not 1 <= port <= 65535:
@@ -211,6 +212,8 @@ TOOLS = [
         "sessionRef": REF, "source": {"type": "string", "enum": ["电商罗盘", "巨量千川"]},
         "grain": {"type": "string", "enum": ["官方小时", "边界快照", "独立对照"]}, **PAGE}, ("sessionRef",)),
     tool("get_session_timeline", "读取经营场次已确认关联的录制复盘时间轴；无关联时明确返回空，不自动建立关联", {"sessionRef": REF}, ("sessionRef",)),
+    tool("get_hot_keywords", "读取本机监控的公开热点词、采样趋势和首次观察时间；不刷新榜单"),
+    tool("list_team_overview", "读取本机已保存的团队/店铺/直播号聚合与复盘待办数量；不采集、不返回账户身份或复盘原文"),
 ]
 
 
@@ -324,6 +327,56 @@ class LiveOpsTools:
         result["sessions"] = sessions
         return result
 
+    def hot_keywords(self):
+        data = self.api.get("/api/hot-insights")
+        terms = []
+        for row in data.get("terms", [])[:50]:
+            if not isinstance(row, dict) or not isinstance(row.get("term"), str):
+                continue
+            term = row["term"]
+            if not 1 <= len(term) <= 40 or any(ord(char) < 32 for char in term):
+                continue
+            terms.append({"term": term, "firstSeenAt": stamp(row.get("firstSeenAt")),
+                          "lastSeenAt": stamp(row.get("lastSeenAt")),
+                          "currentHot": number(row.get("currentHot")),
+                          "currentRank": number(row.get("currentRank")),
+                          "trend": [project(point, {"sampledAt": stamp, "hot": number, "rank": number})
+                                    for point in row.get("trend", [])[:72] if isinstance(point, dict)]})
+        return {"terms": terms, "sampleCount": number(data.get("sampleCount")),
+                "source": "DailyHotApi", "note": "首次观察时间是本机记录时间，不代表实际首次上榜时间"}
+
+    def team_overview(self):
+        data = self.api.get("/api/team-overview")
+        groups = {}
+        todo_counts = {}
+        for todo in data.get("todos", []):
+            if isinstance(todo, dict) and isinstance(todo.get("memberId"), str):
+                todo_counts[todo["memberId"]] = todo_counts.get(todo["memberId"], 0) + 1
+        for kind in ("accounts", "stores", "members"):
+            groups[kind] = []
+            for row in (data.get("groups") or {}).get(kind, [])[:100]:
+                if not isinstance(row, dict) or not isinstance(row.get("id"), str):
+                    continue
+                result = {"groupRef": self.reference("group", (kind, row["id"])),
+                          "sessions": number(row.get("sessions"))}
+                for key in ("watch", "sales", "spend"):
+                    metric = row.get(key) or {}
+                    result[key] = {"value": decimal(metric.get("value")) if key == "spend" else number(metric.get("value")),
+                                   "coveredRooms": number(metric.get("coveredRooms"))}
+                reconciliation = row.get("reconciliation") or {}
+                result["reconciliation"] = project(reconciliation,
+                    {"matched": number, "compared": number, "rate": number})
+                if kind == "members":
+                    result["todoCount"] = todo_counts.get(row["id"], 0)
+                groups[kind].append(result)
+        return {"available": boolean(data.get("available")), "startDate": stamp(data.get("startDate")),
+                "endDate": stamp(data.get("endDate")), "totalSessions": number(data.get("totalSessions")),
+                "loadedSessions": number(data.get("loadedSessions")),
+                "truncated": boolean(data.get("truncated")), "unmappedSessions": number(data.get("unmappedSessions")),
+                "ambiguousSessions": number(data.get("ambiguousSessions")),
+                "groups": groups,
+                "note": "仅汇总明确映射的历史进房人次、历史结算有效成交金额和千川同场消耗；缺失为 null"}
+
     def detail(self, ref):
         account, room = self.resolve("session", ref)
         data = self.api.get("/api/rpa/session", account=account, room=room)
@@ -340,6 +393,10 @@ class LiveOpsTools:
             return self.health()
         if name == "list_sessions":
             return self.list_sessions(args)
+        if name == "get_hot_keywords":
+            return self.hot_keywords()
+        if name == "list_team_overview":
+            return self.team_overview()
         ref = args["sessionRef"]
         if name == "get_session_timeline":
             account, room = self.resolve("session", ref)

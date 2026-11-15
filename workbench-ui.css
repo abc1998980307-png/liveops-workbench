@@ -381,3 +381,23 @@ tbody tr.selected { background: #f1f8e8; }
 .review-timeline-feeds { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
 .review-timeline-empty { color: #78847e; font-size: 11px; line-height: 1.6; }
 @media (max-width: 760px) { .review-timeline-grid, .review-timeline-feeds { grid-template-columns: minmax(0, 1fr); } .review-cursor { grid-template-columns: auto minmax(0, 1fr); } .review-cursor output { grid-column: 1 / -1; text-align: left; } }
+
+.insights-section { margin-top: 18px; }
+.insights-toolbar { display: flex; align-items: end; flex-wrap: wrap; gap: 9px; margin-bottom: 10px; }
+.insights-toolbar > input { flex: 1 1 190px; min-width: 0; min-height: 37px; border: 1px solid var(--line); border-radius: 4px; padding: 7px 9px; }
+.insights-toolbar label { display: grid; gap: 4px; color: var(--muted); font-size: 11px; }
+.insights-toolbar label input { min-height: 36px; border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; }
+.insights-trend { display: flex; align-items: end; gap: 2px; height: 32px; width: 110px; max-width: 100%; }
+.insights-trend span { flex: 1 1 0; min-width: 4px; background: #458a78; border-radius: 2px 2px 0 0; }
+.insights-trend span.missing { background: #cad4d0; }
+.insights-muted { display: block; color: var(--muted); font-size: 10px; line-height: 1.4; white-space: normal; }
+.ops-segments { display: inline-flex; height: 36px; border: 1px solid #cfdad2; border-radius: 4px; overflow: hidden; flex: none; }
+.ops-segments button { min-width: 62px; padding: 0 9px; border: 0; border-right: 1px solid #cfdad2; background: #fff; color: var(--ink); cursor: pointer; font-size: 11px; }
+.ops-segments button:last-child { border-right: 0; }
+.ops-segments button[aria-selected="true"] { background: #e8f3ed; color: #256d58; font-weight: 700; }
+#opsOverviewRows td { min-width: 72px; vertical-align: top; }
+#opsOverviewRows td:first-child { min-width: 110px; overflow-wrap: anywhere; }
+#opsTodoRows .ops-record { grid-template-columns: minmax(0, 1fr); }
+.insights-session-samples { margin-top: 7px; color: var(--muted); font-size: 11px; }
+.insights-session-samples div { padding: 4px 0 4px 11px; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .insights-toolbar > input { flex-basis: 100%; } .insights-toolbar .btn { flex: 1 1 auto; } .ops-segments { width: 100%; } .ops-segments button { flex: 1; } }

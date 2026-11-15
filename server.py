@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from platform_support import tool_path
@@ -34,6 +34,8 @@ from keyword_service import KeywordService
 from hot_service import HotService, HotServiceError
 from service_status import compass_status, feishu_status
 from operations_workspace import OperationsWorkspace, WorkspaceError
+from team_overview import build_team_overview
+from hot_insights import HotInsights, HotInsightsError
 from qianchuan_account import QianchuanAccountStore
 
 
@@ -59,6 +61,7 @@ DOUYIN_HOSTS = {"live.douyin.com", "v.douyin.com"}
 RECORDER = RecorderManager(DATA_ROOT, BGO)
 DEPENDENCIES = DependencyManager(DATA_ROOT, ROOT)
 HOTWORDS = HotService(DATA_ROOT, ROOT, HOT_API)
+HOT_INSIGHTS = HotInsights(DATA_ROOT)
 RECORDING_SESSIONS = RecordingSessions(DATA_ROOT, lambda path: service_request(BGO, path=path, timeout=3),
                                       lambda: read_settings()["recordingDirectory"])
 ACCOUNT_LOCK = threading.RLock()
@@ -791,6 +794,68 @@ def choose_recording_directory():
     return str(selected.resolve())
 
 
+def saved_business_workspace(start_date="", end_date="", max_rows=1000):
+    """Read saved rows in bounded pages without starting the collector."""
+    result = None
+    rows = []
+    while len(rows) < max_rows:
+        page = COLLECTOR.call("room.workspace", {"startDate": start_date, "endDate": end_date,
+                              "offset": len(rows), "limit": min(100, max_rows - len(rows))},
+                              allow_start=False)
+        if not isinstance(page, dict) or not isinstance(page.get("rows"), list):
+            raise RuntimeError("本机经营场次格式无效")
+        if result is None:
+            result = {key: page.get(key) for key in ("startDate", "endDate", "total", "accounts")}
+        rows.extend(page["rows"])
+        if not page.get("hasMore"):
+            break
+        if not page["rows"]:
+            raise RuntimeError("本机经营场次分页无效")
+    return {**(result or {}), "rows": rows, "hasMore": len(rows) < (result or {}).get("total", 0)}
+
+
+def hot_session_context(business, links, reviews):
+    by_session = {item["sessionId"]: item for item in reviews}
+    linked = {(item["accountId"], item["roomId"]): by_session.get(item["recordingSessionId"])
+              for item in links}
+    sessions = []
+    for row in business.get("rows", []):
+        room = row.get("room") or {}
+        review = linked.get((row.get("accountId"), room.get("id"))) or {}
+        sessions.append({"title": room.get("title") or "", "startedAt": room.get("startedAt"),
+                         "endedAt": room.get("endedAt") or (row.get("historyReport") or {}).get("endedAt"),
+                         "reviewSummary": review.get("summary") or "",
+                         "reviewActions": review.get("actions") or ""})
+    return sessions
+
+
+def team_overview_snapshot(start_date="", end_date=""):
+    workspace = OPERATIONS_WORKSPACE.snapshot()
+    reviews = SESSION_REVIEWS.list()["reviews"]
+    try:
+        business = saved_business_workspace(start_date, end_date)
+        available = True
+    except (OSError, RuntimeError, ValueError):
+        business, available = None, False
+    result = build_team_overview(workspace, business, reviews, available=available)
+    result["sourceAliases"] = sorted({item.get("name") for item in (business or {}).get("accounts", [])
+                                      if isinstance(item.get("name"), str) and item["name"]})
+    return result
+
+
+def hot_insights_snapshot():
+    try:
+        business = saved_business_workspace()
+        context = hot_session_context(business, SESSION_LINKS.list()["links"],
+                                      SESSION_REVIEWS.list()["reviews"])
+        available = True
+    except (OSError, RuntimeError, ValueError, LinkStoreError, ReviewStoreError):
+        context, available = [], False
+    result = HOT_INSIGHTS.snapshot(context)
+    result["sessionsAvailable"] = available
+    return result
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "LiveOpsLocal/1.0"
 
@@ -844,6 +909,7 @@ class Handler(BaseHTTPRequestHandler):
         resource = (query.get("resource") or [""])[0]
         fields = {
             "state": set(), "qianchuan": set(), "feishu": set(), "links": set(),
+            "hot_keywords": set(), "team_overview": set(),
             "sessions": {"accounts", "startDate", "endDate", "omitLive", "sortBy", "sortDirection", "offset", "limit"},
             "session": {"account", "room"}, "timeline": {"recordingSessionId"},
         }
@@ -862,7 +928,11 @@ class Handler(BaseHTTPRequestHandler):
                 raise RuntimeError("采集器不可用；只读请求不会启动或重连采集器") from None
 
         try:
-            if resource == "links":
+            if resource == "hot_keywords":
+                result = HOT_INSIGHTS.snapshot()
+            elif resource == "team_overview":
+                result = team_overview_snapshot()
+            elif resource == "links":
                 result = SESSION_LINKS.list()
             elif resource == "timeline":
                 links = SessionLinks(DATA_ROOT, RECORDING_SESSIONS, read_business)
@@ -1005,6 +1075,36 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(settings_snapshot())
             except (OSError, ValueError, urllib.error.URLError) as error:
                 self.send_json({"error": str(error)}, 502)
+            return
+        if path == "/api/hot-insights":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台读取热词洞察"}, 403)
+                return
+            try:
+                self.send_json(hot_insights_snapshot())
+            except (HotInsightsError, WorkspaceError, OSError) as error:
+                self.send_json({"error": str(error)}, 500)
+            return
+        if path == "/api/team-overview":
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台读取团队汇总"}, 403)
+                return
+            if set(query) - {"startDate", "endDate"} or any(len(values) != 1 for values in query.values()):
+                self.send_json({"error": "日期筛选参数无效"}, 400)
+                return
+            start_date, end_date = (query.get("startDate") or [""])[0], (query.get("endDate") or [""])[0]
+            try:
+                for value in (start_date, end_date):
+                    if value and (not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)
+                                  or date.fromisoformat(value).isoformat() != value):
+                        raise ValueError("日期需使用 YYYY-MM-DD")
+                if start_date and end_date and start_date > end_date:
+                    raise ValueError("开始日期不能晚于结束日期")
+                self.send_json(team_overview_snapshot(start_date, end_date))
+            except (WorkspaceError, ReviewStoreError, OSError) as error:
+                self.send_json({"error": str(error)}, 500)
+            except ValueError as error:
+                self.send_json({"error": str(error)}, 400)
             return
         if path == "/api/operations-workspace":
             if not self.rpa_request_allowed():
@@ -1187,6 +1287,26 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.read_json()
         except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
             self.send_json({"error": str(error)}, 400)
+            return
+
+        if path in ("/api/hot-insights/watch", "/api/hot-insights/unwatch", "/api/hot-insights/refresh"):
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台管理热词监控"}, 403)
+                return
+            action = path.rsplit("/", 1)[-1]
+            if not isinstance(payload, dict) or set(payload) != ({"term"} if action != "refresh" else set()):
+                self.send_json({"error": "热词请求字段无效"}, 400)
+                return
+            try:
+                if action == "refresh":
+                    HOT_INSIGHTS.refresh(HOTWORDS.hotwords)
+                else:
+                    getattr(HOT_INSIGHTS, action)(payload["term"])
+                self.send_json(hot_insights_snapshot())
+            except HotInsightsError as error:
+                self.send_json({"error": str(error)}, 400)
+            except (OSError, HotServiceError) as error:
+                self.send_json({"error": str(error)}, 503)
             return
 
         if path in ("/api/transcript-keywords/install", "/api/transcript-keywords/analyze", "/api/transcript-keywords/cancel"):
@@ -1756,6 +1876,7 @@ class Handler(BaseHTTPRequestHandler):
         requested = urllib.parse.unquote(url_path)
         resources = ("/rpa-ui.js", "/rpa-ui.css", "/feishu-ui.js", "/feishu-ui.css", "/dependency-ui.js",
                      "/recording-sessions-ui.js", "/session-timeline-ui.js", "/operations-ui.js", "/keyword-ui.js", "/hot-service-ui.js",
+                     "/hot-insights-ui.js", "/team-overview-ui.js",
                      "/workbench-ui.css", "/workbench-hero.svg")
         if requested not in ("", "/", "/直播操盘台.html", *resources):
             self.send_json({"error": "not found"}, 404)

@@ -422,7 +422,7 @@
       <header class="topbar">
         <button class="mobile-menu" id="mobileMenu" aria-label="打开导航" aria-controls="sidebar" aria-expanded="false">☰</button>
         <div class="breadcrumb">操盘中心 <span style="color:#aab4b0;padding:0 6px">/</span> <strong id="breadcrumbTitle">直播监控</strong></div>
-        <div class="top-actions"><span class="demo-pill">本机服务</span><div class="avatar" title="本地用户">李</div></div>
+        <div class="top-actions"><span class="demo-pill">本机服务</span><div class="avatar" title="本地用户">本</div></div>
       </header>
       <div class="content">
         <section class="view active" id="view-monitor">
@@ -500,6 +500,18 @@
               <section class="panel"><div class="panel-head"><div><div class="panel-title">观察方法</div><div class="panel-subtitle">词热不等于成交</div></div></div><div class="panel-body"><div class="boundary-copy"><strong>趋势：</strong>参考公开内容热度。<br><strong>联想：</strong>搜索建议补充用户问法。<br><strong>行业：</strong>经授权的行业报告可辅助观察内容与直播动向。<br><strong>转化：</strong>在自有账号后台核对搜索流量和成交。<br><br>建议将“相关度”“趋势指数”“搜索来源”和“转化结果”作为不同字段展示。</div></div></section>
             </div>
           </div>
+          <section class="panel insights-section" aria-label="热点监控">
+            <div class="panel-head"><div><div class="panel-title">热点监控</div><div class="panel-subtitle">公开榜单采样 · 本机留存</div></div><span class="tag" id="hotInsightsCount">0 个监控词</span></div>
+            <div class="panel-body">
+              <form id="hotWatchForm" class="insights-toolbar"><input id="hotWatchTerm" name="term" maxlength="40" required aria-label="新增监控词" placeholder="添加关键词或话题"><button class="btn primary" type="submit">添加监控</button><button class="btn" id="hotInsightsRefresh" type="button">刷新榜单</button><button class="btn" id="hotInsightsExport" type="button" disabled>导出 CSV</button></form>
+              <p class="session-search-meta" id="hotInsightsStatus" role="status">正在读取本机监控记录</p>
+              <div class="table-wrap"><table class="keyword-table"><thead><tr><th>监控词</th><th>当前榜单热度</th><th>最近趋势</th><th>首次观察</th><th>最近观察</th><th></th></tr></thead><tbody id="hotWatchRows"></tbody></table></div>
+            </div>
+          </section>
+          <section class="panel insights-section" aria-label="热词与场次">
+            <div class="panel-head"><div><div class="panel-title">热词与场次</div><div class="panel-subtitle">场次标题、已关联复盘与直播时段热点</div></div></div>
+            <div id="hotSessionRows" class="ops-record-list"></div>
+          </section>
           <section id="keywordWorkspace" class="panel transcript-keywords-panel" aria-label="本机转写关键词"></section>
           <div class="footer-note">长尾词仅作为选题线索。热点热度、语料相关度、搜索量和成交结果保持独立口径；本机关键词不会冒充抖音搜索量。</div>
         </section>
@@ -582,23 +594,30 @@
         <section class="view" id="view-operations">
           <div class="page-head"><div><div class="eyebrow">TEAM & COMMERCE</div><h1>团队与店铺</h1><p class="page-desc">在本机维护团队、店铺和排期基础资料。</p></div><div class="button-row"><button class="btn" data-go-view="monitor">管理直播账号</button><button class="btn" data-go-view="business">经营数据</button></div></div>
           <div class="ops-tabs" role="tablist" aria-label="团队与店铺模块">
-            <button type="button" role="tab" aria-selected="true" aria-controls="ops-team" tabindex="0" data-ops-tab="team">团队与排班</button>
+            <button type="button" role="tab" aria-selected="true" aria-controls="ops-overview" tabindex="0" data-ops-tab="overview">实绩与待办</button>
+            <button type="button" role="tab" aria-selected="false" aria-controls="ops-team" tabindex="-1" data-ops-tab="team">团队与排班</button>
             <button type="button" role="tab" aria-selected="false" aria-controls="ops-stores" tabindex="-1" data-ops-tab="stores">店铺与商品</button>
             <button type="button" role="tab" aria-selected="false" aria-controls="ops-brands" tabindex="-1" data-ops-tab="brands">品牌</button>
             <button type="button" role="tab" aria-selected="false" aria-controls="ops-calendar" tabindex="-1" data-ops-tab="calendar">日历与目标</button>
           </div>
-          <div class="ops-note"><strong>数据边界：</strong>这里保存的是你在本机维护的人员、排班、店铺、商品、品牌和目标配置。保存这些资料不会授权抖店/快手/微信店铺，也不会生成实际成交、主播排行或退款数据。</div>
-          <section class="ops-pane" id="ops-team" role="tabpanel">
+          <div class="ops-note"><strong>数据边界：</strong>本机对应关系只关联已保存的经营场次。进房人次、历史有效成交与千川同场消耗分开统计；缺失场次不计作零。</div>
+          <section class="ops-pane" id="ops-overview" role="tabpanel">
+            <section class="panel session-search"><div class="panel-head"><div><div class="panel-title">经营汇总</div><div class="panel-subtitle">历史进房人次与有效成交 · 已保存同场消耗</div></div><button class="btn small" id="opsOverviewRefresh" type="button">刷新</button></div>
+              <div class="panel-body"><div class="insights-toolbar"><label>开始日期<input id="opsOverviewStart" type="date"></label><label>结束日期<input id="opsOverviewEnd" type="date"></label><div class="ops-segments" role="tablist" aria-label="汇总维度"><button type="button" role="tab" aria-selected="true" data-overview-group="accounts">直播号</button><button type="button" role="tab" aria-selected="false" data-overview-group="stores">店铺</button><button type="button" role="tab" aria-selected="false" data-overview-group="members">负责人</button></div></div><p id="opsOverviewStatus" class="session-search-meta" role="status">正在读取本机经营数据</p><div class="table-wrap"><table class="keyword-table"><thead><tr><th>名称</th><th>场次</th><th>进房人次</th><th>有效成交</th><th>千川消耗</th><th>对账匹配</th></tr></thead><tbody id="opsOverviewRows"></tbody></table></div></div>
+            </section>
+            <section class="panel session-search"><div class="panel-head"><div><div class="panel-title">复盘待办</div><div class="panel-subtitle">按成员归集已保存的后续行动</div></div></div><div id="opsTodoRows" class="ops-record-list"></div></section>
+            <div class="ops-grid"><section class="panel"><div class="panel-head"><div><div class="panel-title">直播号对应关系</div><div class="panel-subtitle">本机显示名与别名</div></div></div><form id="opsMappingForm" class="ops-form"><input type="hidden" name="id"><label>直播号本机别名<input name="name" maxlength="80" required></label><label>罗盘账号显示名<input name="sourceAlias" maxlength="80" required></label><label>关联店铺<select name="storeId" id="opsMappingStore"></select></label><label>负责人<select name="memberId" id="opsMappingMember"></select></label><label>千川户本机别名<input name="qianchuanAlias" maxlength="80"></label><label><span><input type="checkbox" name="active" checked> 启用</span></label><div class="button-row"><button class="btn primary" type="submit">保存对应关系</button><button class="btn" type="reset">清空</button></div><p class="settings-status" id="opsMappingStatus" role="status"></p></form></section><section class="panel"><div class="panel-head"><div><div class="panel-title">已登记直播号</div><div class="panel-subtitle">按罗盘账号显示名匹配本机场次</div></div></div><div id="opsMappingRows" class="ops-record-list"></div></section></div>
+          </section>
+          <section class="ops-pane" id="ops-team" role="tabpanel" hidden>
             <div class="ops-split">
               <section class="panel"><div class="panel-head"><div><div class="panel-title">团队成员</div><div class="panel-subtitle">维护主播、助播及场控等岗位</div></div></div><form id="opsMemberForm" class="ops-form"><input type="hidden" name="id"><label>成员姓名<input name="name" maxlength="80" required></label><label>岗位<select name="role"><option>主播</option><option>助播</option><option>场控</option><option>中控</option><option>投手</option><option>其他</option></select></label><label>平台<input name="platform" maxlength="40" placeholder="例如：抖音电商"></label><label>关联直播账号<input name="account" maxlength="120" placeholder="只记本地备注，尚未绑定平台身份"></label><label><span><input type="checkbox" name="active" checked> 在职</span></label><div class="button-row"><button class="btn primary" type="submit">保存成员</button><button class="btn" type="reset">清空</button></div><p class="settings-status" id="opsMemberStatus" role="status"></p></form></section>
               <section class="panel"><div class="panel-head"><div><div class="panel-title">成员列表</div><div class="panel-subtitle">本机基础资料</div></div></div><div id="opsMemberRows" class="ops-record-list"></div></section>
             </div>
-            <section class="panel session-search"><div class="panel-head"><div><div class="panel-title">主播排行与退款统计</div><div class="panel-subtitle">等待接入已核验的场次负责人、有效订单和退款字段</div></div><span class="ops-state">待经营数据接入</span></div><div class="panel-body"><div class="session-search-meta">目前只有排班成员配置，没有足够的真实场次归属和退款口径；不会用录制时长或排班数量替代主播业绩。</div></div></section>
             <section class="panel session-search"><div class="panel-head"><div><div class="panel-title">班次安排</div><div class="panel-subtitle">按日期和岗位维护计划；保存后出现在日历</div></div></div><form id="opsShiftForm" class="ops-form ops-split"><input type="hidden" name="id"><label>日期<input type="date" name="date" required></label><label>成员<select name="memberId" id="opsShiftMember" required></select></label><label>开始<input type="time" name="start"></label><label>结束<input type="time" name="end"></label><label>岗位<select name="role"><option>主播</option><option>助播</option><option>场控</option><option>中控</option><option>投手</option></select></label><label>关联直播号<input name="liveAccount" maxlength="120"></label><label>状态<select name="status"><option value="planned">计划</option><option value="live">上播</option><option value="completed">已完成</option><option value="invalid">无效排班</option></select></label><label>备注<input name="notes" maxlength="500"></label><div class="button-row"><button class="btn primary" type="submit">保存排班</button><button class="btn" type="reset">清空</button></div><p class="settings-status" id="opsShiftStatus" role="status"></p></form><div id="opsShiftRows" class="ops-record-list"></div></section>
           </section>
           <section class="ops-pane" id="ops-stores" role="tabpanel" hidden>
             <div class="ops-note">可按店铺所属平台整理本机资料；本地登记不代表平台授权或数据已同步。</div>
-            <div class="ops-grid"><section class="panel"><div class="panel-head"><div><div class="panel-title">店铺资料</div><div class="panel-subtitle">可登记抖店、快手小店、微信小店</div></div></div><form id="opsStoreForm" class="ops-form"><input type="hidden" name="id"><label>店铺名称<input name="name" maxlength="100" required></label><label>平台<select name="platform"><option value="douyin">抖店</option><option value="kuaishou">快手小店</option><option value="wechat">微信小店</option></select></label><label>店铺 ID / 备注<input name="shopId" maxlength="100"></label><label><span><input type="checkbox" name="active" checked> 正在经营</span></label><div class="button-row"><button class="btn primary" type="submit">保存店铺</button><button class="btn" type="reset">清空</button></div><p class="settings-status" id="opsStoreStatus" role="status"></p></form></section><section class="panel"><div class="panel-head"><div><div class="panel-title">已登记店铺</div><div class="panel-subtitle">授权状态需通过平台连接检查确认</div></div></div><div id="opsStoreRows" class="ops-record-list"></div></section></div>
+            <div class="ops-grid"><section class="panel"><div class="panel-head"><div><div class="panel-title">店铺资料</div><div class="panel-subtitle">可登记抖店、快手小店、微信小店</div></div></div><form id="opsStoreForm" class="ops-form"><input type="hidden" name="id"><label>店铺名称<input name="name" maxlength="100" required></label><label>平台<select name="platform"><option value="douyin">抖店</option><option value="kuaishou">快手小店</option><option value="wechat">微信小店</option></select></label><label>店铺本机别名<input name="shopId" maxlength="100"></label><label><span><input type="checkbox" name="active" checked> 正在经营</span></label><div class="button-row"><button class="btn primary" type="submit">保存店铺</button><button class="btn" type="reset">清空</button></div><p class="settings-status" id="opsStoreStatus" role="status"></p></form></section><section class="panel"><div class="panel-head"><div><div class="panel-title">已登记店铺</div><div class="panel-subtitle">授权状态需通过平台连接检查确认</div></div></div><div id="opsStoreRows" class="ops-record-list"></div></section></div>
             <section class="panel session-search"><div class="panel-head"><div><div class="panel-title">商品目录</div><div class="panel-subtitle">本地 SKU 台账，不代表实时库存或成交</div></div></div><form id="opsProductForm" class="ops-form ops-split"><input type="hidden" name="id"><label>所属店铺<select name="storeId" id="opsProductStore" required></select></label><label>商品名称<input name="name" maxlength="120" required></label><label>SKU / 货号<input name="sku" maxlength="100"></label><label>标价<input name="price" maxlength="30" inputmode="decimal"></label><label>状态<select name="status"><option value="active">在售</option><option value="inactive">停售</option></select></label><div class="button-row"><button class="btn primary" type="submit">保存商品</button><button class="btn" type="reset">清空</button></div><p class="settings-status" id="opsProductStatus" role="status"></p></form><div id="opsProductRows" class="ops-record-list"></div></section>
           </section>
           <section class="ops-pane" id="ops-brands" role="tabpanel" hidden>
@@ -1267,12 +1286,12 @@
       setNavigation(false);
       if (fromMobileNavigation) document.getElementById("mainContent").focus({preventScroll:true});
       if (name === "sessions") refreshSessions();
-      if (name === "keywords") window.LiveKeywords?.refresh();
+      if (name === "keywords") { window.LiveKeywords?.refresh(); window.LiveHotInsights?.refresh(); }
       if (name === "sources") refreshServiceStatus();
       if (name === "settings") refreshSettings();
       if (["monitor", "settings"].includes(name)) refreshRecorder();
       if (name === "business") { window.LiveRpa?.refresh(); window.LiveFeishu?.refresh(); }
-      if (name === "operations") window.LiveOperations?.refresh();
+      if (name === "operations") { window.LiveOperations?.refresh(); window.LiveTeamOverview?.refresh(); }
       history.replaceState(null, "", "#" + name);
       window.scrollTo({top:0, behavior:matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth"});
     }
@@ -1433,6 +1452,8 @@
   <script src="/recording-sessions-ui.js"></script>
   <script src="/session-timeline-ui.js"></script>
   <script src="/operations-ui.js"></script>
+  <script src="/team-overview-ui.js"></script>
+  <script src="/hot-insights-ui.js"></script>
   <script src="/keyword-ui.js"></script>
 </body>
 </html>

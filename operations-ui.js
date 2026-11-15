@@ -1,6 +1,7 @@
 (() => {
   const $ = id => document.getElementById(id);
   const collections = {
+    accountMappings: {form:"opsMappingForm", status:"opsMappingStatus", rows:"opsMappingRows", tab:"overview"},
     teamMembers: {form:"opsMemberForm", status:"opsMemberStatus", rows:"opsMemberRows", tab:"team"},
     shifts: {form:"opsShiftForm", status:"opsShiftStatus", rows:"opsShiftRows", tab:"team"},
     stores: {form:"opsStoreForm", status:"opsStoreStatus", rows:"opsStoreRows", tab:"stores"},
@@ -12,7 +13,7 @@
     role: {planned:"计划", live:"上播", completed:"已完成", invalid:"无效排班",
       active:"在售", inactive:"停售", douyin:"抖店", kuaishou:"快手小店", wechat:"微信小店"},
   };
-  let data = {teamMembers:[], shifts:[], stores:[], products:[], brands:[], goals:[]};
+  let data = {accountMappings:[], teamMembers:[], shifts:[], stores:[], products:[], brands:[], goals:[]};
   let loadPromise = null;
 
   function esc(value) {
@@ -38,6 +39,9 @@
   function memberName(id) { return data.teamMembers.find(item => item.id === id)?.name || "成员已移除"; }
   function storeName(id) { return data.stores.find(item => item.id === id)?.name || "店铺已移除"; }
   function renderRows() {
+    const mappings = [...(data.accountMappings || [])].sort((a,b) => a.name.localeCompare(b.name, "zh-CN"));
+    $("opsMappingRows").innerHTML = mappings.length ? mappings.map(item => listMarkup("accountMappings", item, item.name,
+      [item.sourceAlias, item.storeId && storeName(item.storeId), item.memberId && memberName(item.memberId), item.qianchuanAlias].filter(Boolean).join(" · "), item.active ? "启用" : "停用")).join("") : emptyMarkup("尚未建立直播号对应关系");
     const memberRows = [...data.teamMembers].sort((a,b) => a.name.localeCompare(b.name, "zh-CN"));
     $("opsMemberRows").innerHTML = memberRows.length ? memberRows.map(item => listMarkup("teamMembers", item, item.name,
       [item.role, item.platform, item.account].filter(Boolean).join(" · ") || "未填写岗位信息", item.active ? "在职" : "已停用")).join("") : emptyMarkup("尚未登记团队成员");
@@ -68,6 +72,8 @@
     setSelectOptions($("opsShiftMember"), data.teamMembers.map(item => ({value:item.id, label:`${item.name}${item.active ? "" : " · 已停用"}`})), "请选择团队成员", true);
     setSelectOptions($("opsProductStore"), data.stores.map(item => ({value:item.id, label:`${item.name}${item.active ? "" : " · 已停用"}`})), "请先登记店铺", true);
     setSelectOptions($("opsBrandStore"), data.stores.map(item => ({value:item.id, label:item.name})), "不关联店铺", false);
+    setSelectOptions($("opsMappingStore"), data.stores.map(item => ({value:item.id, label:item.name})), "不关联店铺", false);
+    setSelectOptions($("opsMappingMember"), data.teamMembers.map(item => ({value:item.id, label:item.name})), "不指定负责人", false);
   }
   function setSelectOptions(select, options, placeholder, required) {
     const markup = [`<option value="">${esc(placeholder)}</option>`, ...options.map(item => `<option value="${esc(item.value)}">${esc(item.label)}</option>`)].join("");
@@ -131,6 +137,7 @@
         form.reset();
         form.elements.namedItem("id").value = "";
         const refreshed = await refresh();
+        if (refreshed) window.LiveTeamOverview?.refresh();
         setStatus(config.status, refreshed ? "已保存到本机" : "已保存；列表刷新失败，请稍后重试", !refreshed);
       } catch (error) {
         setStatus(config.status, `保存失败：${error.message}`, true);
