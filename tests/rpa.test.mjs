@@ -4,9 +4,12 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import { taskUrl, validateResponse, measure, findMetric, roomList, historyBounds, historyWindow, historyRange, historyStartDate, historyRoomPage, validateHistoryEndpoint, normalizeHistoryReport, normalizeSnapshot, CollectError } from '../rpa/model.mjs';
+import { BrowserEngine, providerLoginUrl, qianchuanLoginState } from '../rpa/engine.mjs';
 import { Store } from '../rpa/store.mjs';
 import { Collector, acquireCollectorGuard } from '../rpa/collector.mjs';
+import { reconcileSpend } from '../rpa/spend-reconciliation.mjs';
 
 // Synthetic fixtures test supported response shapes, not captured production data.
 const roomId = '7612345678901234567';
@@ -33,12 +36,203 @@ const historyResponses = {
     { index_name: 't7payin8d_predstl_ord_amt', index_display: '预计结算金额', value: { unit: 'price', value: 12345 } },
   ] } },
 };
+
+test('provider login target is fixed to the official Qianchuan portal', () => {
+  assert.equal(providerLoginUrl('qianchuan'), 'https://qianchuan.jinritemai.com/');
+  assert.throws(() => providerLoginUrl('https://attacker.example/'), CollectError);
+  assert.throws(() => providerLoginUrl('compass'), CollectError);
+});
+test('Qianchuan login status requires observed official page signals', async () => {
+  const business = { origin:'https://business.oceanengine.com',
+    pathname:'/ebp/account-manage/ecp/bidding/universe/account', hasAccountControl:true, hasHomeContent:true };
+  const home = { origin:'https://qianchuan.jinritemai.com', pathname:'/home',
+    hasWorkspaceText:true, hasHomeContent:true };
+  const login = { origin:'https://qianchuan.jinritemai.com', pathname:'/login', hasTextInput:true,
+    hasLoginInput:true };
+  const selection = { ...login, hasLoginInput:false, hasSelectAccount:true,
+    hasLogoutControl:true, hasAccountSearch:true, hasAccountRows:true };
+  assert.equal(qianchuanLoginState([business]), 'logged_in');
+  assert.equal(qianchuanLoginState([home]), 'logged_in');
+  assert.equal(qianchuanLoginState([{ ...home, pathname:'/dataV2/bidding/site-promotion' }]), 'logged_in');
+  assert.equal(qianchuanLoginState([selection]), 'logged_in');
+  assert.equal(qianchuanLoginState([{ ...selection, hasSelectAccount:false }]), 'logged_in');
+  assert.equal(qianchuanLoginState([login]), 'needs_login');
+  assert.equal(qianchuanLoginState([business, login]), 'logged_in');
+  assert.equal(qianchuanLoginState([{ ...login, origin:'https://business.oceanengine.com' }]), 'needs_login');
+  assert.equal(qianchuanLoginState([{ ...business, hasAccountControl:false }]), 'unknown');
+  assert.equal(qianchuanLoginState([{ ...login, hasLoginInput:false }]), 'unknown');
+  assert.equal(qianchuanLoginState([{ ...business, origin:'https://other.example' }]), 'unknown');
+
+  const engine = new BrowserEngine('/unused', () => {});
+  let current = 'https://business.oceanengine.com/ebp/account-manage/ecp/bidding/universe/account';
+  let navigations = 0;
+  const page = {
+    isClosed: () => false, url: () => current,
+    evaluate: async () => current.includes('/login') ?
+      { hasTextInput:true, hasLoginInput:true, hasAccountControl:false, hasHomeContent:false } :
+      { hasTextInput:false, hasAccountControl:true, hasHomeContent:true },
+    goto: async url => { assert.equal(url, providerLoginUrl('qianchuan')); navigations++; current = 'https://qianchuan.jinritemai.com/login'; },
+    waitForURL: async () => {},
+    bringToFront: async () => {},
+  };
+  engine.sessions.set('provider-qianchuan', { page, context:{ pages: () => [page] } });
+  assert.equal((await engine.qianchuanStatus()).state, 'logged_in');
+  assert.equal((await engine.checkQianchuanLogin()).state, 'logged_in');
+  await engine.openProviderLogin('qianchuan');
+  assert.equal(navigations, 0);
+  current = 'https://business.oceanengine.com/login';
+  assert.equal((await engine.checkQianchuanLogin()).state, 'needs_login');
+  await engine.openProviderLogin('qianchuan');
+  assert.equal(navigations, 0);
+  current = 'https://business.oceanengine.com/ebp/account-manage/ecp/bidding/universe/account';
+  page.evaluate = async () => ({});
+  assert.equal((await engine.checkQianchuanLogin()).state, 'unknown');
+  assert.equal(navigations, 0);
+  page.evaluate = async () => ({ hasTextInput:true, hasLoginInput:true });
+  current = 'about:blank';
+  assert.equal((await engine.checkQianchuanLogin()).state, 'needs_login');
+  assert.equal(navigations, 1);
+  engine.sessions.clear();
+  assert.deepEqual(await engine.qianchuanStatus(), { state:'unknown' });
+});
+test('Qianchuan login check honors a verified account tab beside an older login tab', async () => {
+  const engine = new BrowserEngine('/unused', () => {});
+  const login = { isClosed: () => false, url: () => 'https://qianchuan.jinritemai.com/login',
+    evaluate: async fn => fn.toString().includes('const lines') ? false :
+      { hasTextInput:true, hasLoginInput:true },
+    goto: async () => { throw new Error('an existing login tab must not be reloaded'); },
+    bringToFront: async () => { throw new Error('the verified account tab should be shown'); } };
+  let front = false;
+  const business = { isClosed: () => false,
+    url: () => 'https://business.oceanengine.com/ebp/account-manage/ecp/bidding/universe/account',
+    evaluate: async () => ({ hasAccountControl:true, hasHomeContent:true }),
+    bringToFront: async () => { front = true; } };
+  engine.sessions.set('provider-qianchuan', { page: login, context:{ pages: () => [login, business] } });
+  assert.equal((await engine.checkQianchuanLogin()).state, 'logged_in');
+  await engine.openProviderLogin('qianchuan');
+  assert.equal(engine.sessions.get('provider-qianchuan').page, business);
+  assert.equal(front, true);
+});
+function syntheticSelectionPage(ids, { enterWorkspace = true, initialUrl = 'https://qianchuan.jinritemai.com/login' } = {}) {
+  let current = initialUrl;
+  let bodyText = `选择账户\n退出登录\n${ids.map(id => `合成户\nID: ${id}`).join('\n')}`;
+  let filled = '';
+  let clicked = null;
+  let navigations = 0;
+  const input = { type:'text', placeholder:'请输入账户名称/ID', getClientRects: () => [1] };
+  const rows = ids.map(id => ({ innerText:`ID: ${id}`, children:[], attributes:{},
+    getClientRects: () => [1], setAttribute(name, value) { this.attributes[name] = value; },
+    removeAttribute(name) { delete this.attributes[name]; }, id }));
+  const document = {
+    body: { get innerText() { return bodyText; } },
+    querySelectorAll(selector) {
+      if (selector === 'input' || selector.startsWith('input[')) return [input];
+      if (selector === 'body *') return rows;
+      if (selector === '[data-liveops-qianchuan-target]')
+        return rows.filter(row => row.attributes['data-liveops-qianchuan-target']);
+      return [];
+    },
+  };
+  const page = {
+    isClosed: () => false, url: () => current,
+    evaluate: async (fn, arg) => vm.runInNewContext(`(${fn.toString()})(arg)`, {
+      document, arg, getComputedStyle: () => ({ visibility:'visible' }),
+    }),
+    waitForFunction: async (fn, arg) => {
+      const found = vm.runInNewContext(`(${fn.toString()})(arg)`, { document, arg });
+      if (!found) throw new Error('no matching account row');
+    },
+    locator: selector => ({
+      fill: async value => { assert.equal(selector, 'input[placeholder="请输入账户名称/ID"]'); filled = value; },
+      click: async () => {
+        assert.equal(selector, '[data-liveops-qianchuan-target="true"]');
+        const row = rows.find(item => item.attributes['data-liveops-qianchuan-target'] === 'true');
+        clicked = row?.id || null;
+        if (enterWorkspace) { current = 'https://qianchuan.jinritemai.com/dashboard'; bodyText = '工作台'; }
+      },
+      waitFor: async () => {},
+    }),
+    waitForURL: async predicate => { if (!predicate(new URL(current))) throw new Error('still selecting'); },
+    goto: async url => {
+      assert.equal(url, 'https://qianchuan.jinritemai.com/login');
+      navigations++;
+      current = 'https://qianchuan.jinritemai.com/login';
+    },
+    bringToFront: async () => {},
+  };
+  return { page, get filled() { return filled; }, get clicked() { return clicked; },
+    get navigations() { return navigations; } };
+}
+test('Qianchuan selection is logged in and stays on the existing page', async () => {
+  const fixture = syntheticSelectionPage(['0'.repeat(16)]);
+  const engine = new BrowserEngine('/unused', () => {});
+  engine.sessions.set('provider-qianchuan', { page:fixture.page, context:{ pages: () => [fixture.page] } });
+  assert.equal((await engine.qianchuanStatus()).state, 'logged_in');
+  assert.equal((await engine.checkQianchuanLogin()).state, 'logged_in');
+  await engine.openProviderLogin('qianchuan');
+  assert.equal(fixture.navigations, 0);
+});
+test('Qianchuan enters only the exact saved account and confirms the workspace', async () => {
+  const accountId = '0'.repeat(16);
+  const nearId = '0'.repeat(15) + '1';
+  const fixture = syntheticSelectionPage([nearId, accountId]);
+  const engine = new BrowserEngine('/unused', () => {});
+  engine.sessions.set('provider-qianchuan', { page:fixture.page, context:{ pages: () => [fixture.page] } });
+  assert.deepEqual(await engine.enterQianchuanAccount(accountId), {
+    entered: true, origin: 'https://qianchuan.jinritemai.com', pathname: '/dashboard',
+  });
+  assert.equal(fixture.filled, accountId);
+  assert.equal(fixture.clicked, accountId);
+  assert.equal(fixture.navigations, 0);
+});
+test('Qianchuan navigates from a logged-in official page to account selection', async () => {
+  const accountId = '0'.repeat(16);
+  const fixture = syntheticSelectionPage([accountId], {
+    initialUrl:'https://business.oceanengine.com/ebp/account-manage/ecp/bidding/universe/account',
+  });
+  const engine = new BrowserEngine('/unused', () => {});
+  engine.sessions.set('provider-qianchuan', { page:fixture.page, context:{ pages: () => [fixture.page] } });
+  engine.checkQianchuanLogin = async () => ({ state:'logged_in' });
+  assert.equal((await engine.enterQianchuanAccount(accountId)).entered, true);
+  assert.equal(fixture.navigations, 1);
+  assert.equal(fixture.clicked, accountId);
+});
+test('Qianchuan page diagnostics redact numeric path segments', async () => {
+  const accountId = '0'.repeat(16);
+  const page = { isClosed:() => false,
+    url:() => `https://qianchuan.jinritemai.com/account/${accountId}`,
+    evaluate:async () => ({ hasWorkspaceText:true }),
+  };
+  const engine = new BrowserEngine('/unused', () => {});
+  engine.sessions.set('provider-qianchuan', { page, context:{ pages:() => [page] } });
+  const status = await engine.qianchuanStatus();
+  assert.equal(status.pages[0].pathname, '/account/[已隐藏]');
+  assert.equal(JSON.stringify(status).includes(accountId), false);
+});
+test('Qianchuan entry rejects missing ID, unmatched ID and an unconfirmed click', async () => {
+  const accountId = '0'.repeat(16);
+  const nearId = '0'.repeat(15) + '1';
+  const fixture = syntheticSelectionPage([nearId]);
+  const engine = new BrowserEngine('/unused', () => {});
+  engine.sessions.set('provider-qianchuan', { page:fixture.page, context:{ pages: () => [fixture.page] } });
+  await assert.rejects(engine.enterQianchuanAccount(''), /填写并保存户 ID/);
+  assert.equal(fixture.filled, '');
+  await assert.rejects(engine.enterQianchuanAccount(accountId), /未找到已保存的当前户 ID/);
+  assert.equal(fixture.clicked, null);
+  const unconfirmed = syntheticSelectionPage([accountId], { enterWorkspace:false });
+  engine.sessions.set('provider-qianchuan', { page:unconfirmed.page, context:{ pages: () => [unconfirmed.page] } });
+  await assert.rejects(engine.enterQianchuanAccount(accountId), /未确认进入工作台/);
+  assert.equal(unconfirmed.clicked, accountId);
+  engine.checkQianchuanLogin = async () => ({ state:'needs_login' });
+  await assert.rejects(engine.enterQianchuanAccount(accountId), /需要登录/);
+});
 function setup(handler = task => structuredClone(responses[task])) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'liveops-rpa-test-'));
   const store = new Store(root);
   const engine = { request: async (_id, task, options) => handler(task, options), open: async () => ({}), close: async () => {} };
   const collector = new Collector(store, engine);
   collector.historyRequestSpacingMs = 0;
+  store.setTargetName(responses.account.data.account_name);
   const a = store.create('测试'); store.save({ ...a, enabled: true });
   return { root, store, collector, id: a.id, cleanup: async () => { await collector.close(); fs.rmSync(root, { recursive: true }); } };
 }
@@ -105,12 +299,24 @@ test('preserve units, zero values and explicit display strings without money/rat
   assert.equal(measure(0).value, 0);
   assert.equal(measure(null), null);
   assert.equal(measure(0.12).display, '0.12');
+  assert.equal(measure({ value: 3, unit: 'nan' }).unit, '');
   assert.equal(findMetric({ compare: { online_user_cnt: 1000 }, current: { online_user_cnt: 9 } }, 'online_user_cnt').value, 9);
 });
 test('room IDs stay precise and unknown status is not treated as live', () => {
   assert.equal(roomList(responses.rooms)[0].id, roomId);
   assert.equal(roomList({ data: { card_list: [{ room_id: '1', status: 0 }] } })[0].state, 'unknown');
+  const liveId = '9007199254740999001';
+  assert.deepEqual(roomList({ data: { card_list: [{ live_id: liveId, live_title: '合成直播',
+    start_time: '2026-11-12 10:00', operation: { live_id: liveId } }] } }),
+  [{ id: liveId, title: '合成直播', state: 'unknown', startedAt: '2026-11-12 10:00' }]);
+  assert.throws(() => roomList({ data: { card_list: [{ operation: { live_id: liveId } }] } }), /场次 ID 格式未识别/);
   assert.throws(() => roomList({ data: { card_list: [{ room_id: Number(roomId) }] } }));
+  assert.throws(() => roomList({ data: { card_list: [{ live_id: Number(liveId), live_title: '合成直播' }] } }), /安全精度/);
+  assert.throws(() => roomList({ data: { card_list: [{ live_id: 'bad',
+    operation: { live_id: '0000000000000000001' } }] } }), error => {
+    assert.match(error.shape.join('\n'), /live_id=string\(19,digits=true,unsafe=false\)/);
+    return true;
+  });
   assert.throws(() => roomList({ data: { items: [] } }));
 });
 test('historical request and response have bounded pagination and exact string IDs', () => {
@@ -173,6 +379,69 @@ test('historical metrics keep source, raw units, zeros and missing values distin
   assert.equal(byKey.t7payin8d_predstl_ord_amt.source, 'historyTrade');
   assert.equal(byKey.t7payin8d_predstl_ord_amt.category, '成交');
   assert.equal(byKey.pay_amt, undefined);
+});
+test('room workspace joins saved rooms with local reports and keeps missing metrics distinct', async () => {
+  const t = setup();
+  try {
+    const endDate = historyBounds().latest;
+    const startDate = new Date(Date.parse(`${endDate}T00:00:00Z`) - 29 * 86400e3).toISOString().slice(0, 10);
+    const historyId = '7612345678901234567';
+    const liveId = '7612345678901234568';
+    t.store.save({ ...t.store.account(t.id), uid: '99887766', name: '测试罗盘', state: 'ready' });
+    t.store.saveRoom(t.id, { id: historyId, title: '结束场次', state: 'ended', startedAt: `${endDate}T10:00:00+08:00` });
+    t.store.saveHistoryReport(t.id, historyId, { retrievedAt: new Date().toISOString(),
+      endpoints: { historyBasic: { ok: true }, historyCore: { ok: true }, historyTrade: { ok: true } },
+      metrics: [
+        { key: 'watch_ucnt', value: 0, display: '0', rawUnit: 'number', unit: '', source: 'historyCore' },
+        { key: 't7payin8d_predstl_ord_cnt', value: 7, display: '7', rawUnit: 'number', unit: '', source: 'historyTrade' },
+        { key: 't7payin8d_predstl_ord_amt', value: 12345, display: '123.45', rawUnit: 'price', unit: '元', source: 'historyTrade' },
+      ] }, {});
+    t.store.saveRoom(t.id, { id: liveId, title: '直播场次', state: 'live', startedAt: `${endDate}T11:00:00+08:00` });
+    t.store.snapshot(t.id, liveId, { ...normalizeSnapshot({
+      base: { ok: true, body: { data: { room_status: 2 } } },
+      core: { ok: true, body: { data: { online_user_cnt: 0, pay_combo_cnt: 2 } } },
+      products: { ok: true, body: { data: {} } },
+    }), spendReconciliation: reconcileSpend(liveId,
+      { roomId: liveId, amount: '1', unit: '元', sampledAt: '2026-11-13T10:00:00Z' },
+      { roomId: liveId, amount: '1.00', unit: '元', sampledAt: '2026-11-13T10:00:10Z' }) }, {});
+    const data = await t.collector.command('room.workspace', { accounts: [t.id], startDate, endDate, limit: 20 });
+    assert.equal(data.total, 2);
+    assert.equal(data.accounts[0].recentSessions, 2);
+    assert.equal(data.totals.entryVisits.value, 0);
+    assert.equal(data.totals.entryVisits.coveredRooms, 1);
+    assert.equal(data.totals.validOrders.value, 7);
+    assert.equal(data.totals.validSales.display, '123.45');
+    assert.equal(data.rows.find(row => row.room.id === historyId).metrics.entryVisits.value, 0);
+    assert.equal(data.rows.find(row => row.room.id === liveId).metrics.entryVisits, null);
+    assert.equal(data.rows.find(row => row.room.id === liveId).metrics.onlineUsers.value, 0);
+    assert.equal(data.rooms.find(row => row.id === liveId).spendReconciliation.status, '匹配');
+    assert.equal(data.rooms.find(row => row.id === historyId).spendReconciliation, null);
+    assert.equal(data.coverage.uniqueViewers.available, false);
+    assert.equal(data.coverage.adSpend.available, true);
+    assert.equal(data.coverage.adSpend.reconciled, 1);
+    assert.equal(data.coverage.adSpend.qianchuanCovered, 1);
+    const endedOnly = await t.collector.command('room.workspace', { accounts: [t.id], startDate, endDate, omitLive: true });
+    assert.equal(endedOnly.total, 1);
+    const sorted = await t.collector.command('room.workspace', { accounts: [t.id], startDate, endDate,
+      sortBy: 'pay_combo_cnt', sortDirection: 'desc', limit: 20 });
+    assert.equal(sorted.rows[0].room.id, historyId);
+    await assert.rejects(t.collector.command('room.workspace', { accounts: [t.id], startDate, endDate, sortBy: 'unknown' }));
+    await assert.rejects(t.collector.command('room.workspace', { accounts: ['missing'], startDate, endDate }));
+  } finally { await t.cleanup(); }
+});
+
+test('official slash-formatted room times remain visible in date-filtered workspace', async () => {
+  const t = setup();
+  try {
+    const day = historyBounds().latest;
+    t.store.saveRoom(t.id, { id: roomId, title: '测试直播', state: 'unknown',
+      startedAt: `${day.replaceAll('-', '/')} 08:00`, today: true });
+    const data = await t.collector.command('room.workspace', {
+      accounts: [t.id], startDate: day, endDate: day, limit: 20 });
+    assert.equal(data.total, 1);
+    assert.equal(data.rooms[0].id, roomId);
+    assert.equal(data.accounts[0].recentSessions, 1);
+  } finally { await t.cleanup(); }
 });
 test('manual historical detail persists across restart without snapshots or Feishu work', async () => {
   const calls = [];
@@ -587,14 +856,108 @@ test('expired login retains historical snapshots and reports login needed', asyn
     assert.equal(t.store.detail(t.id, roomId).history.length, 1);
   } finally { await t.cleanup(); }
 });
+test('verified identity survives an unrecognized room list without saving rooms', async () => {
+  const syntheticId = '9007199254740999002';
+  const t = setup(task => task === 'rooms'
+    ? { data: { card_list: [{ live_title: '合成直播', live_id: 'invalid', operation: { live_id: syntheticId } }] } }
+    : structuredClone(responses[task]));
+  try {
+    await t.collector.sync(t.id);
+    const account = t.store.account(t.id);
+    assert.equal(account.uid, responses.identity.data.author_id);
+    assert.equal(account.name, responses.account.data.account_name);
+    assert.equal(account.state, 'error');
+    assert.match(account.error, /场次 ID 格式未识别/);
+    assert.equal(t.store.rooms(t.id).length, 0);
+    assert.equal(t.store.db.prepare('SELECT COUNT(*) AS count FROM snapshots').get().count, 0);
+    const evidence = t.store.events().map(event => event.message).filter(message => message.startsWith('今日场次形态：')).join('\n');
+    assert.match(evidence, /card_list\[0\].operation: live_id=string\(19,digits=true,unsafe=true\)/);
+    assert.match(evidence, /live_id=string\(7,digits=false,unsafe=false\)/);
+    assert.doesNotMatch(evidence, /9007199254740999002|invalid/);
+  } finally { await t.cleanup(); }
+});
 test('switching login identity cannot append another account’s data', async () => {
   const t = setup();
   try {
     await t.collector.sync(t.id);
-    t.collector.engine.request = async () => ({ data: { author_id: 'other' } });
+    t.collector.engine.request = async (_id, task) => task === 'identity'
+      ? { data: { author_id: 'other' } } : { data: { account_name: '另一个达人' } };
     await t.collector.sync(t.id);
     assert.equal(t.store.account(t.id).state, 'account_changed');
+    assert.equal(t.store.account(t.id).enabled, false);
+    assert.equal(t.store.account(t.id).name, '测试账号');
+    assert.equal(t.store.account(t.id).observedName, '另一个达人');
     assert.equal(t.store.detail(t.id, roomId).history.length, 1);
+  } finally { await t.cleanup(); }
+});
+test('opening the persistent login window pauses collection until a fresh verification', async () => {
+  const t = setup();
+  try {
+    let opened = false;
+    t.collector.engine.open = async (_id, visible) => { opened = visible; return {}; };
+    await t.collector.command('login', { id: t.id });
+    assert.equal(opened, true);
+    assert.equal(t.store.account(t.id).enabled, false);
+    assert.equal(t.store.account(t.id).verifiedAt, null);
+    assert.equal(t.collector.busy.size, 0);
+  } finally { await t.cleanup(); }
+});
+test('a live verification replaces a stale saved name and never trusts a similar label', async () => {
+  const t = setup(task => task === 'account'
+    ? { data: { account_name: '演示直播号甲分号' } } : structuredClone(responses[task]));
+  try {
+    t.store.setTargetName('演示直播号甲');
+    t.store.save({ ...t.store.account(t.id), label: '演示直播号甲', name: '演示直播号甲' });
+    const verified = await t.collector.command('verify', { id: t.id });
+    assert.equal(verified.observedName, '演示直播号甲分号');
+    assert.equal(verified.matchesTarget, false);
+    assert.equal(t.store.account(t.id).name, '演示直播号甲分号');
+    assert.equal(t.store.account(t.id).enabled, false);
+    await assert.rejects(t.collector.command('monitor', { id: t.id, enabled: true }), /请先校正/);
+    assert.equal(t.store.rooms(t.id).length, 0);
+  } finally { await t.cleanup(); }
+});
+test('a missing current live name cannot leave automatic sync enabled', async () => {
+  const t = setup();
+  try {
+    t.store.setTargetName('');
+    t.collector.tick();
+    assert.equal(t.store.account(t.id).enabled, false);
+    await assert.rejects(t.collector.command('monitor', { id: t.id, enabled: true }), /当前直播号/);
+    assert.equal(t.store.account(t.id).enabled, false);
+  } finally { await t.cleanup(); }
+});
+test('automatic sync stops before room reads when the observed name changes', async () => {
+  let name = '演示直播号甲';
+  const calls = [];
+  const t = setup(task => {
+    calls.push(task);
+    return task === 'account' ? { data: { account_name: name } } : structuredClone(responses[task]);
+  });
+  try {
+    t.store.setTargetName(name);
+    await t.collector.sync(t.id);
+    const saved = t.store.detail(t.id, roomId).history.length;
+    name = '演示直播号甲分号';
+    calls.length = 0;
+    await t.collector.sync(t.id);
+    assert.deepEqual(calls, ['identity', 'account']);
+    assert.equal(t.store.account(t.id).enabled, false);
+    assert.equal(t.store.account(t.id).observedName, name);
+    assert.equal(t.store.detail(t.id, roomId).history.length, saved);
+  } finally { await t.cleanup(); }
+});
+test('confirming a freshly verified performer can set the current live name', async () => {
+  const t = setup();
+  try {
+    t.store.setTargetName('旧直播号');
+    await t.collector.command('verify', { id: t.id });
+    assert.equal(t.store.account(t.id).enabled, false);
+    assert.equal((await t.collector.command('target.confirm', { id: t.id })).targetName, '测试账号');
+    await t.collector.command('monitor', { id: t.id, enabled: true });
+    assert.equal(t.store.account(t.id).enabled, true);
+    await t.collector.busy.get(t.id);
+    assert.equal(t.store.account(t.id).state, 'ready');
   } finally { await t.cleanup(); }
 });
 test('pause cancels pending writes and stops automatic scheduling', async () => {
@@ -642,6 +1005,24 @@ test('saved rooms can be paged and inspected while collection stays paused', asy
     assert.equal(t.store.account(t.id).enabled, false);
     assert.equal(t.collector.busy.size, 0);
     await assert.rejects(t.collector.command('rooms.list', { account: t.id, offset: -1 }));
+  } finally { await t.cleanup(); }
+});
+
+test('confirmed review reader returns saved snapshot history beyond the detail preview window', async () => {
+  const t = setup();
+  try {
+    t.store.save({ ...t.store.account(t.id), uid: '99887766', enabled: false, state: 'paused' });
+    t.store.saveRoom(t.id, { id: roomId, title: '跨日场次', state: 'ended', startedAt: '2026-11-09T23:20:00+08:00' });
+    for (let i = 0; i < 130; i++) t.store.snapshot(t.id, roomId, {
+      metrics: [{ key: 'online_user_cnt', value: i, display: String(i), unit: '人' }],
+    }, {});
+    assert.equal(t.store.detail(t.id, roomId).history.length, 120);
+    const review = await t.collector.command('room.review', { account: t.id, room: roomId });
+    assert.equal(review.history.length, 130);
+    assert.equal(review.history[0].metrics[0].value, 0);
+    assert.equal(review.history[129].metrics[0].value, 129);
+    assert.equal(review.account.state, 'paused');
+    assert.equal(t.collector.busy.size, 0);
   } finally { await t.cleanup(); }
 });
 

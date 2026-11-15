@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { DatabaseSync } from 'node:sqlite';
@@ -8,6 +7,22 @@ import { Store } from './store.mjs';
 import { BrowserEngine } from './engine.mjs';
 import { roomList, historyBounds, historyWindow, historyRange, historyStartDate, historyRoomPage, validateHistoryEndpoint, normalizeHistoryReport, normalizeSnapshot, CollectError } from './model.mjs';
 import { FeishuSync } from './feishu.mjs';
+import { compassSpendSample } from './spend-source.mjs';
+import { reconcileSpend } from './spend-reconciliation.mjs';
+import { boundaryWindow, compassHourlyRows, qianchuanHourlyFailure, qianchuanHourlyRows } from './hourly.mjs';
+import { rpaDataRoot } from './platform.mjs';
+
+function savedQianchuanAccountId(root) {
+  const file = path.join(path.dirname(root), 'qianchuan-current-account.json');
+  let saved;
+  try {
+    if (fs.statSync(file).size > 4096) throw new Error('当前户配置无效');
+    saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch { throw new Error('千川当前户未指定或配置无法读取'); }
+  if (typeof saved?.accountId !== 'string' || !/^\d{1,64}$/.test(saved.accountId))
+    throw new Error('千川当前户 ID 未指定');
+  return saved.accountId;
+}
 
 const HISTORY_SUMMARY_FIELDS = [
   { key: 't7payin8d_predstl_ord_amt', label: '结算有效成交金额', source: 'historyTrade', rawUnit: 'price', unit: '元' },
@@ -28,12 +43,39 @@ export function acquireCollectorGuard(root) {
 
 export class Collector {
   constructor(store, engine) {
-    this.store = store; this.engine = engine; this.busy = new Map(); this.historyBusy = new Map(); this.next = new Map(); this.generation = new Map(); this.stopping = false;
+    this.store = store; this.engine = engine; this.busy = new Map(); this.historyBusy = new Map(); this.next = new Map(); this.nextHourly = new Map(); this.generation = new Map(); this.stopping = false;
     this.historyRequestSpacingMs = 800;
     this.feishu = new FeishuSync(store);
+    this.backfillHourlySnapshots();
+  }
+  backfillHourlySnapshots() {
+    const target = this.store.targetName();
+    for (const account of this.store.accounts().filter(item => item.enabled && item.uid && item.name === target)) {
+      const rows = this.store.db.prepare(`SELECT s.room,s.time,s.json FROM snapshots s
+        WHERE s.account=? ORDER BY s.id`).all(account.id);
+      const rooms = new Map(this.store.rooms(account.id).map(room => [room.id, room]));
+      for (const row of rows) {
+        if (!boundaryWindow(row.time)) continue;
+        const room = rooms.get(row.room);
+        if (room) this.store.saveHourly(compassHourlyRows(account, room, JSON.parse(row.json), row.time));
+      }
+    }
+  }
+  async refreshHourly(id, roomId) {
+    const account = this.store.account(id);
+    if (!account.enabled || account.name !== this.store.targetName() || !account.uid)
+      throw new Error('仅可读取已启用且身份一致的目标罗盘连接');
+    const room = this.store.room(id, roomId);
+    if (!room) throw new Error('目标场次不在已保存的罗盘目录');
+    const accountId = savedQianchuanAccountId(this.engine.root);
+    const body = await this.engine.qianchuanHourly(accountId, room);
+    const rows = qianchuanHourlyRows(body, account, room, new Date().toISOString());
+    this.store.saveHourly(rows);
+    this.feishu.tick();
+    return { saved: rows.length, room: roomId, sampledAt: new Date().toISOString() };
   }
   state() {
-    return { ready: true, accounts: this.store.accounts().map(a => ({ ...a, busy: this.busy.has(a.id), historyBusy: this.historyBusy.has(a.id), history: this.store.historyProgress(a.id), historyBatch: this.store.historyBatch(a.id), nextSync: a.enabled ? new Date(this.next.get(a.id) || Date.now()).toISOString() : null, rooms: this.store.rooms(a.id) })), events: this.store.events(), retentionDays: 30, historyBounds: historyBounds() };
+    return { ready: true, targetName: this.store.targetName(), accounts: this.store.accounts().map(a => ({ ...a, busy: this.busy.has(a.id), historyBusy: this.historyBusy.has(a.id), history: this.store.historyProgress(a.id), historyBatch: this.store.historyBatch(a.id), nextSync: a.enabled ? new Date(this.next.get(a.id) || Date.now()).toISOString() : null, rooms: this.store.rooms(a.id) })), events: this.store.events(), retentionDays: 30, historyBounds: historyBounds() };
   }
   pause(id, message = '已暂停自动同步') {
     const a = this.store.account(id);
@@ -67,15 +109,80 @@ export class Collector {
   }
   async login(id) {
     const a = this.store.account(id);
+    if (a.enabled) this.pause(id, '打开罗盘窗口后需重新核验身份，自动同步已暂停');
+    this.store.save({ ...this.store.account(id), observedName: null, verifiedAt: null, observedUidMatchesStored: false,
+      enabled: false, state: 'needs_login', error: null });
     await this.engine.open(id, true);
-    this.store.save({ ...a, enabled: true, state: a.uid ? 'ready' : 'needs_login', error: null });
+    this.store.event(id, '已打开罗盘窗口，请完成登录并核验达人后再开启同步');
+    return { ok: true };
+  }
+  setTarget(name) {
+    if (typeof name !== 'string' || !name.trim() || name.trim().length > 80 || /[\u0000-\u001f\u007f]/.test(name))
+      throw new Error('请输入有效的当前直播号名称');
+    const targetName = name.trim();
+    if (targetName !== this.store.targetName()) {
+      for (const account of this.store.accounts()) if (account.enabled) this.pause(account.id, '当前直播号已变更，自动同步已暂停');
+      this.store.setTargetName(targetName);
+    }
+    return { targetName };
+  }
+  confirmTarget(id) {
+    const account = this.store.account(id);
+    const verifiedAt = Date.parse(account.verifiedAt || '');
+    if (!account.observedName || !account.observedUidMatchesStored ||
+        !Number.isFinite(verifiedAt) || verifiedAt > Date.now() || Date.now() - verifiedAt > 300000)
+      throw new Error('请先重新核验当前罗盘窗口的达人身份');
+    return this.setTarget(account.observedName);
+  }
+  async verifyIdentity(id) {
+    const account = this.store.account(id);
+    const checkedAt = new Date().toISOString();
+    let uid, name;
+    try {
+      const identity = await this.engine.request(id, 'identity');
+      uid = identity?.data?.author_id;
+      if (!uid) throw new CollectError('请在罗盘窗口登录拥有直播数据权限的达人账号。', 'needs_login');
+      if (typeof uid === 'number' && !Number.isSafeInteger(uid)) throw new CollectError('账号标识精度无法确认，已停止核验。');
+      const info = await this.engine.request(id, 'account');
+      name = info?.data?.account_name;
+      if (typeof name !== 'string' || !name.trim()) throw new CollectError('罗盘未返回当前达人名称，无法开启同步。');
+      name = name.trim();
+    } catch (error) {
+      if (account.enabled) this.pause(id, '罗盘身份无法核验，自动同步已暂停');
+      this.store.save({ ...this.store.account(id), observedName: null, verifiedAt: null,
+        observedUidMatchesStored: false, lastCheck: checkedAt, state: error.kind || 'error',
+        error: error.kind === 'needs_login' ? '请在罗盘窗口完成登录后重新核验' : '罗盘身份核验失败，请检查窗口后重试' });
+      throw error;
+    }
+    const compatible = !account.uid || account.uid === String(uid);
+    const targetName = this.store.targetName();
+    const matchesTarget = name === targetName && !!targetName;
+    this.store.save({ ...this.store.account(id), uid: compatible ? String(uid) : account.uid,
+      name: compatible ? name : account.name, observedName: name, verifiedAt: checkedAt,
+      observedUidMatchesStored: compatible, lastCheck: checkedAt,
+      ...(!account.enabled && compatible && matchesTarget ? { state: 'paused', error: null } : {}) });
+    if (!compatible || !matchesTarget) {
+      if (account.enabled) this.pause(id, '罗盘达人与当前直播号不一致，自动同步已暂停');
+      this.store.save({ ...this.store.account(id), state: 'account_changed',
+        error: !compatible ? '当前罗盘窗口已切换达人，请新建连接以免混入原连接的历史数据' :
+          targetName ? `罗盘登录的是「${name}」，当前直播号是「${targetName}」` : '请先指定当前直播号' });
+    }
+    return { observedName: name, verifiedAt: checkedAt, targetName, matchesTarget, compatible };
+  }
+  async enable(id) {
+    const verified = await this.verifyIdentity(id);
+    if (!verified.compatible) throw new Error('当前罗盘窗口已切换达人，请新建连接以免混入原连接的历史数据');
+    if (!verified.targetName) throw new Error('请先指定当前直播号');
+    if (!verified.matchesTarget) throw new Error(`罗盘登录的是「${verified.observedName}」，当前直播号是「${verified.targetName}」，请先校正`);
+    const account = this.store.account(id);
+    this.store.save({ ...account, enabled: true, state: 'ready', error: null });
     this.next.set(id, 0);
-    this.store.event(id, '已打开罗盘窗口，完成登录后将自动同步');
     return this.start(id);
   }
   start(id) {
     this.store.account(id);
     if (this.stopping) throw new Error('采集器正在停止');
+    if (!this.store.targetName()) throw new Error('请先指定当前直播号并核验罗盘达人');
     const retryAfter = this.rateLimitUntil(id);
     if (retryAfter) return { ok: true, queued: false, retryAfter, warning: '罗盘请求受限，等待限流结束后再同步' };
     if (this.busy.has(id) || this.historyBusy.has(id)) return { ok: true, queued: false, busy: true };
@@ -89,27 +196,24 @@ export class Collector {
     let a = this.store.account(id);
     const checkedAt = new Date().toISOString();
     try {
-      const identity = await this.engine.request(id, 'identity');
-      const uid = identity?.data?.author_id;
-      if (!uid) throw new CollectError('请在罗盘窗口登录拥有直播数据权限的达人账号。', 'needs_login');
-      if (typeof uid === 'number' && !Number.isSafeInteger(uid)) throw new CollectError('账号标识精度无法确认，已停止本轮同步。');
-      if (a.uid && a.uid !== String(uid)) throw new CollectError('当前浏览器登录了另一个账号。请切回原账号，或在网站新增连接。', 'account_changed');
+      if (!this.store.targetName()) throw new CollectError('请先指定当前直播号并核验罗盘达人。', 'account_changed');
+      const verified = await this.verifyIdentity(id);
+      if (!verified.compatible) throw new CollectError('当前浏览器登录了另一个达人，请新建连接。', 'account_changed');
+      if (!verified.matchesTarget) throw new CollectError(`罗盘登录的是「${verified.observedName}」，当前直播号是「${verified.targetName}」，自动同步已暂停。`, 'account_changed');
       if (!current()) return;
-      let name = a.name;
-      if (!name) {
-        try { const info = await this.engine.request(id, 'account'); name = info?.data?.account_name || null; } catch { /* Identity is authoritative; a display name is optional. */ }
-      }
+      a = this.store.account(id);
       const today = await this.engine.request(id, 'rooms');
       const rooms = roomList(today);
       if (!current()) return;
-      a = { ...this.store.account(id), uid: String(uid), name, lastCheck: checkedAt };
-      this.store.save(a);
       const todayIds = new Set(rooms.map(r => r.id));
       for (const old of this.store.rooms(id)) if (!todayIds.has(old.id) && old.today !== false) this.store.saveRoom(id, { ...old, today: false, state: old.state === 'live' ? 'unknown' : old.state });
       for (const room of rooms) this.store.saveRoom(id, { ...room, today: true });
       // Poll active rooms first; a bounded number of recent/unknown rooms covers delayed status fields.
       const selected = [...rooms].sort((x, y) => Number(y.state === 'live') - Number(x.state === 'live')).slice(0, 3);
       let failed = 0, successes = 0; const errors = [];
+      let qianchuanAccountId = null, qianchuanAccountError = null;
+      try { qianchuanAccountId = savedQianchuanAccountId(this.engine.root); }
+      catch (error) { qianchuanAccountError = error.message; }
       for (const room of selected) {
         const results = {};
         for (const task of ['base', 'core', 'products']) {
@@ -122,8 +226,41 @@ export class Collector {
         }
         if (!current()) return;
         const normalized = normalizeSnapshot(results);
+        let compassSample, qianchuanSample;
+        try {
+          if (!results.core?.ok) throw new Error(results.core?.error || '罗盘 core_data 未返回');
+          compassSample = compassSpendSample(results.core.body, room.id, new Date().toISOString());
+        } catch (error) { compassSample = { ok: false, reason: String(error.message).slice(0, 120) }; }
+        try {
+          if (qianchuanAccountError) throw new Error(qianchuanAccountError);
+          qianchuanSample = await this.engine.qianchuanSpend(qianchuanAccountId, room);
+        } catch (error) { qianchuanSample = { ok: false, reason: String(error.message).slice(0, 120) }; }
+        if (!current()) return;
+        normalized.spendReconciliation = reconcileSpend(room.id, compassSample, qianchuanSample,
+          { now: Date.now() });
         this.store.snapshot(id, room.id, normalized, results);
         this.store.saveRoom(id, { ...room, today: true, state: normalized.state === 'unknown' ? room.state : normalized.state, lastSample: new Date().toISOString() });
+        const sampledAt = new Date().toISOString();
+        this.store.saveHourly(compassHourlyRows(a, room, normalized, sampledAt));
+        const hourlyKey = `${id}:${room.id}`;
+        const prior = this.store.latestHourlyRead(id, room.id, '巨量千川');
+        const wait = room.state === 'ended' ? 6 * 3600000 : 50 * 60000;
+        if (Date.now() >= (this.nextHourly.get(hourlyKey) || 0) &&
+            (!prior || Date.now() - Date.parse(prior) >= wait)) {
+          this.nextHourly.set(hourlyKey, Date.now() + wait);
+          try {
+            if (qianchuanAccountError) throw new Error(qianchuanAccountError);
+            const body = await this.engine.qianchuanHourly(qianchuanAccountId, room);
+            if (!current()) return;
+            const readAt = new Date().toISOString();
+            const rows = qianchuanHourlyRows(body, a, room, readAt);
+            this.store.saveHourly(rows.length ? rows : [qianchuanHourlyFailure(a, room, readAt, '官方报表未返回当前场次小时桶')]);
+          } catch (error) {
+            const reason = String(error.message).slice(0, 120);
+            this.store.saveHourly([qianchuanHourlyFailure(a, room, new Date().toISOString(), reason)]);
+            this.store.event(id, `千川分时：${reason}`);
+          }
+        }
       }
       if (!current()) return;
       const state = failed ? (successes ? 'partial' : 'error') : 'ready';
@@ -135,9 +272,11 @@ export class Collector {
       if (!current()) return;
       const state = error.kind || 'error';
       const message = String(error.message || '采集失败').replace(/https?:\/\/\S+/g, '罗盘页面').slice(0, 250);
+      if (state === 'account_changed') this.pause(id, message);
       if (state === 'rate_limited') this.recordRateLimit(id, error);
       else this.store.save({ ...this.store.account(id), state, error: message, lastCheck: checkedAt });
       this.store.event(id, message);
+      if (Array.isArray(error.shape)) for (const line of error.shape) this.store.event(id, `今日场次形态：${line}`);
       if (state !== 'rate_limited') this.next.set(id, Date.now() + (state === 'needs_login' ? 30 : 60) * 1000);
     }
   }
@@ -362,6 +501,172 @@ export class Collector {
         overflow,
       })) };
   }
+  roomWorkspace(args = {}) {
+    const allAccounts = this.store.accounts();
+    const requested = Array.isArray(args.accounts) ? args.accounts.map(String) : [];
+    if (requested.length > 10 || new Set(requested).size !== requested.length) throw new Error('账号筛选无效');
+    const selected = requested.length ? requested.map(id => this.store.account(id)) : allAccounts;
+    if (!selected.length) return { accounts: [], startDate: args.startDate || null, endDate: args.endDate || null,
+      total: 0, offset: 0, limit: 0, hasMore: false, totals: {}, summary: { selectedRooms: 0, metrics: {} }, rooms: [], rows: [] };
+    const bounds = historyBounds();
+    const endDate = args.endDate || bounds.latest;
+    const defaultStart = new Date(Date.parse(`${endDate}T00:00:00Z`) - 29 * 86400e3).toISOString().slice(0, 10);
+    const startDate = args.startDate || defaultStart;
+    historyRange(startDate, endDate);
+    const offset = Number(args.offset ?? 0), limit = Number(args.limit ?? 50);
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+      throw new Error('直播间分页参数无效');
+    const sortBy = String(args.sortBy || 'startedAt');
+    const sortDirection = String(args.sortDirection || 'desc');
+    const sortableFields = new Set(['title', 'accountName', 'startedAt', 'watch_ucnt', 'pay_ucnt',
+      'pay_combo_cnt', 'pay_amt', 'follow_anchor_ucnt', 'ad_spend']);
+    if (!sortableFields.has(sortBy) || !['asc', 'desc'].includes(sortDirection)) throw new Error('直播间排序参数无效');
+    const omitLive = args.omitLive === true;
+    const selectedIds = selected.map(account => account.id);
+    const records = this.store.roomOverviewRows(selectedIds);
+    const matched = [], unknownDates = new Map(selectedIds.map(id => [id, 0]));
+    for (const record of records) {
+      const day = historyStartDate(record.room.startedAt);
+      if (!day) { unknownDates.set(record.account, (unknownDates.get(record.account) || 0) + 1); continue; }
+      if (day < startDate || day > endDate || (omitLive && record.room.state === 'live')) continue;
+      const report = record.historyReport;
+      const findHistory = (key, source) => report?.metrics?.find(item => item.key === key && item.source === source) || null;
+      const findLatest = key => record.latest?.metrics?.find(item => item.key === key) || null;
+      const endpoints = report?.endpoints || {};
+      const validHistory = key => key === 't7payin8d_predstl_ord_amt' ? endpoints.historyTrade?.ok === true :
+        endpoints.historyTrade?.ok === true && findHistory(key, 'historyTrade');
+      const entryVisits = endpoints.historyCore?.ok ? findHistory('watch_ucnt', 'historyCore') : null;
+      const validOrders = validHistory('t7payin8d_predstl_ord_cnt') ? findHistory('t7payin8d_predstl_ord_cnt', 'historyTrade') : null;
+      const validSales = validHistory('t7payin8d_predstl_ord_amt') ? findHistory('t7payin8d_predstl_ord_amt', 'historyTrade') : null;
+      const latestMetrics = record.latest?.metrics || [];
+      const roomAccount = selected.find(item => item.id === record.account);
+      const withSource = (metric, source, retrievedAt) => metric ? { ...metric, source, retrievedAt } : null;
+      const sampled = key => withSource(findLatest(key), 'compass_live_snapshot', record.latest?.time || null);
+      matched.push({
+        accountId: roomAccount.id, accountName: roomAccount.name || roomAccount.label,
+        account: { id: roomAccount.id, uid: roomAccount.uid, name: roomAccount.name || roomAccount.label,
+          state: roomAccount.state, enabled: roomAccount.enabled }, room: record.room,
+        latest: record.latest ? { time: record.latest.time, metrics: latestMetrics,
+          spendReconciliation: record.latest.spendReconciliation || null } : null,
+        historyReport: report ? { retrievedAt: report.retrievedAt, endedAt: report.endedAt,
+          metrics: report.metrics, endpoints: report.endpoints } : null,
+        metrics: {
+          entryVisits: withSource(entryVisits, 'compass_history', report?.retrievedAt || null),
+          validOrders: withSource(validOrders, 'compass_history', report?.retrievedAt || null),
+          validSales: withSource(validSales, 'compass_history', report?.retrievedAt || null),
+          onlineUsers: sampled('online_user_cnt'),
+          paidUsers: sampled('pay_ucnt'),
+          paidOrders: sampled('pay_combo_cnt'),
+          paidAmount: sampled('pay_amt'),
+        },
+        fieldSources: {
+          entryVisits: entryVisits ? { source: 'compass_history', retrievedAt: report.retrievedAt, meaning: '进入直播间人次，不是去重观众' } : null,
+          validOrders: validOrders ? { source: 'compass_history', retrievedAt: report.retrievedAt, meaning: '结算有效成交订单量' } : null,
+          validSales: validSales ? { source: 'compass_history', retrievedAt: report.retrievedAt, meaning: '结算有效成交金额' } : null,
+          liveSnapshot: record.latest ? { source: 'compass_live_snapshot', sampledAt: record.latest.time } : null,
+          adSpend: null,
+        },
+      });
+    }
+    const sortMetric = row => {
+      const metrics = row.metrics;
+      const reportMetric = key => row.historyReport?.metrics?.find(item => item.key === key) || null;
+      const historyKey = ({ pay_combo_cnt:'t7payin8d_predstl_ord_cnt', pay_amt:'t7payin8d_predstl_ord_amt' })[sortBy] || sortBy;
+      const historical = reportMetric(historyKey);
+      const sampled = ({
+        watch_ucnt: metrics.entryVisits,
+        pay_ucnt: metrics.paidUsers,
+        pay_combo_cnt: metrics.paidOrders || metrics.validOrders,
+        pay_amt: metrics.paidAmount || metrics.validSales,
+        follow_anchor_ucnt: row.latest?.metrics?.find(item => item.key === 'follow_anchor_ucnt') || null,
+        ad_spend: row.latest?.spendReconciliation?.qianchuan ?
+          { value: Number(row.latest.spendReconciliation.qianchuan.amount),
+            display: row.latest.spendReconciliation.qianchuan.display } : null,
+      })[sortBy];
+      const metric = row.room.state !== 'live' && historical?.value != null ? historical : sampled || historical;
+      if (!metric || metric.value == null) return null;
+      const display = String(metric.display ?? '').replaceAll(',', '').replace(/[^0-9.-]/g, '');
+      const number = Number(display);
+      return Number.isFinite(number) ? number : Number.isFinite(metric.value) ? metric.value : null;
+    };
+    const sortValue = row => {
+      if (sortBy === 'title') return row.room.title || '';
+      if (sortBy === 'accountName') return row.accountName || '';
+      if (sortBy === 'startedAt') {
+        const time = Date.parse(row.room.startedAt || '');
+        return Number.isFinite(time) ? time : null;
+      }
+      return sortMetric(row);
+    };
+    matched.sort((left, right) => {
+      const a = sortValue(left), b = sortValue(right);
+      if (a == null) return b == null ? 0 : 1;
+      if (b == null) return -1;
+      const compared = typeof a === 'string' ? a.localeCompare(b, 'zh-CN') : a - b;
+      if (compared) return sortDirection === 'asc' ? compared : -compared;
+      return String(left.room.id).localeCompare(String(right.room.id));
+    });
+    const definitions = [
+      ['entryVisits', 'number', '人次'], ['validOrders', 'number', '单'], ['validSales', 'price', '元'],
+    ];
+    const totals = Object.fromEntries(definitions.map(([key, rawUnit, unit]) => {
+      let rawTotal = 0, coveredRooms = 0;
+      for (const row of matched) {
+        const metric = row.metrics[key];
+        if (!metric || metric.rawUnit !== rawUnit || !Number.isSafeInteger(metric.value)) continue;
+        rawTotal += metric.value;
+        if (!Number.isSafeInteger(rawTotal)) throw new Error('汇总数值超出安全范围');
+        coveredRooms++;
+      }
+      const displayValue = rawUnit === 'price' ? rawTotal / 100 : rawTotal;
+      return [key, { value: coveredRooms ? displayValue : null,
+        display: !coveredRooms ? '—' : displayValue.toLocaleString('zh-CN', rawUnit === 'price' ? { minimumFractionDigits: 2, maximumFractionDigits: 2 } : {}),
+        unit, coveredRooms, selectedRooms: matched.length, complete: matched.length > 0 && coveredRooms === matched.length }];
+    }));
+    const accountSummaries = selected.map(item => {
+      const accountRooms = records.filter(record => record.account === item.id);
+      const fromDate = new Date(Date.parse(`${bounds.latest}T00:00:00Z`) - 29 * 86400e3).toISOString().slice(0, 10);
+      const recentSessions = accountRooms.filter(record => {
+        const day = historyStartDate(record.room.startedAt);
+        return day && day >= fromDate && day <= bounds.latest;
+      }).length;
+      return { id: item.id, uid: item.uid, name: item.name || item.label, state: item.state,
+        enabled: item.enabled, busy: this.busy.has(item.id), error: item.error,
+        lastCheck: item.lastCheck, lastSync: item.lastSync, recentSessions,
+        unknownDateRooms: unknownDates.get(item.id) || 0, platform: 'douyin_ecommerce' };
+    });
+    const rows = matched.slice(offset, offset + limit);
+    const summaryMetrics = {
+      watch_ucnt: totals.entryVisits, t7payin8d_predstl_ord_cnt: totals.validOrders,
+      t7payin8d_predstl_ord_amt: totals.validSales,
+    };
+    const workspaceRooms = rows.map(row => ({ accountId: row.accountId, accountName: row.accountName,
+      id: row.room.id, title: row.room.title, state: row.room.state, startedAt: row.room.startedAt,
+      endedAt: row.historyReport?.endedAt || null, latest: row.latest, historyReport: row.historyReport,
+      spendReconciliation: row.latest?.spendReconciliation &&
+        [row.latest.spendReconciliation.compass, row.latest.spendReconciliation.qianchuan]
+          .every(side => !side || side.roomId === row.room.id) ? row.latest.spendReconciliation : null,
+      metrics: { watch_ucnt: row.metrics.entryVisits, t7payin8d_predstl_ord_cnt: row.metrics.validOrders,
+        t7payin8d_predstl_ord_amt: row.metrics.validSales, online_user_cnt: row.metrics.onlineUsers,
+        pay_ucnt: row.metrics.paidUsers, pay_combo_cnt: row.metrics.paidOrders, pay_amt: row.metrics.paidAmount,
+        follow_anchor_ucnt: row.latest?.metrics?.find(item => item.key === 'follow_anchor_ucnt') || null,
+        ad_spend: row.latest?.spendReconciliation?.qianchuan ?
+          { value: Number(row.latest.spendReconciliation.qianchuan.amount),
+            display: row.latest.spendReconciliation.qianchuan.display, unit: '元',
+            source: '千川同场报表', retrievedAt: row.latest.spendReconciliation.qianchuan.time } : null } }));
+    const reconciled = matched.filter(row => row.latest?.spendReconciliation?.compass &&
+      row.latest?.spendReconciliation?.qianchuan).length;
+    const compassCovered = matched.filter(row => row.latest?.spendReconciliation?.compass).length;
+    const qianchuanCovered = matched.filter(row => row.latest?.spendReconciliation?.qianchuan).length;
+    return { accounts: accountSummaries, startDate, endDate, omitLive, total: matched.length, offset, limit,
+      hasMore: offset + rows.length < matched.length, totals, rooms: workspaceRooms,
+      summary: { selectedRooms: matched.length, metrics: summaryMetrics },
+      coverage: { adSpend: { available: reconciled > 0, reconciled, compassCovered, qianchuanCovered,
+        reason: reconciled ? `已采集双方消耗 ${reconciled} 场` :
+          matched.find(row => row.latest?.spendReconciliation?.reasons?.qianchuan)?.latest.spendReconciliation.reasons.qianchuan ||
+          '当前范围尚未采到双方同场消耗' },
+        uniqueViewers: { available: false, reason: '现有历史字段是进房人次，不是去重观众' } }, rows };
+  }
   pauseHistoryBatch(id) {
     this.store.account(id);
     const progress = this.store.historyBatch(id);
@@ -430,6 +735,7 @@ export class Collector {
     if (this.stopping) return;
     this.feishu.tick();
     for (const a of this.store.accounts()) {
+      if (a.enabled && !this.store.targetName()) { this.pause(a.id, '未指定当前直播号，自动同步已暂停'); continue; }
       if (a.retryAfter && Date.now() >= Date.parse(a.retryAfter)) {
         this.store.save({ ...a, retryAfter: null,
           ...(a.state === 'rate_limited' && !a.enabled ? { state: 'paused', error: null } : {}) });
@@ -459,6 +765,7 @@ export class Collector {
         args.startDate ?? null, args.endDate ?? null);
       case 'history.report': return this.historyReport(String(args.id || ''), String(args.room || ''));
       case 'history.summary': return this.historySummary(String(args.account || ''), args.startDate, args.endDate);
+      case 'room.workspace': return this.roomWorkspace(args);
       case 'history.batch.start': return this.startHistoryBatch(String(args.id || ''), args.startDate, args.endDate);
       case 'history.batch.resume': return this.startHistoryBatch(String(args.id || ''), null, null, true);
       case 'history.batch.pause': return this.pauseHistoryBatch(String(args.id || ''));
@@ -466,17 +773,28 @@ export class Collector {
         const account = this.store.account(String(args.account || ''));
         const roomId = String(args.room || '');
         if (!/^\d{1,30}$/.test(roomId)) throw new Error('经营场次 ID 无效');
-        const detail = this.store.detail(account.id, roomId);
-        return { account: { id: account.id, uid: account.uid, label: account.name || account.label, state: account.state, enabled: account.enabled },
-                 room: detail.room, latest: detail.latest, historyReport: detail.historyReport };
+        const detail = this.store.review(account.id, roomId);
+        return { account: { id: account.id, uid: account.uid, label: account.name || account.label,
+                            state: account.state, enabled: account.enabled, error: account.error,
+                            lastCheck: account.lastCheck, lastSync: account.lastSync },
+                 room: detail.room, latest: detail.latest, history: detail.history, hourly: detail.hourly,
+                 historyReport: detail.historyReport };
       }
+      case 'hourly.refresh': return this.refreshHourly(String(args.account || ''), String(args.room || ''));
       case 'create': return { account: this.store.create(String(args.label || '')) };
       case 'login': return this.login(String(args.id));
+      case 'verify': return this.verifyIdentity(String(args.id));
+      case 'target.set': return this.setTarget(args.name);
+      case 'target.confirm': return this.confirmTarget(String(args.id));
+      case 'provider.qianchuan.login': return this.engine.openProviderLogin('qianchuan');
+      case 'provider.qianchuan.status': return this.engine.qianchuanStatus();
+      case 'provider.qianchuan.check': return this.engine.checkQianchuanLogin();
+      case 'provider.qianchuan.enter': return this.engine.enterQianchuanAccount(args.accountId);
       case 'sync': return this.start(String(args.id));
       case 'monitor': {
-        const id = String(args.id); const a = this.store.account(id);
+        const id = String(args.id); this.store.account(id);
         if (typeof args.enabled !== 'boolean') throw new Error('同步开关必须为布尔值');
-        if (args.enabled) { this.store.save({ ...a, enabled: true }); this.next.set(id, 0); return this.start(id); }
+        if (args.enabled) return this.enable(id);
         this.pause(id);
         return { ok: true };
       }
@@ -501,7 +819,7 @@ export class Collector {
 }
 
 async function main() {
-  const root = process.env.LIVEOPS_RPA_DATA || path.join(os.homedir(), 'Library/Application Support/LiveOps/rpa');
+  const root = rpaDataRoot();
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   const guard = acquireCollectorGuard(root);
   let collector;

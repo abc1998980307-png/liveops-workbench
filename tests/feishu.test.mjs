@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Store } from '../rpa/store.mjs';
-import { FEISHU_FIELDS, FeishuClient, FeishuSync, historyFields, parseBitableUrl, snapshotFields } from '../rpa/feishu.mjs';
+import { FEISHU_FIELDS, SPEND_FIELDS, FeishuClient, FeishuSync, historyFields, parseBitableUrl, snapshotFields } from '../rpa/feishu.mjs';
 
 // All records and credentials below are synthetic; the mock rejects unknown URLs.
 const config = { url: 'https://demo.feishu.cn/base/appTest?table=tblTest', appId: 'cli_test', appSecret: 'fixture-secret' };
@@ -85,6 +85,10 @@ test('Feishu links accept only HTTPS Feishu base tables and strip unrelated para
 
 test('export preserves long IDs, zero, missing values and original units', () => {
   const fields = snapshotFields(account, room, { ...snapshot(), time: '2026-11-06T10:00:00.000Z' });
+  assert.ok(SPEND_FIELDS.every(name => Object.hasOwn(fields, name)));
+  assert.equal(fields['罗盘消耗'], '');
+  assert.equal(fields['千川消耗'], '');
+  assert.equal(fields['对账状态'], '尚未采集');
   assert.equal(fields['账号ID'], account.uid); assert.equal(fields['直播间ID'], room.id);
   assert.equal(fields['在线人数'], '0 人'); assert.equal(fields['支付人数'], '');
   assert.equal(fields['成交金额'], '12.00 元');
@@ -94,6 +98,77 @@ test('export preserves long IDs, zero, missing values and original units', () =>
   assert.equal(snapshotFields(account, room, failed)['商品数量'], '');
   const empty = snapshot(); empty.products = [];
   assert.equal(snapshotFields(account, room, empty)['商品数量'], '0');
+});
+
+test('spend reconciliation updates the same Feishu row, clears missing sides and preserves history', async () => {
+  const t = fixture();
+  try {
+    t.store.saveRoom(account.id, { ...room, state: 'ended' });
+    const report = { roomId: room.id, retrievedAt: '2026-11-10T10:00:00Z',
+      endpoints: { historyBasic: { ok: true }, historyCore: { ok: true }, historyTrade: { ok: true } },
+      metrics: [] };
+    t.store.saveHistoryReport(account.id, room.id, report, {});
+    t.sync.historyMonitor(true); await t.sync.busy;
+    const historyValue = [...t.api.records.values()][0].fields['历史报表时间'];
+    const first = { ...snapshot(), spendReconciliation: {
+      compass: { roomId: room.id, amount: '0', display: '0', unit: '元', time: '2026-11-11T10:00:00Z' },
+      qianchuan: { roomId: room.id, amount: '0', display: '0', unit: '元', time: '2026-11-11T10:00:10Z' }, status: '匹配',
+    } };
+    t.store.snapshot(account.id, room.id, first, {});
+    t.sync.sync(); await t.sync.busy;
+    let saved = [...t.api.records.values()][0].fields;
+    assert.equal(t.api.records.size, 1);
+    assert.equal(saved['同步键'], `compass:${account.uid}:${room.id}`);
+    assert.equal(saved['罗盘消耗'], '0 元');
+    assert.equal(saved['千川消耗'], '0 元');
+    assert.equal(saved['对账状态'], '匹配');
+    assert.equal(saved['对账说明'], '');
+    assert.equal(saved['历史报表时间'], historyValue);
+
+    t.store.snapshot(account.id, room.id, { ...snapshot(), spendReconciliation: {
+      compass: { roomId: room.id, amount: '10.01', display: '10.01', unit: '元', time: '2026-11-11T10:00:00Z' },
+      qianchuan: { roomId: room.id, amount: '5.01', display: '5.01', unit: '元', time: '2026-11-11T10:00:10Z' },
+      status: '匹配', toleranceYuan: '5',
+    } }, {});
+    t.sync.sync(); await t.sync.busy;
+    saved = [...t.api.records.values()][0].fields;
+    assert.equal(t.api.records.size, 1);
+    assert.equal(saved['对账状态'], '匹配');
+    assert.equal(saved['对账说明'], '差额在 5 元容差内（用户确认）');
+
+    t.store.snapshot(account.id, room.id, { ...snapshot(), spendReconciliation: {
+      compass: { roomId: room.id, amount: '1', display: '1', unit: '元', time: '2026-11-11T10:01:00Z' },
+      qianchuan: null, status: '缺一边', reasons: { qianchuan: '当前户未确认' },
+    } }, {});
+    t.sync.sync(); await t.sync.busy;
+    saved = [...t.api.records.values()][0].fields;
+    assert.equal(t.api.records.size, 1);
+    assert.equal(saved['罗盘消耗'], '1 元');
+    assert.equal(saved['千川消耗'], '');
+    assert.equal(saved['千川采样时间'], '');
+    assert.equal(saved['对账状态'], '缺一边');
+    assert.equal(saved['对账说明'], '千川：当前户未确认');
+    assert.equal(saved['历史报表时间'], historyValue);
+
+    const sampledAt = '2026-11-11T10:01:00Z';
+    assert.throws(() => snapshotFields(account, room, { ...snapshot(), time: sampledAt,
+      spendReconciliation: { compass: { roomId: '987654321', amount: '1', display: '1', unit: '元', time: sampledAt },
+        qianchuan: null, status: '缺一边' } }), /直播间 ID/);
+
+    assert.throws(() => snapshotFields(account, room, { ...snapshot(), time: sampledAt,
+      spendReconciliation: { compass: { roomId: room.id, amount: '1', unit: '元', time: sampledAt },
+        qianchuan: { roomId: room.id, amount: '7', unit: '元', time: sampledAt }, status: '匹配' } }), /状态与采样不一致/);
+
+    t.store.snapshot(account.id, room.id, snapshot(), {});
+    t.sync.sync(); await t.sync.busy;
+    saved = [...t.api.records.values()][0].fields;
+    assert.equal(saved['罗盘消耗'], '');
+    assert.equal(saved['千川消耗'], '');
+    assert.equal(saved['对账状态'], '尚未采集');
+    assert.equal(saved['罗盘采样时间'], '');
+    assert.equal(saved['千川采样时间'], '');
+    assert.equal(saved['历史报表时间'], historyValue);
+  } finally { await t.cleanup(); }
 });
 
 test('historical fields keep source, zero and missing values distinct', () => {

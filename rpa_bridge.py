@@ -178,10 +178,13 @@ class CollectorBridge:
                     _release_instance_lock(self.instance_lock)
                     self.instance_lock = None
 
-    def call(self, method, args=None, timeout=12):
+    def call(self, method, args=None, timeout=12, *, allow_start=True):
         identifier, target = uuid.uuid4().hex, queue.Queue(maxsize=1)
         with self.lock:
-            self._start()
+            if allow_start:
+                self._start()
+            elif self.process is None or self.process.poll() is not None:
+                raise RuntimeError("采集器尚未运行；只读请求不会启动或重连采集器")
             self.pending[identifier] = target
             try:
                 self.process.stdin.write(json.dumps({"id": identifier, "method": method, "args": args or {}}) + "\n")

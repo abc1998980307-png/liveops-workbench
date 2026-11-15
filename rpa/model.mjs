@@ -18,7 +18,7 @@ export const TASKS = {
   core: '/compass_api/author/live/live_screen/core_data',
   products: '/compass_api/content_live/author/live_screen/product_list',
 };
-const CORE_KEYS = ['gpm', 'pay_ucnt', 'pay_combo_cnt', 'watch_pay_ucnt_ratio', 'product_click_pay_ucnt_ratio', 'online_user_cnt', 'live_show_watch_cnt_ratio', 'avg_watch_duration', 'watch_interact_ucnt_ratio', 'follow_anchor_ucnt', 'old_fans_pay_ucnt_ratio'];
+const CORE_KEYS = ['gpm', 'pay_ucnt', 'pay_combo_cnt', 'watch_pay_ucnt_ratio', 'product_click_pay_ucnt_ratio', 'online_user_cnt', 'live_show_watch_cnt_ratio', 'avg_watch_duration', 'watch_interact_ucnt_ratio', 'follow_anchor_ucnt', 'old_fans_pay_ucnt_ratio', 'stat_cost'];
 const PRODUCT_KEYS = ['pay_amt', 'pay_cnt', 'pay_combo_cnt', 'product_show_ucnt', 'product_click_ucnt', 'stock_cnt', 'refund_cnt', 'real_refund_amt'];
 
 export function taskUrl(task, roomId) {
@@ -81,7 +81,9 @@ export function measure(value) {
   const nested = measure(value.value ?? value.index_value ?? value.value_str ?? value.value_text ?? value.display_value);
   if (!nested) return null;
   const text = value.value_str ?? value.value_text ?? value.display_value;
-  return { ...nested, display: typeof text === 'string' ? text.slice(0, 100) : nested.display, unit: typeof value.unit === 'string' ? value.unit.slice(0, 30) : nested.unit };
+  const rawUnit = typeof value.unit === 'string' ? value.unit.trim() : nested.unit;
+  const unit = /^(?:nan|undefined|null)$/i.test(rawUnit) ? '' : rawUnit.slice(0, 30);
+  return { ...nested, display: typeof text === 'string' ? text.slice(0, 100) : nested.display, unit };
 }
 
 export function findMetric(root, key) {
@@ -125,25 +127,73 @@ export function liveState(value) {
   return 'unknown';
 }
 
+function shapeKey(key) {
+  return /^[A-Za-z_][A-Za-z0-9_]{0,49}$/.test(key) ? key : '[other-key]';
+}
+
+function shapeValue(value) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return `array(${value.length})`;
+  if (typeof value === 'object') return 'object';
+  if (typeof value === 'string' || typeof value === 'number') {
+    const raw = String(value);
+    const length = raw.length;
+    const digits = /^\d+$/.test(raw);
+    const significant = raw.replace(/^0+/, '') || '0';
+    const maxSafe = String(Number.MAX_SAFE_INTEGER);
+    const unsafe = digits && (typeof value === 'number' ? !Number.isSafeInteger(value) :
+      (significant.length > maxSafe.length ||
+       (significant.length === maxSafe.length && significant > maxSafe)));
+    return `${typeof value}(${length},digits=${digits},unsafe=${unsafe})`;
+  }
+  return typeof value;
+}
+
+export function roomListShape(body) {
+  const data = body?.data;
+  const cards = data?.card_list;
+  const lines = [`data keys: ${data && typeof data === 'object' && !Array.isArray(data) ? Object.keys(data).slice(0, 30).map(shapeKey).join(',') : shapeValue(data)}; card_list: ${shapeValue(cards)}`];
+  if (!Array.isArray(cards) || !cards.length) return lines;
+  const queue = [{ value: cards[0], path: 'card_list[0]', depth: 0 }];
+  while (queue.length && lines.length < 9) {
+    const { value, path, depth } = queue.shift();
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const entries = Object.entries(value);
+    lines.push(`${path}: ${entries.slice(0, 24).map(([key, child]) => `${shapeKey(key)}=${shapeValue(child)}`).join(',')}${entries.length > 24 ? ` (+${entries.length - 24} fields)` : ''}`);
+    if (depth < 3) for (const [key, child] of entries) {
+      if (child && typeof child === 'object' && !Array.isArray(child) && queue.length < 20)
+        queue.push({ value: child, path: `${path}.${shapeKey(key)}`, depth: depth + 1 });
+    }
+  }
+  return lines.map(line => line.slice(0, 470));
+}
+
+function roomListError(message, body) {
+  const error = new CollectError(message);
+  error.shape = roomListShape(body);
+  return error;
+}
+
 export function roomList(body) {
   const cards = body?.data?.card_list;
-  if (!Array.isArray(cards)) throw new CollectError('今日场次接口的结构已变化：缺少 card_list。');
+  if (!Array.isArray(cards)) throw roomListError('今日场次接口的结构已变化：缺少 card_list。', body);
   const rooms = new Map();
   for (const card of cards) {
     for (const obj of objects(card)) {
-      const id = obj.room_id ?? obj.live_room_id;
-      if (typeof id === 'number' && !Number.isSafeInteger(id)) throw new CollectError('场次 ID 以超出安全精度的数值返回，已停止本轮同步。');
+      const id = obj.room_id ?? obj.live_room_id ?? (obj === card &&
+        (typeof card.live_title === 'string' || card.start_time != null) ? card.live_id : null);
+      if (typeof id === 'number' && !Number.isSafeInteger(id)) throw roomListError('场次 ID 以超出安全精度的数值返回，已停止本轮同步。', body);
       if (id == null || !/^\d{1,30}$/.test(String(id))) continue;
       const previous = rooms.get(String(id));
       const state = liveState(obj);
       rooms.set(String(id), {
-        id: String(id), title: String(obj.room_title || obj.room_name || obj.title || previous?.title || `直播场次 ${id}`).slice(0, 200),
+        id: String(id), title: String(obj.room_title || obj.room_name || obj.live_title || obj.title || previous?.title || `直播场次 ${id}`).slice(0, 200),
         state: state !== 'unknown' ? state : previous?.state || 'unknown',
         startedAt: obj.start_time || obj.live_start_time || previous?.startedAt || null,
       });
     }
   }
-  if (cards.length && !rooms.size) throw new CollectError('已返回场次列表，但场次 ID 格式未识别。请查看同步记录。');
+  if (cards.length && !rooms.size) throw roomListError('已返回场次列表，但场次 ID 格式未识别。请查看同步记录。', body);
   return [...rooms.values()];
 }
 
@@ -189,11 +239,12 @@ export function historyStartDate(raw) {
     const date = new Date(time);
     return Number.isFinite(time) ? shanghaiDate(date) : null;
   }
-  const local = /^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(value);
+  const local = /^(\d{4}[-/]\d{2}[-/]\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(value);
   if (local) {
-    if (!validCalendarDate(local[1]) || (local[2] &&
+    const day = local[1].replaceAll('/', '-');
+    if (!validCalendarDate(day) || (local[2] &&
         (Number(local[2]) > 23 || Number(local[3]) > 59 || Number(local[4] || 0) > 59))) return null;
-    return local[1];
+    return day;
   }
   const zoned = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/.exec(value);
   if (!zoned || !validCalendarDate(zoned[1]) || Number(zoned[2]) > 23 ||
