@@ -18,6 +18,8 @@ COLLECTION_FIELDS = {
     "products": {"storeId": 36, "name": 120, "sku": 100, "price": 30, "status": 20},
     "brands": {"name": 100, "storeId": 36, "notes": 500, "active": None},
     "goals": {"date": 10, "account": 120, "targetGmv": 30, "targetOrders": 20, "notes": 500},
+    "accountMappings": {"name": 80, "sourceAlias": 80, "storeId": 36,
+                        "memberId": 36, "qianchuanAlias": 80, "active": None},
 }
 ENUMS = {
     ("teamMembers", "role"): {"主播", "助播", "场控", "中控", "投手", "其他"},
@@ -83,6 +85,18 @@ class OperationsWorkspace:
             record[field] = value
         if collection == "teamMembers" and not record["name"]:
             raise WorkspaceError("成员姓名不能为空")
+        if collection == "accountMappings" and (not record["name"] or not record["sourceAlias"]):
+            raise WorkspaceError("直播号显示名和来源别名不能为空")
+        if collection == "accountMappings":
+            for key in ("name", "sourceAlias", "qianchuanAlias"):
+                record[key] = record[key].strip()
+                value = record[key]
+                if (value and (re.search(r"https?://|(?:cookie|token|password)\s*[:=]", value, re.I)
+                               or re.fullmatch(r"\d{8,}", value)
+                               or re.fullmatch(r"[0-9a-f]{8}-[0-9a-f-]{27,}", value, re.I))):
+                    raise WorkspaceError("只允许填写本机显示名或别名，不保存账户标识或凭据")
+            if not record["name"] or not record["sourceAlias"]:
+                raise WorkspaceError("直播号显示名和来源别名不能为空")
         if collection == "stores" and (not record["name"] or not record["platform"]):
             raise WorkspaceError("店铺名称和平台不能为空")
         if collection == "shifts":
@@ -134,6 +148,13 @@ class OperationsWorkspace:
                 item.get("id") == record["storeId"] for item in data["stores"]
             ):
                 raise WorkspaceError("关联店铺不存在")
+            if collection == "accountMappings":
+                for key, parent in (("storeId", "stores"), ("memberId", "teamMembers")):
+                    if record[key] and not any(item.get("id") == record[key] for item in data[parent]):
+                        raise WorkspaceError("关联成员或店铺不存在")
+                if any(item.get("sourceAlias", "").casefold() == record["sourceAlias"].casefold()
+                       and item.get("id") != payload.get("id") for item in records):
+                    raise WorkspaceError("来源别名已被其他直播号使用")
             record_id = payload.get("id")
             if record_id:
                 if not isinstance(record_id, str) or len(record_id) != 36:
