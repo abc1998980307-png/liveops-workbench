@@ -7,9 +7,9 @@ const SNAPSHOT_METRICS = new Map([
   ['product_click_ucnt', '商品点击人数'], ['pay_ucnt', '支付人数'],
   ['pay_amt', '成交金额'], ['pay_combo_cnt', '成交订单'],
   ['follow_anchor_ucnt', '新增关注'], ['watch_pay_ucnt_ratio', '观看支付转化'],
+  ['gpm', '千次观看成交额'], ['avg_watch_duration', '人均观看时长'],
   ['live_show_watch_cnt_ratio', '进房率'], ['product_click_ucnt_ratio', '商品点击率'],
   ['watch_interact_ucnt_ratio', '互动率'], ['product_click_pay_ucnt_ratio', '点击支付转化率'],
-  ['gpm', '千次观看成交额'],
 ]);
 
 function sessionKey(account, room) {

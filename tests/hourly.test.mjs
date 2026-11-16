@@ -7,7 +7,7 @@ import { Store } from '../rpa/store.mjs';
 import { Collector } from '../rpa/collector.mjs';
 import { boundaryWindow, compassHourlyRows, qianchuanHourlyFailure, qianchuanHourlyRequest, qianchuanHourlyRows } from '../rpa/hourly.mjs';
 import { FEISHU_FIELDS, FeishuClient, FeishuSync } from '../rpa/feishu.mjs';
-import { REVIEW_FIELDS, reviewRows } from '../rpa/hourly-review.mjs';
+import { REVIEW_FIELDS, REVIEW_METRICS, reviewRows } from '../rpa/hourly-review.mjs';
 
 const account = { id: 'local-test', uid: '1001', name: '雪梨老师阅读100篇' };
 const room = { id: '2001', startedAt: '2026-11-15 08:12:00', state: 'live' };
@@ -19,9 +19,11 @@ test('hour boundary stores Compass observations without claiming hourly incremen
   const snapshot = { state: 'live', metrics: [
     { key: 'online_user_cnt', value: 0, display: '0', unit: '人' },
     { key: 'watch_pay_ucnt_ratio', value: 0.03, display: '3%', unit: '%' },
+    { key: 'gpm', value: 8, display: '8', unit: '元' },
+    { key: 'avg_watch_duration', value: 20, display: '20', unit: '秒' },
   ], spendReconciliation: { compass: { amount: '2.00', display: '2.00' } } };
   const rows = compassHourlyRows(account, room, snapshot, sampledAt);
-  assert.equal(rows.length, 14);
+  assert.equal(rows.length, 15);
   assert.equal(rows[0].grain, '边界快照');
   assert.match(rows[0].statisticalWindow, /字段级小时映射未核实/);
   assert.equal(rows[0].value, 0);
@@ -30,6 +32,36 @@ test('hour boundary stores Compass observations without claiming hourly incremen
   assert.match(rows.at(-1).statisticalWindow, /非小时消耗/);
   assert.ok(!rows[0].sessionKey.includes(account.uid));
   assert.equal(rows[0].display, '0');
+  assert.equal(rows.find(row => row.metricKey === 'gpm').value, 8);
+  assert.equal(rows.find(row => row.metricKey === 'avg_watch_duration').value, 20);
+});
+
+test('review schema uses the official five dimensions and four rates without guessing room totals', () => {
+  assert.deepEqual(REVIEW_METRICS.slice(0, 9).map(([name]) => name), [
+    '直播间曝光人数', '直播间进入人数', '商品曝光人数', '商品点击人数', '商品成交人数',
+    '观看点击率', '商品曝光率', '商品点击率', '点击支付率',
+  ]);
+  assert.equal(new Set(REVIEW_FIELDS).size, REVIEW_FIELDS.length);
+  assert.ok(REVIEW_FIELDS.length < 300);
+  for (const type of ['直投', '短视频', '合计']) {
+    for (const metric of ['消耗', '展现', '点击', 'CPM', '点击率', '转化数',
+      '转化率', '转化成本', '转化目标', '成交金额', 'ROI']) {
+      assert.ok(REVIEW_FIELDS.includes(`千川${type}·${metric}·性质`));
+    }
+  }
+  const base = { account: account.id, room: room.id, sessionKey: 'session:synthetic',
+    hourStart: '2026-11-15 08:00:00', hourEnd: '2026-11-15 09:00:00',
+    sampledAt, status: '已读取', version: 'live:fixed', source: '电商罗盘',
+    grain: '边界快照', value: 12, display: '12', unit: '人' };
+  const fields = reviewRows([
+    { ...base, metricKey: 'product_show_ucnt' },
+    { ...base, metricKey: 'product_click_ucnt' },
+    { ...base, metricKey: 'pay_ucnt' },
+  ], Date.parse('2026-11-15T02:00:00Z'))[0].fields;
+  for (const name of ['商品曝光人数', '商品点击人数', '商品成交人数'])
+    assert.equal(fields[`${name}·性质`], '未采集');
+  assert.equal(fields['商品点击人数（罗盘候选）·性质'], '边界快照');
+  assert.equal(fields['支付人数·性质'], '边界快照');
 });
 
 test('hourly follow unit discards nan and state needs a reliable signal', () => {
@@ -240,6 +272,43 @@ test('review calculations require matching official-hour inputs and mark calcula
   assert.equal(calculated['CPM·性质'], '未采集');
   const boundary = reviewRows([{ ...revenue, grain: '边界快照' }, viewers], Date.parse('2026-11-15T02:00:00Z'))[0].fields;
   assert.equal(boundary['GPM·性质'], '未采集');
+  const otherSource = reviewRows([revenue, { ...viewers, source: '巨量千川' }],
+    Date.parse('2026-11-15T02:00:00Z'))[0].fields;
+  assert.equal(otherSource['GPM·性质'], '未采集');
+  const customers = { ...viewers, metricKey: 'pay_ucnt', value: 4, display: '4' };
+  const unitPrice = reviewRows([revenue, customers], Date.parse('2026-11-15T02:00:00Z'))[0].fields;
+  assert.equal(unitPrice['客单价·本小时'], '5.00 元');
+  assert.equal(unitPrice['客单价·性质'], '本机计算值');
+});
+
+test('official total spend never fills unverified direct, video or traffic-source columns', () => {
+  const base = { account: account.id, room: room.id, sessionKey: 'session:synthetic',
+    hourStart: '2026-11-15 08:00:00', hourEnd: '2026-11-15 09:00:00',
+    sampledAt, status: '已读取', version: 'live:fixed' };
+  const fields = reviewRows([
+    { ...base, source: '巨量千川', metricKey: 'stat_cost', value: 7, display: '7',
+      unit: '元', grain: '官方小时' },
+    { ...base, source: '电商罗盘', metricKey: 'gpm', value: 9, display: '9',
+      unit: '元', grain: '边界快照' },
+    { ...base, source: '电商罗盘', metricKey: 'avg_watch_duration', value: 20,
+      display: '20', unit: '秒', grain: '边界快照' },
+    { ...base, source: '电商罗盘', metricKey: 'product_click_pay_ucnt_ratio', value: 0.1,
+      display: '10%', unit: '%', grain: '边界快照' },
+    { ...base, source: '电商罗盘', metricKey: 'watch_pay_ucnt_ratio', value: 0.02,
+      display: '2%', unit: '%', grain: '边界快照' },
+  ], Date.parse('2026-11-15T02:00:00Z'))[0].fields;
+  assert.equal(fields['千川合计·消耗·本小时'], '7 元');
+  assert.equal(fields['千川合计·消耗·性质'], '官方小时值');
+  for (const type of ['直投', '短视频']) {
+    assert.equal(fields[`千川${type}·消耗·性质`], '未采集');
+    assert.equal(fields[`千川${type}·转化率·性质`], '未采集');
+    assert.equal(fields[`千川${type}·CPM·性质`], '未采集');
+  }
+  assert.equal(fields['流量千川·进房人数·性质'], '未采集');
+  assert.equal(fields['GPM·性质'], '边界快照');
+  assert.equal(fields['人均观看时长·性质'], '边界快照');
+  assert.equal(fields['点击支付率·本小时'], '10%');
+  assert.equal(fields['观看支付转化率·本小时'], '2%');
 });
 
 test('frozen remote review rows are found but never updated', async () => {
