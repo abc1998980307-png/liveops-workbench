@@ -6,9 +6,10 @@ import path from 'node:path';
 import { Store } from '../rpa/store.mjs';
 import { Collector } from '../rpa/collector.mjs';
 import { boundaryWindow, compassHourlyRows, qianchuanHourlyFailure, qianchuanHourlyRequest, qianchuanHourlyRows } from '../rpa/hourly.mjs';
-import { FEISHU_FIELDS, HOURLY_FIELDS, FeishuClient, FeishuSync, hourlyFields, hourlyLegacyFields } from '../rpa/feishu.mjs';
+import { FEISHU_FIELDS, FeishuClient, FeishuSync } from '../rpa/feishu.mjs';
+import { REVIEW_FIELDS, reviewRows } from '../rpa/hourly-review.mjs';
 
-const account = { id: 'local-test', uid: '1001', name: '测试直播号' };
+const account = { id: 'local-test', uid: '1001', name: '雪梨老师阅读100篇' };
 const room = { id: '2001', startedAt: '2026-11-15 08:12:00', state: 'live' };
 const sampledAt = '2026-11-15T01:01:00.000Z';
 
@@ -20,7 +21,7 @@ test('hour boundary stores Compass observations without claiming hourly incremen
     { key: 'watch_pay_ucnt_ratio', value: 0.03, display: '3%', unit: '%' },
   ], spendReconciliation: { compass: { amount: '2.00', display: '2.00' } } };
   const rows = compassHourlyRows(account, room, snapshot, sampledAt);
-  assert.equal(rows.length, 7);
+  assert.equal(rows.length, 14);
   assert.equal(rows[0].grain, '边界快照');
   assert.match(rows[0].statisticalWindow, /字段级小时映射未核实/);
   assert.equal(rows[0].value, 0);
@@ -28,7 +29,7 @@ test('hour boundary stores Compass observations without claiming hourly incremen
   assert.equal(rows.at(-1).grain, '独立对照');
   assert.match(rows.at(-1).statisticalWindow, /非小时消耗/);
   assert.ok(!rows[0].sessionKey.includes(account.uid));
-  assert.equal(hourlyFields(rows[0])['值'], '0');
+  assert.equal(rows[0].display, '0');
 });
 
 test('hourly follow unit discards nan and state needs a reliable signal', () => {
@@ -83,7 +84,7 @@ test('Qianchuan hourly report keeps official buckets, current room and live/post
   const failure = qianchuanHourlyFailure(account, room, sampledAt, '无权读取');
   assert.equal(failure.value, null);
   assert.equal(failure.valueKind, '未取得官方值');
-  assert.equal(hourlyFields(failure)['缺失原因'], '无权读取');
+  assert.equal(failure.reason, '无权读取');
   assert.throws(() => qianchuanHourlyRows({ ...body, data: { StatsData: { Rows: [item('2026-11-15 08:00:00', 'other')] } } }, account, room, sampledAt), /其他直播间/);
   assert.throws(() => qianchuanHourlyRows({ ...body, data: { StatsData: { Rows: [item('2026-11-15 08:00:00'), item('2026-11-15 08:00:00')] } } }, account, room, sampledAt), /重复/);
 });
@@ -124,11 +125,16 @@ test('Feishu writes hourly rows into a separate table with stable keys', async (
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'liveops-hourly-feishu-'));
   const store = new Store(root);
   store.save(account); store.saveRoom(account.id, room);
+  store.setTargetName(account.name);
+  const other = { id: 'other-local', uid: '1002', name: '其他账号' };
+  const otherRoom = { ...room, id: '2002' };
+  store.save(other); store.saveRoom(other.id, otherRoom);
+  store.saveHourly(compassHourlyRows(other, otherRoom, { state: 'live', metrics: [] }, sampledAt));
   store.saveHourly(compassHourlyRows(account, room, { state: 'live', metrics: [
     { key: 'online_user_cnt', value: 0, display: '0', unit: '人' },
   ] }, sampledAt));
   const calls = [], remote = new Map();
-  const fields = id => (id === 'tblSession' ? FEISHU_FIELDS : HOURLY_FIELDS).map((field_name, i) => ({ field_name, type: 1, field_id: `fld${i}` }));
+  const fields = id => (id === 'tblSession' ? FEISHU_FIELDS : REVIEW_FIELDS).map((field_name, i) => ({ field_name, type: 1, field_id: `fld${i}` }));
   const reply = data => ({ ok: true, status: 200, json: async () => ({ code: 0, data }) });
   const fetcher = async (url, request) => {
     const parsed = new URL(url), body = request.body ? JSON.parse(request.body) : null;
@@ -150,11 +156,13 @@ test('Feishu writes hourly rows into a separate table with stable keys', async (
   const sync = new FeishuSync(store, { clientFactory: config => new FeishuClient(config, fetcher) });
   try {
     sync.configure({ url: 'https://demo.feishu.cn/base/appDemo?table=tblSession',
-      appId: 'cli_synthetic', appSecret: 'synthetic-secret', accountIds: [account.id] });
+      appId: 'cli_synthetic', appSecret: 'synthetic-secret', accountIds: [account.id, other.id] });
     sync.sync(); await sync.busy;
     assert.equal(sync.state().hourlyTableReady, true);
-    assert.equal(sync.state().hourlySynced, 7);
-    assert.equal(remote.size, 7);
+    assert.equal(sync.state().hourlySynced, 1);
+    assert.equal(remote.size, 1);
+    assert.equal([...remote.values()][0].fields['投放消耗·性质'], '未采集');
+    assert.equal([...remote.values()][0].fields['支付人数·性质'], '未采集');
     assert.ok([...remote.values()].every(item => !item.fields['场次稳定键'].includes(account.uid)));
     assert.ok(calls.some(item => item.path.endsWith('/tables') && item.method === 'POST'));
     assert.ok(calls.filter(item => item.path.endsWith('/records') && item.method === 'POST')
@@ -162,12 +170,14 @@ test('Feishu writes hourly rows into a separate table with stable keys', async (
   } finally { await sync.close(); store.close(); fs.rmSync(root, { recursive: true }); }
 });
 
-test('Feishu uses independent rows in the existing table when table creation lacks permission', async () => {
+test('Feishu stops hourly writes when table creation lacks permission', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'liveops-hourly-fallback-'));
   const store = new Store(root);
   store.save(account); store.saveRoom(account.id, room);
+  store.setTargetName(account.name);
   const row = compassHourlyRows(account, room, { state: 'live', metrics: [] }, sampledAt)[0];
   store.saveHourly([row]);
+  store.snapshot(account.id, room.id, { state: 'live', metrics: [] }, {});
   const calls = [], reply = (data, code = 0, status = 200) => ({ ok: status < 400, status,
     json: async () => ({ code, data }) });
   const fetcher = async (url, request) => {
@@ -187,14 +197,76 @@ test('Feishu uses independent rows in the existing table when table creation lac
   try {
     sync.configure({ url: 'https://demo.feishu.cn/base/appDemo?table=tblSession',
       appId: 'cli_synthetic', appSecret: 'synthetic-secret', accountIds: [account.id] });
-    sync.sync(); await sync.busy;
-    assert.equal(sync.state().hourlyStorage, '原表独立小时行');
+    sync.syncReviewOnly(); await sync.busy;
+    assert.equal(sync.state().hourlyStorage, '待创建');
+    assert.equal(sync.state().hourlySynced, 0);
+    assert.match(sync.state().error, /权限不足/);
+    assert.ok(!calls.some(item => item.path.endsWith('/records') && item.method === 'POST'));
+  } finally { await sync.close(); store.close(); fs.rmSync(root, { recursive: true }); }
+});
+
+test('review rows keep separate hours, versions, provenance and previous-hour comparison', () => {
+  const base = { account: account.id, room: room.id, sessionKey: 'session:synthetic', source: '巨量千川',
+    metricKey: 'stat_cost', grain: '官方小时', status: '已读取', unit: '元', version: 'live:2026-11-15 10:00:00' };
+  const rows = [
+    { ...base, hourStart: '2026-11-15 08:00:00', hourEnd: '2026-11-15 09:00:00', sampledAt: '2026-11-15T01:01:00Z', value: 2, display: '2' },
+    { ...base, hourStart: '2026-11-15 09:00:00', hourEnd: '2026-11-15 10:00:00', sampledAt: '2026-11-15T02:01:00Z', value: 3, display: '3' },
+    { ...base, hourStart: '2026-11-15 09:00:00', hourEnd: '2026-11-15 10:00:00', sampledAt: '2026-11-15T02:02:00Z', value: 99, display: '99' },
+    { ...base, hourStart: '2026-11-15 09:00:00', hourEnd: '2026-11-15 10:00:00', sampledAt: '2026-11-15T02:03:00Z', value: 4, display: '4', version: 'post-live:2026-11-15 10:00:00' },
+  ];
+  const reviews = reviewRows(rows, Date.parse('2026-11-15T03:00:00Z'));
+  assert.equal(reviews.length, 3);
+  assert.notEqual(reviews[0].key, reviews[1].key);
+  assert.notEqual(reviews[1].key, reviews[2].key);
+  const live = reviews.find(row => row.hourStart.endsWith('09:00:00') && row.version === 'live');
+  assert.equal(live.fields['投放消耗·本小时'], '3 元');
+  assert.equal(live.fields['投放消耗·上一小时'], '2 元');
+  assert.equal(live.fields['投放消耗·变化'], '1 元');
+  assert.equal(live.fields['CPM·性质'], '未采集');
+  assert.equal(reviews.find(row => row.version === 'post-live').fields['投放消耗·上一小时'], '');
+});
+
+test('review calculations require matching official-hour inputs and mark calculated values', () => {
+  const base = { account: account.id, room: room.id, sessionKey: 'session:synthetic',
+    hourStart: '2026-11-15 08:00:00', hourEnd: '2026-11-15 09:00:00',
+    sampledAt: '2026-11-15T01:01:00Z', status: '已读取', version: 'live:fixed' };
+  const revenue = { ...base, source: '电商罗盘', metricKey: 'pay_amt',
+    value: 20, display: '20', unit: '元', grain: '官方小时' };
+  const viewers = { ...base, source: '电商罗盘', metricKey: 'watch_ucnt',
+    value: 10, display: '10', unit: '人', grain: '官方小时' };
+  const calculated = reviewRows([revenue, viewers], Date.parse('2026-11-15T02:00:00Z'))[0].fields;
+  assert.equal(calculated['GPM·本小时'], '2000.00 元');
+  assert.equal(calculated['GPM·性质'], '本机计算值');
+  assert.equal(calculated['CPM·性质'], '未采集');
+  const boundary = reviewRows([{ ...revenue, grain: '边界快照' }, viewers], Date.parse('2026-11-15T02:00:00Z'))[0].fields;
+  assert.equal(boundary['GPM·性质'], '未采集');
+});
+
+test('frozen remote review rows are found but never updated', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'liveops-hourly-freeze-'));
+  const store = new Store(root);
+  store.save(account); store.setTargetName(account.name); store.saveRoom(account.id, room);
+  store.saveHourly(compassHourlyRows(account, room, { state: 'live', metrics: [] }, sampledAt));
+  const calls = [];
+  const reply = data => ({ ok: true, status: 200, json: async () => ({ code: 0, data }) });
+  const fetcher = async (url, request) => {
+    const parsed = new URL(url);
+    calls.push({ path: parsed.pathname, method: request.method });
+    if (parsed.hostname === 'accounts.feishu.cn') return { ok: true, status: 200,
+      json: async () => ({ code: 0, access_token: 'synthetic-token', expires_in: 7200 }) };
+    if (parsed.pathname.endsWith('/tables')) return reply({ items: [{ name: '小时复盘', table_id: 'tblReview' }], has_more: false });
+    if (parsed.pathname.endsWith('/fields')) return reply({ items: REVIEW_FIELDS.map((field_name, i) =>
+      ({ field_name, field_id: `fld${i}`, type: 1 })), has_more: false });
+    if (parsed.pathname.endsWith('/records/search')) return reply({ items: [{ record_id: 'recExisting' }], has_more: false });
+    throw new Error('frozen row attempted a remote mutation');
+  };
+  const sync = new FeishuSync(store, { clientFactory: config => new FeishuClient(config, fetcher) });
+  try {
+    sync.configure({ url: 'https://demo.feishu.cn/base/appDemo?table=tblSession',
+      appId: 'cli_synthetic', appSecret: 'synthetic-secret', accountIds: [account.id] });
+    sync.syncReviewOnly(); await sync.busy;
     assert.equal(sync.state().hourlySynced, 1);
-    const write = calls.find(item => item.path.endsWith('/records') && item.method === 'POST');
-    assert.ok(write.path.includes('/tblSession/'));
-    assert.equal(write.body.fields['采集状态'], '小时明细：缺失');
-    assert.deepEqual(JSON.parse(write.body.fields['指标原值']),
-      hourlyFields({ ...row, key: write.body.fields['同步键'] }));
-    assert.ok(!JSON.stringify(hourlyLegacyFields(row, account, room)).includes(account.uid));
+    assert.ok(!calls.some(call => call.method === 'PUT' ||
+      call.path.endsWith('/records') && call.method === 'POST'));
   } finally { await sync.close(); store.close(); fs.rmSync(root, { recursive: true }); }
 });

@@ -6,6 +6,8 @@ export const METRICS = [
   ['gpm', '千次观看成交额'], ['watch_pay_ucnt_ratio', '观看支付转化'],
   ['avg_watch_duration', '平均观看时长'], ['follow_anchor_ucnt', '新增关注'],
 ];
+const REVIEW_SNAPSHOT_KEYS = ['watch_ucnt', 'product_click_ucnt', 'live_show_watch_cnt_ratio',
+  'product_click_ucnt_ratio', 'watch_interact_ucnt_ratio', 'product_click_pay_ucnt_ratio'];
 export const TASKS = {
   identity: '/business_api/home/unify_track',
   account: '/ecomauth/loginv1/get_account_info?login_source=compass',
@@ -357,7 +359,8 @@ export function normalizeHistoryReport(results, roomId, retrievedAt = new Date()
 export function normalizeSnapshot(results) {
   const base = results.base?.ok ? results.base.body?.data : null;
   const core = results.core?.ok ? results.core.body?.data : null;
-  const metrics = METRICS.map(([key, label]) => ({ key, label, ...(findMetric(core, key) || findMetric(base, key) || { value: null, display: '—', unit: '' }) }));
+  const metrics = [...METRICS, ...REVIEW_SNAPSHOT_KEYS.map(key => [key, key])]
+    .map(([key, label]) => ({ key, label, ...(findMetric(core, key) || findMetric(base, key) || { value: null, display: '—', unit: '' }) }));
   const all = results.products?.ok ? objects(results.products.body?.data) : [];
   const products = new Map();
   for (const item of all) {

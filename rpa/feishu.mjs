@@ -1,13 +1,14 @@
 import crypto from 'node:crypto';
 import { METRICS } from './model.mjs';
 import { reconcileSpend } from './spend-reconciliation.mjs';
+import { REVIEW_FIELDS, reviewRows } from './hourly-review.mjs';
 
 const API = 'https://open.feishu.cn/open-apis';
 export const HISTORY_FIELDS = ['历史报表时间', '历史报表状态', '历史结算有效成交金额', '历史结算有效成交订单量', '历史进入直播间人数', '历史指标原值', '历史接口状态'];
 export const SPEND_FIELDS = ['罗盘消耗', '千川消耗', '对账状态', '对账说明', '罗盘采样时间', '千川采样时间'];
 export const FEISHU_FIELDS = ['同步键', '账号', '账号ID', '直播间ID', '直播标题', '直播状态', '采样时间', '采集状态', ...METRICS.map(([, label]) => label), '指标原值', '商品数量', '商品明细', ...SPEND_FIELDS, ...HISTORY_FIELDS];
-export const HOURLY_FIELDS = ['同步键', '场次稳定键', '小时开始', '小时结束', '来源', '来源账号别名', '官方指标名', '值', '单位', '粒度', '统计窗口', '采样或读取时间', '在播或下播状态', '值性质', '状态', '缺失原因', '版本'];
 const ID = /^[A-Za-z0-9_-]+$/;
+const REVIEW_TARGET = '雪梨老师阅读100篇';
 
 export function parseBitableUrl(input) {
   let url;
@@ -92,7 +93,7 @@ export class FeishuClient {
     }
     return missing;
   }
-  async upsert(key, fields, clientToken, active = () => true) {
+  async upsert(key, fields, clientToken, active = () => true, updateExisting = true) {
     // Reconcile by a stable business key on every attempt, including after a lost response.
     const data = await this.request(`${this.base}/records/search?page_size=2`, { method: 'POST', body: { filter: { conjunction: 'and', conditions: [{ field_name: '同步键', operator: 'is', value: [key] }] }, automatic_fields: false } });
     if (!Array.isArray(data.items)) throw new FeishuError('飞书记录查询格式异常');
@@ -100,31 +101,12 @@ export class FeishuClient {
     const recordId = data.items[0]?.record_id;
     if (data.items.length && !recordId) throw new FeishuError('飞书查询结果缺少记录 ID，已停止写入以避免重复记录');
     if (recordId && !ID.test(recordId)) throw new FeishuError('飞书记录 ID 格式异常');
+    if (recordId && !updateExisting) return recordId;
     if (!active()) return null;
     const result = await this.request(`${this.base}/records${recordId ? '/' + recordId : '?client_token=' + clientToken}`, { method: recordId ? 'PUT' : 'POST', body: { fields } });
     if (!result.record?.record_id) throw new FeishuError('飞书写入响应缺少记录 ID，将在重试时核对同步键');
     return result.record.record_id;
   }
-}
-
-export function hourlyFields(row) {
-  return {
-    同步键: row.key, 场次稳定键: row.sessionKey, 小时开始: row.hourStart,
-    小时结束: row.hourEnd, 来源: row.source, 来源账号别名: row.accountAlias,
-    官方指标名: row.metricName, 值: row.display || (row.value == null ? '' : String(row.value)),
-    单位: row.unit, 粒度: row.grain, 统计窗口: row.statisticalWindow,
-    采样或读取时间: row.sampledAt, 在播或下播状态: row.streamState,
-    值性质: row.valueKind, 状态: row.status, 缺失原因: row.reason, 版本: row.version,
-  };
-}
-
-export function hourlyLegacyFields(row, account, room) {
-  return {
-    同步键: row.key, 账号: account.name || account.label, 直播间ID: row.room,
-    直播标题: room.title || '', 直播状态: row.streamState,
-    采样时间: row.sampledAt, 采集状态: `小时明细：${row.status}`,
-    指标原值: JSON.stringify(hourlyFields(row)),
-  };
 }
 
 export function snapshotFields(account, room, snapshot) {
@@ -201,7 +183,9 @@ export class FeishuSync {
       CREATE TABLE IF NOT EXISTS feishu_history_delivery (destination TEXT NOT NULL, account TEXT NOT NULL, room TEXT NOT NULL, version TEXT NOT NULL, record TEXT NOT NULL, time TEXT NOT NULL, PRIMARY KEY(destination,account,room));
       CREATE TABLE IF NOT EXISTS feishu_history_attempt (destination TEXT NOT NULL, account TEXT NOT NULL, room TEXT NOT NULL, version TEXT NOT NULL, token TEXT NOT NULL, fields TEXT NOT NULL, PRIMARY KEY(destination,account,room));
       CREATE TABLE IF NOT EXISTS feishu_hourly_delivery (destination TEXT NOT NULL, key TEXT NOT NULL, sampled_at TEXT NOT NULL, record TEXT NOT NULL, time TEXT NOT NULL, PRIMARY KEY(destination,key));
-      CREATE TABLE IF NOT EXISTS feishu_hourly_attempt (destination TEXT NOT NULL, key TEXT NOT NULL, sampled_at TEXT NOT NULL, token TEXT NOT NULL, fields TEXT NOT NULL, PRIMARY KEY(destination,key));`);
+      CREATE TABLE IF NOT EXISTS feishu_hourly_attempt (destination TEXT NOT NULL, key TEXT NOT NULL, sampled_at TEXT NOT NULL, token TEXT NOT NULL, fields TEXT NOT NULL, PRIMARY KEY(destination,key));
+      CREATE TABLE IF NOT EXISTS feishu_review_delivery (destination TEXT NOT NULL, key TEXT NOT NULL, sampled_at TEXT NOT NULL, record TEXT NOT NULL, time TEXT NOT NULL, PRIMARY KEY(destination,key));
+      CREATE TABLE IF NOT EXISTS feishu_review_attempt (destination TEXT NOT NULL, key TEXT NOT NULL, sampled_at TEXT NOT NULL, token TEXT NOT NULL, fields TEXT NOT NULL, PRIMARY KEY(destination,key));`);
     this.config = JSON.parse(this.db.prepare('SELECT json FROM feishu_config WHERE id=1').get()?.json || '{}');
   }
   persist() { this.db.prepare('INSERT INTO feishu_config VALUES(1,?) ON CONFLICT(id) DO UPDATE SET json=excluded.json').run(JSON.stringify(this.config)); }
@@ -228,11 +212,18 @@ export class FeishuSync {
   }
   pendingHourly(limit = 1000) {
     if (!this.destination() || !this.config.accountIds?.length) return [];
-    return this.db.prepare(`SELECT h.key,h.account,h.sampled_at,h.json,a.sampled_at AS attemptSampledAt,a.fields AS attemptFields,a.token AS attemptToken
-      FROM hourly_metrics h LEFT JOIN feishu_hourly_delivery d ON d.destination=? AND d.key=h.key
-      LEFT JOIN feishu_hourly_attempt a ON a.destination=? AND a.key=h.key
-      WHERE h.account IN (SELECT value FROM json_each(?)) AND (a.key IS NOT NULL OR d.key IS NULL OR d.sampled_at<h.sampled_at)
-      ORDER BY h.hour_start,h.key LIMIT ?`).all(this.destination(), this.destination(), JSON.stringify(this.config.accountIds), limit);
+    if (this.store.targetName() !== REVIEW_TARGET) return [];
+    const selected = this.config.accountIds.filter(id => this.store.account(id).name === REVIEW_TARGET);
+    if (selected.length !== 1) return [];
+    const saved = this.db.prepare(`SELECT h.json FROM hourly_metrics h
+      WHERE h.account IN (SELECT value FROM json_each(?)) ORDER BY h.hour_start,h.key`)
+      .all(JSON.stringify(selected)).map(row => JSON.parse(row.json));
+    const delivered = new Map(this.db.prepare('SELECT key,sampled_at FROM feishu_review_delivery WHERE destination=?')
+      .all(this.destination()).map(row => [row.key, row.sampled_at]));
+    return reviewRows(saved, this.now()).filter(row => {
+      const prior = delivered.get(row.key);
+      return !prior || !row.frozen && prior < row.sampledAt;
+    }).slice(0, limit);
   }
   state() {
     const c = this.config;
@@ -245,9 +236,9 @@ export class FeishuSync {
       historyEnabled: c.historyEnabled === true, historyPending: this.pendingHistory().length,
       historySynced: this.destination() ? this.db.prepare('SELECT COUNT(*) AS n FROM feishu_history_delivery WHERE destination=?').get(this.destination()).n : 0,
       hourlyPending: this.pendingHourly().length,
-      hourlySynced: this.destination() ? this.db.prepare('SELECT COUNT(*) AS n FROM feishu_hourly_delivery WHERE destination=?').get(this.destination()).n : 0,
-      hourlyTableReady: Boolean(c.hourlyTableId || c.hourlyTableMode === 'rows'),
-      hourlyStorage: c.hourlyTableMode === 'rows' ? '原表独立小时行' : c.hourlyTableId ? '独立小时表' : '待创建',
+      hourlySynced: this.destination() ? this.db.prepare('SELECT COUNT(*) AS n FROM feishu_review_delivery WHERE destination=?').get(this.destination()).n : 0,
+      hourlyTableReady: Boolean(c.reviewTableId),
+      hourlyStorage: c.reviewTableId ? '小时复盘宽表' : '待创建',
       fields: FEISHU_FIELDS, missingFields: c.missingFields || [],
       accountIds: c.accountIds || [], accounts: this.store.accounts().map(({ id, name, label }) => ({ id, name, label })),
     };
@@ -272,8 +263,7 @@ export class FeishuSync {
     const parsed = parseBitableUrl(args.url);
     const accountIds = args.accountIds ?? this.config.accountIds ?? this.store.accounts().map(a => a.id);
     if (!Array.isArray(accountIds) || accountIds.some(id => typeof id !== 'string' || !this.store.accounts().some(a => a.id === id))) throw new Error('同步账号选择无效');
-    this.config = { ...this.config, ...parsed, hourlyTableId: parsed.appToken === this.config.appToken ? this.config.hourlyTableId : null,
-      hourlyTableMode: parsed.appToken === this.config.appToken ? this.config.hourlyTableMode : null,
+    this.config = { ...this.config, ...parsed, reviewTableId: parsed.appToken === this.config.appToken ? this.config.reviewTableId : null,
       accountIds: [...new Set(accountIds)], enabled: false, historyEnabled: false,
       verified: false, error: null, missingFields: [], lastTest: null, lastSuccess: null, nextRetry: 0 };
     this.client = null; this.persist();
@@ -376,59 +366,63 @@ export class FeishuSync {
     this.config.error = null; this.config.failures = 0; this.config.nextRetry = 0; this.persist();
   }
   async hourlyClient(client, active) {
-    if (this.config.hourlyTableMode === 'rows') return { client, mode: 'rows' };
-    if (!this.config.hourlyTableId) {
-      const route = `/bitable/v1/apps/${this.config.appToken}/tables`;
-      const data = await client.request(`${route}?page_size=100`);
-      if (!Array.isArray(data.items) || data.has_more) throw new FeishuError('无法完整核对小时数据表列表');
-      const existing = data.items.filter(item => item.name === '小时明细');
-      if (existing.length > 1) throw new FeishuError('发现多个同名小时明细表，请先确认目标表');
-      let tableId = existing[0]?.table_id;
-      if (!tableId && active()) {
-        try {
-          const created = await client.request(route, { method: 'POST', body: { table: { name: '小时明细',
-            default_view_name: '明细', fields: [{ field_name: '同步键', type: 1 }] } } });
-          tableId = created.table_id || created.table?.table_id;
-        } catch (error) {
-          if (error.code !== 1254302) throw error;
-          this.config.hourlyTableMode = 'rows'; this.persist();
-          return { client, mode: 'rows' };
-        }
-      }
-      if (!tableId || !ID.test(tableId)) throw new FeishuError('小时明细表创建响应无效');
-      this.config.hourlyTableId = tableId;
-      this.persist();
+    const route = `/bitable/v1/apps/${this.config.appToken}/tables`;
+    const items = []; let cursor = '';
+    for (let page = 0; page < 20; page++) {
+      const data = await client.request(`${route}?page_size=100${cursor ? '&page_token=' + encodeURIComponent(cursor) : ''}`);
+      if (!Array.isArray(data.items)) throw new FeishuError('小时复盘表列表格式异常');
+      items.push(...data.items);
+      if (!data.has_more) break;
+      if (!data.page_token || data.page_token === cursor || page === 19) throw new FeishuError('无法完整核对小时复盘数据表列表');
+      cursor = data.page_token;
     }
-    return { client: new FeishuClient({ ...this.config, tableId: this.config.hourlyTableId }, client.fetcher), mode: 'table' };
+    const existing = items.filter(item => item.name === '小时复盘');
+    if (existing.length > 1) throw new FeishuError('发现多个同名小时复盘表，请先确认目标表');
+    let tableId = existing[0]?.table_id;
+    if (this.config.reviewTableId && tableId && this.config.reviewTableId !== tableId)
+      throw new FeishuError('小时复盘表身份发生变化，已停止写入');
+    if (!tableId && this.config.reviewTableId) throw new FeishuError('已配置的小时复盘表不在当前应用中');
+    if (!tableId && active()) {
+      const created = await client.request(route, { method: 'POST', body: { table: { name: '小时复盘',
+        default_view_name: '今日按小时', fields: [{ field_name: '同步键', type: 1 }] } } });
+      tableId = created.table_id || created.table?.table_id;
+    }
+    if (!tableId || !ID.test(tableId)) throw new FeishuError('小时复盘表创建响应无效');
+    this.config.reviewTableId = tableId; this.persist();
+    return new FeishuClient({ ...this.config, tableId }, client.fetcher);
   }
   async syncHourly(client, active) {
     const pending = this.pendingHourly(20);
     if (!pending.length || !active()) return;
-    const { client: hourly, mode } = await this.hourlyClient(client, active);
-    if (mode === 'table') await hourly.schema(true, active, HOURLY_FIELDS);
+    const hourly = await this.hourlyClient(client, active);
+    await hourly.schema(true, active, REVIEW_FIELDS);
     for (const row of pending) {
       if (!active()) break;
-      let attempt = this.db.prepare('SELECT * FROM feishu_hourly_attempt WHERE destination=? AND key=?').get(this.destination(), row.key);
+      let attempt = this.db.prepare('SELECT * FROM feishu_review_attempt WHERE destination=? AND key=?').get(this.destination(), row.key);
       if (!attempt) {
-        const metric = JSON.parse(row.json);
-        const fields = mode === 'table' ? hourlyFields(metric) :
-          hourlyLegacyFields(metric, this.store.account(row.account), this.store.room(row.account, metric.room));
-        attempt = { sampled_at: row.sampled_at, fields: JSON.stringify(fields), token: crypto.randomUUID() };
-        this.db.prepare('INSERT INTO feishu_hourly_attempt VALUES (?,?,?,?,?)').run(this.destination(), row.key, attempt.sampled_at, attempt.token, attempt.fields);
+        attempt = { sampled_at: row.sampledAt, fields: JSON.stringify(row.fields), token: crypto.randomUUID() };
+        this.db.prepare('INSERT INTO feishu_review_attempt VALUES (?,?,?,?,?)').run(this.destination(), row.key, attempt.sampled_at, attempt.token, attempt.fields);
       }
       const fields = JSON.parse(attempt.fields);
-      const record = await hourly.upsert(row.key, fields, attempt.token, active);
+      const mutable = !row.frozen && Date.parse(row.hourEnd.replace(' ', 'T') + '+08:00') > this.now();
+      const record = await hourly.upsert(row.key, fields, attempt.token, active, mutable);
       if (!record) break;
       const time = new Date(this.now()).toISOString();
       this.db.exec('BEGIN');
       try {
-        this.db.prepare(`INSERT INTO feishu_hourly_delivery VALUES (?,?,?,?,?) ON CONFLICT(destination,key)
+        this.db.prepare(`INSERT INTO feishu_review_delivery VALUES (?,?,?,?,?) ON CONFLICT(destination,key)
           DO UPDATE SET sampled_at=excluded.sampled_at,record=excluded.record,time=excluded.time`).run(this.destination(), row.key, attempt.sampled_at, record, time);
-        this.db.prepare('DELETE FROM feishu_hourly_attempt WHERE destination=? AND key=?').run(this.destination(), row.key);
+        this.db.prepare('DELETE FROM feishu_review_attempt WHERE destination=? AND key=?').run(this.destination(), row.key);
         this.db.exec('COMMIT');
       } catch (error) { this.db.exec('ROLLBACK'); throw error; }
       this.config.lastSuccess = time;
     }
+  }
+  syncReviewOnly() { const version = this.pauseVersion; return this.launch(() => this.runReviewOnly(version)); }
+  async runReviewOnly(version) {
+    const active = () => !this.stopping && version === this.pauseVersion;
+    await this.syncHourly(this.getClient(), active);
+    this.config.error = null; this.config.failures = 0; this.config.nextRetry = 0; this.persist();
   }
   tick() {
     if (!this.stopping && (this.config.enabled || this.config.historyEnabled) && !this.busy && this.now() >= (this.config.nextRetry || 0) &&
