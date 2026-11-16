@@ -11,11 +11,26 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import server
 from qianchuan_account import QianchuanAccountStore
+from qianchuan_credentials import QianchuanCredentialStore
 
 
 class FakeCollector:
     def call(self, method, args=None, timeout=12):
         return {"method": method, "args": args, "accounts": []}
+
+
+class FakeCredentialVault:
+    def __init__(self):
+        self.value = None
+
+    def read(self):
+        return self.value
+
+    def write(self, value):
+        self.value = value
+
+    def delete(self):
+        self.value = None
 
 
 class RpaHttpTests(unittest.TestCase):
@@ -84,6 +99,17 @@ class RpaHttpTests(unittest.TestCase):
         self.assertEqual(status, 400)
         status, _ = self.request("POST", "/api/rpa/accounts/x/login", "{}", {"Content-Type":"application/json"})
         self.assertEqual(status, 404)
+
+    def test_remove_route_targets_only_the_requested_connection(self):
+        account = "00000000-0000-4000-8000-000000000001"
+        route = f"/api/rpa/accounts/{account}/remove"
+        headers = {"Content-Type": "application/json"}
+        status, data = self.request("POST", route, b"{}", headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data)["method"], "remove")
+        self.assertEqual(json.loads(data)["args"], {"id": account})
+        self.assertEqual(self.request("POST", route, b"{}", {**headers,
+            "Origin": "https://attacker.example"})[0], 403)
 
     def test_target_and_live_identity_verification_routes(self):
         headers = {"Content-Type": "application/json"}
@@ -176,6 +202,29 @@ class RpaHttpTests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/rpa/providers/qianchuan/check", "{}", {
             "Content-Type": "application/json", "Origin": "https://attacker.example",
         })[0], 403)
+
+    def test_qianchuan_credentials_use_vault_and_return_only_mask(self):
+        route = "/api/rpa/providers/qianchuan/credentials"
+        vault = FakeCredentialVault()
+        account, password = "synthetic@example.test", "synthetic-password"
+        with mock.patch.object(server, "QIANCHUAN_CREDENTIALS", QianchuanCredentialStore(vault)):
+            status, data = self.request("GET", route)
+            self.assertEqual(status, 200)
+            self.assertFalse(json.loads(data)["saved"])
+            payload = json.dumps({"account": account, "password": password}).encode()
+            status, data = self.request("POST", route, payload, {"Content-Type": "application/json"})
+            self.assertEqual(status, 200)
+            self.assertTrue(json.loads(data)["hasPassword"])
+            self.assertNotIn(account.encode(), data)
+            self.assertNotIn(password.encode(), data)
+            self.assertNotIn(account.encode(), self.request("GET", route)[1])
+            self.assertEqual(self.request("POST", route, payload, {"Content-Type": "application/json",
+                "Origin": "https://attacker.example"})[0], 403)
+            self.assertEqual(self.request("GET", route, headers={"Host": "attacker.example"})[0], 403)
+            status, data = self.request("POST", route, b'{"clear":true}', {"Content-Type": "application/json"})
+            self.assertEqual(status, 200)
+            self.assertFalse(json.loads(data)["saved"])
+            self.assertIsNone(vault.value)
 
     def test_qianchuan_enter_uses_only_saved_id(self):
         route = "/api/rpa/providers/qianchuan/enter"

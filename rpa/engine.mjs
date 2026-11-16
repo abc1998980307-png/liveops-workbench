@@ -28,6 +28,9 @@ export function qianchuanLoginState(pages) {
   if (pages.some(page => page.origin === 'https://qianchuan.jinritemai.com' &&
       page.pathname === '/dataV2/bidding/site-promotion' && page.hasWorkspaceText &&
       page.hasHomeContent && !page.hasLoginInput)) return 'logged_in';
+  // An open official workspace can still be loading while an older login tab remains.
+  if (pages.some(page => QIANCHUAN_ORIGINS.includes(page.origin) && page.pathname !== '/login'))
+    return 'unknown';
   if (pages.some(page => ['https://qianchuan.jinritemai.com', 'https://business.oceanengine.com'].includes(page.origin) &&
       page.pathname === '/login' && !page.hasSelectAccount && !page.hasLogoutControl &&
       page.hasLoginInput)) return 'needs_login';
@@ -51,7 +54,7 @@ async function isAccountSelectionPage(page) {
 }
 
 export class BrowserEngine {
-  constructor(root, onClosed) { this.root = root; this.onClosed = onClosed; this.sessions = new Map(); this.launches = new Map(); this.profileSession = null; this.profileLaunch = null; this.profileQueue = Promise.resolve(); this.stopping = false; }
+  constructor(root, onClosed) { this.root = root; this.onClosed = onClosed; this.sessions = new Map(); this.launches = new Map(); this.profileSession = null; this.profileLaunch = null; this.profileQueue = Promise.resolve(); this.lastQianchuanSuccessAt = null; this.stopping = false; }
   async session(id) {
     let session = this.sessions.get(id);
     if (!session) {
@@ -82,12 +85,17 @@ export class BrowserEngine {
       return current.origin === 'https://business.oceanengine.com' &&
         current.pathname === '/ebp/account-manage/ecp/bidding/universe/account';
     });
+    const workspacePage = pages.find(page => {
+      const current = new URL(page.url());
+      return QIANCHUAN_ORIGINS.includes(current.origin) &&
+        ['/home', '/dataV2/bidding/site-promotion'].includes(current.pathname);
+    });
     const loginPage = pages.find(page => {
       const current = new URL(page.url());
       return ['https://qianchuan.jinritemai.com', 'https://business.oceanengine.com'].includes(current.origin) &&
         current.pathname === '/login';
     });
-    session.page = selectionPages.find(Boolean) || accountPage || loginPage || session.page;
+    session.page = selectionPages.find(Boolean) || accountPage || workspacePage || loginPage || session.page;
     if (session.page.url() === 'about:blank' ||
         !['https://qianchuan.jinritemai.com', 'https://business.oceanengine.com'].includes(new URL(session.page.url()).origin)) {
       await session.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -97,7 +105,7 @@ export class BrowserEngine {
   }
   async qianchuanStatus() {
     const session = this.sessions.get('provider-qianchuan');
-    if (!session) return { state: 'unknown' };
+    if (!session) return { state: 'unknown', lastSuccessAt: this.lastQianchuanSuccessAt };
     const pages = await Promise.all(session.context.pages().filter(page => !page.isClosed()).map(async page => {
       const current = new URL(page.url());
       if (!['https://qianchuan.jinritemai.com', 'https://business.oceanengine.com'].includes(current.origin))
@@ -120,7 +128,10 @@ export class BrowserEngine {
       })).catch(() => ({}));
       return { origin: current.origin, pathname: current.pathname, ...signals };
     }));
-    return { state: qianchuanLoginState(pages), checkedAt: new Date().toISOString(),
+    const checkedAt = new Date().toISOString();
+    const state = qianchuanLoginState(pages);
+    if (state === 'logged_in') this.lastQianchuanSuccessAt = checkedAt;
+    return { state, checkedAt, lastSuccessAt: this.lastQianchuanSuccessAt,
       pages: pages.map(page => ({ ...page, pathname: page.pathname.replace(/\d+/g, '[已隐藏]') })) };
   }
   async checkQianchuanLogin() {
@@ -130,11 +141,9 @@ export class BrowserEngine {
     if (session.context.pages().some(page => {
       if (page.isClosed()) return false;
       const url = new URL(page.url());
-      return (url.origin === 'https://business.oceanengine.com' &&
-        url.pathname === '/ebp/account-manage/ecp/bidding/universe/account') ||
-        (['https://qianchuan.jinritemai.com', 'https://business.oceanengine.com'].includes(url.origin) &&
-        url.pathname === '/login');
+      return QIANCHUAN_ORIGINS.includes(url.origin);
     })) return current;
+    if (session.page.url() !== 'about:blank') return current;
     await session.page.goto(providerLoginUrl('qianchuan'), { waitUntil: 'domcontentloaded', timeout: 30000 });
     await session.page.waitForURL(url => url.origin === 'https://business.oceanengine.com' &&
       url.pathname === '/ebp/account-manage/ecp/bidding/universe/account', { timeout: 6000 }).catch(() => {});

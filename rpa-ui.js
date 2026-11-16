@@ -6,6 +6,7 @@
   let egoLoading = null;
   let qianchuanState = 'unknown', qianchuanLoading = null;
   let qianchuanAccount = null, qianchuanAccountLoading = null;
+  let credentials = null, credentialsLoading = null;
   let workspaceView = localStorage.getItem('rpaWorkspaceView') || 'accounts';
   let platformFilter = 'all', roomPlatformFilter = 'all', roomAccounts = new Set(), roomAccountsInitialized = false, roomPageView = 0, chartMode = 'chart', aggregationMode = 'exact';
   let roomSort = 'startedAt', roomSortDirection = 'desc';
@@ -283,13 +284,7 @@
     document.querySelectorAll('[data-rpa-view]').forEach(tab => tab.setAttribute('aria-selected', String(tab.dataset.rpaView === workspaceView)));
     if (workspaceView === 'settings') {
       const host = $('rpaWorkspaceView');
-      if (!$('rpaLegacyHost')) host.innerHTML = `<section class="rpa-provider-section"><div class="rpa-provider-heading"><div><h2>数据源账号</h2><p>两个平台分别登录；官网会话保存在本机，失效后需重新登录。同场消耗按采样结果对账。</p></div></div><div class="rpa-provider-grid"><article class="rpa-provider-card"><div class="rpa-provider-card-head"><span class="rpa-provider-mark compass-mark">罗</span><div><strong>电商罗盘</strong><small>直播场次与经营数据</small></div><span class="rpa-provider-state ready">支持采集</span></div><p>打开罗盘官网，在独立浏览器窗口选择密码或扫码登录。登录后会保留在该账号的本机会话中。</p><button type="button" class="btn small" data-rpa-action="connect">连接罗盘账号</button></article><article class="rpa-provider-card"><div class="rpa-provider-card-head"><span class="rpa-provider-mark qianchuan-mark">川</span><div><strong>巨量千川</strong><small>广告账户与消耗报表</small></div><span class="rpa-provider-state ready">按场次采集</span></div><p>打开千川官网选择密码或扫码登录，状态保留在独立本机会话中；失效后重新登录。已接入同场消耗报表，登录或当前户失效时停止赋值。</p><button type="button" class="btn small" data-qianchuan-login>打开千川登录</button></article></div></section><div id="rpaLegacyHost"></div>`;
-      const card = host.querySelector('.qianchuan-mark').closest('.rpa-provider-card');
-      if (!card.querySelector('.rpa-qianchuan-login'))
-        card.querySelector('p').insertAdjacentHTML('afterend', `<div class="rpa-qianchuan-login"><span>登录状态</span><span class="rpa-provider-state ${qianchuanState === 'logged_in' ? 'ready' : 'pending'}">${qianchuanLabels[qianchuanState]}</span></div>`);
-      if (!card.querySelector('[data-qianchuan-check]'))
-        card.querySelector('[data-qianchuan-login]').insertAdjacentHTML('afterend', '<button type="button" class="btn small" data-qianchuan-check>完成登录后检查</button>');
-      renderQianchuanAccount(card);
+      if (!$('rpaLegacyHost')) host.innerHTML = '<div id="rpaLegacyHost"></div>';
       renderLegacy();
       return;
     }
@@ -385,7 +380,13 @@
   function render() {
     ensureWorkspaceShell();
     if (state.accounts.length && !account()) selected = state.accounts[0].id;
+    renderProviderStatus();
     renderIdentity();
+    if (!state.accounts.length && workspaceView === 'settings') {
+      $('rpaWorkspaceView').innerHTML = '<div class="rpa-empty-state">尚无罗盘连接。请在上方数据源登录区添加账号。</div>';
+      renderedAccount = '';
+      return;
+    }
     if (!state.accounts.length && workspaceView !== 'settings') {
       $('rpaWorkspaceView').innerHTML = `<div class="panel rpa-empty"><div class="rpa-emblem"><svg width="34" height="34" viewBox="0 0 34 34" fill="none" aria-hidden="true"><circle cx="17" cy="17" r="14" stroke="currentColor" stroke-width="1.5"/><path d="m22 11-3 8-8 4 3-9 8-3Z" stroke="currentColor" stroke-width="1.5"/><circle cx="17" cy="17" r="2" fill="currentColor"/></svg></div><h2>把直播经营数据接回操盘台</h2><p>连接你有权限查看的罗盘账号，即可在“我的直播号”和“我的直播间”中查看本机采集到的场次与数据。</p><button class="btn primary" data-rpa-action="connect">连接第一个罗盘账号</button><div class="rpa-steps"><span><b>1</b>打开罗盘</span><span><b>2</b>官网登录</span><span><b>3</b>同步数据</span></div></div>`;
       document.querySelectorAll('[data-rpa-view]').forEach(tab => tab.setAttribute('aria-selected', String(tab.dataset.rpaView === workspaceView)));
@@ -394,10 +395,19 @@
     if (state.accounts.length) localStorage.setItem('rpaAccount', selected);
     renderWorkspaceView();
   }
+  function renderProviderStatus() {
+    const a = account();
+    const compass = $('rpaCompassStatus');
+    compass.textContent = a ? labels[a.state] || '等待检查' : '待连接';
+    compass.className = `rpa-provider-state ${a?.state === 'ready' ? 'ready' : 'pending'}`;
+    $('rpaCompassLastCheck').textContent = a?.verifiedAt ? date(a.verifiedAt) : '尚无记录';
+    document.querySelectorAll('#rpaProviders [data-rpa-action="login"], #rpaProviders [data-rpa-action="verify"]')
+      .forEach(button => { button.disabled = !a || actionBusy; });
+  }
   function renderIdentity() {
     const host = $('rpaIdentity');
     if (!host) return;
-    if (!host.querySelector('[data-rpa-target-form]')) host.innerHTML = `<div class="rpa-identity-head"><strong>罗盘账号校正</strong><span data-rpa-identity-status role="status"></span></div><div class="rpa-identity-grid"><div><span>当前直播号</span><strong data-rpa-target-name></strong></div><div><span>当前千川户</span><strong data-rpa-qianchuan-name></strong></div><div><span>当前罗盘实际登录的达人</span><strong data-rpa-observed-name></strong></div></div><p data-rpa-identity-message></p><form data-rpa-target-form class="rpa-target-form"><label>指定当前直播号<input name="name" type="text" maxlength="80" autocomplete="off" required></label><button type="submit" class="btn small">保存直播号</button></form><div class="rpa-identity-actions"><button type="button" class="btn small" data-rpa-action="login">打开罗盘 / 登录</button><button type="button" class="btn small" data-rpa-action="verify">核验当前达人</button><button type="button" class="btn small" data-rpa-action="confirm-target" data-rpa-confirm-target hidden>将核验达人设为当前直播号</button></div>`;
+    if (!host.querySelector('[data-rpa-target-form]')) host.innerHTML = `<div class="rpa-identity-head"><strong>当前直播号校正</strong><span data-rpa-identity-status role="status"></span></div><div class="rpa-identity-grid"><div><span>当前直播号</span><strong data-rpa-target-name></strong></div><div><span>当前千川户</span><strong data-rpa-qianchuan-name></strong></div><div><span>当前罗盘实际登录的达人</span><strong data-rpa-observed-name></strong></div></div><p data-rpa-identity-message></p><form data-rpa-target-form class="rpa-target-form"><label>指定当前直播号<input name="name" type="text" maxlength="80" autocomplete="off" required></label><button type="submit" class="btn small">保存直播号</button></form><div class="rpa-identity-actions"><button type="button" class="btn small" data-rpa-action="confirm-target" data-rpa-confirm-target hidden>将核验达人设为当前直播号</button></div>`;
     const a = account(), target = state.targetName || '';
     const recentlyVerified = !!a?.verifiedAt && Date.now() >= Date.parse(a.verifiedAt) && Date.now() - Date.parse(a.verifiedAt) <= 5 * 60 * 1000;
     const observed = recentlyVerified ? a.observedName || '' : '';
@@ -414,8 +424,6 @@
     if (document.activeElement !== field) field.value = target;
     host.querySelector('[data-rpa-confirm-target]').hidden = !observed || match;
     host.querySelector('[data-rpa-confirm-target]').disabled = !a || !a.verifiedAt || a.observedUidMatchesStored === false || Date.now() - Date.parse(a.verifiedAt) > 5 * 60 * 1000;
-    host.querySelector('[data-rpa-action="verify"]').disabled = !a || actionBusy;
-    host.querySelector('[data-rpa-action="login"]').disabled = !a || actionBusy;
   }
   function renderLegacy() {
     if (!state?.accounts.length) return;
@@ -424,7 +432,8 @@
     if (renderedAccount !== selected || !$('rpaAccountList')) {
       const bounds = state.historyBounds || { earliest: '', latest: '' };
       const startDate = a.history?.startDate || bounds.earliest, endDate = a.history?.endDate || bounds.latest;
-      $('rpaLegacyHost').innerHTML = `<div class="rpa-layout"><aside class="panel"><div class="panel-head"><div class="panel-title">已连接账号</div><span class="panel-subtitle">本机保存</span></div><div id="rpaAccountList"></div></aside><div class="rpa-main"><section class="panel"><div class="rpa-toolbar"><button class="btn" data-rpa-action="login">打开罗盘 / 登录</button><button class="btn primary" data-rpa-action="sync" id="rpaSync">立即同步</button><button class="btn" data-rpa-action="monitor" id="rpaToggle">暂停同步</button><label for="rpaInterval">同步间隔</label><select id="rpaInterval" aria-label="同步间隔"><option value="30">30 秒</option><option value="60">1 分钟</option><option value="120">2 分钟</option><option value="300">5 分钟</option><option value="600">10 分钟</option></select></div><div id="rpaAccountError"></div><div class="rpa-meta" id="rpaMeta"></div></section><section class="panel"><div class="panel-head"><div><div class="panel-title">历史场次目录</div><div class="panel-subtitle">罗盘近 90 天 · 每次读取 10 场</div></div><button class="btn small" data-rpa-action="history" id="rpaHistory">导入历史场次</button></div><div class="panel-body"><div class="rpa-history-dates"><label for="rpaHistoryStart">开始日期<input id="rpaHistoryStart" type="date" min="${esc(bounds.earliest)}" max="${esc(bounds.latest)}" value="${esc(startDate)}"></label><label for="rpaHistoryEnd">结束日期<input id="rpaHistoryEnd" type="date" min="${esc(bounds.earliest)}" max="${esc(bounds.latest)}" value="${esc(endDate)}"></label></div><div class="rpa-note" id="rpaHistoryStatus"></div><p class="rpa-note">此处只导入场次目录。选择已结束场次后，可单独读取历史指标；历史报表写入飞书由下方独立开关控制。</p></div></section><section class="panel"><div class="panel-head"><div><div class="panel-title">直播场次</div><div class="panel-subtitle">今日发现与本机历史记录</div></div><button class="btn small" data-rpa-action="export" id="rpaExport" disabled>导出本场数据</button></div><div class="panel-body"><label for="rpaRoom" class="sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden">选择直播场次</label><select id="rpaRoom" class="rpa-room-picker"></select><div class="review-link-page"><button class="btn small" id="rpaRoomsPrev" type="button">上一页</button><span class="rpa-note" id="rpaRoomsPage"></span><button class="btn small" id="rpaRoomsNext" type="button">下一页</button></div><div id="rpaDetail"></div></div></section><section class="panel"><div class="panel-head"><div class="panel-title">同步记录</div><div class="panel-subtitle">最近 30 条</div></div><div class="rpa-events" id="rpaEvents"></div></section></div></div>`;
+      $('rpaLegacyHost').innerHTML = `<div class="rpa-layout"><aside class="panel"><div class="panel-head"><div class="panel-title">已连接账号</div><span class="panel-subtitle">本机保存</span></div><div id="rpaAccountList"></div></aside><div class="rpa-main"><section class="panel"><div class="rpa-toolbar"><button class="btn primary" data-rpa-action="sync" id="rpaSync">立即同步</button><button class="btn" data-rpa-action="monitor" id="rpaToggle">暂停同步</button><label for="rpaInterval">同步间隔</label><select id="rpaInterval" aria-label="同步间隔"><option value="30">30 秒</option><option value="60">1 分钟</option><option value="120">2 分钟</option><option value="300">5 分钟</option><option value="600">10 分钟</option></select></div><div id="rpaAccountError"></div><div class="rpa-meta" id="rpaMeta"></div></section><section class="panel"><div class="panel-head"><div><div class="panel-title">历史场次目录</div><div class="panel-subtitle">罗盘近 90 天 · 每次读取 10 场</div></div><button class="btn small" data-rpa-action="history" id="rpaHistory">导入历史场次</button></div><div class="panel-body"><div class="rpa-history-dates"><label for="rpaHistoryStart">开始日期<input id="rpaHistoryStart" type="date" min="${esc(bounds.earliest)}" max="${esc(bounds.latest)}" value="${esc(startDate)}"></label><label for="rpaHistoryEnd">结束日期<input id="rpaHistoryEnd" type="date" min="${esc(bounds.earliest)}" max="${esc(endDate)}" value="${esc(endDate)}"></label></div><div class="rpa-note" id="rpaHistoryStatus"></div><p class="rpa-note">此处只导入场次目录。选择已结束场次后，可单独读取历史指标；历史报表写入飞书由下方独立开关控制。</p></div></section><section class="panel"><div class="panel-head"><div class="panel-title">直播场次</div><div class="panel-subtitle">今日发现与本机历史记录</div></div><button class="btn small" data-rpa-action="export" id="rpaExport" disabled>导出本场数据</button></div><div class="panel-body"><label for="rpaRoom" class="sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden">选择直播场次</label><select id="rpaRoom" class="rpa-room-picker"></select><div class="review-link-page"><button class="btn small" id="rpaRoomsPrev" type="button">上一页</button><span class="rpa-note" id="rpaRoomsPage"></span><button class="btn small" id="rpaRoomsNext" type="button">下一页</button></div><div id="rpaDetail"></div></div></section><section class="panel"><div class="panel-head"><div class="panel-title">同步记录</div><div class="panel-subtitle">最近 30 条</div></div><div class="rpa-events" id="rpaEvents"></div></section></div></div>`;
+      $('rpaHistoryStart').value = startDate;
       $('rpaHistoryStatus').closest('section').insertAdjacentHTML('afterend', `<section class="panel"><div class="panel-head"><div><div class="panel-title">历史报表批量回填</div><div class="panel-subtitle">已保存的结束场次</div></div><div class="rpa-batch-actions"><button class="btn small" id="rpaBatchStart" data-rpa-action="history-batch-start" type="button">开始回填</button><button class="btn small" id="rpaBatchPause" data-rpa-action="history-batch-pause" type="button" hidden>暂停</button></div></div><div class="panel-body"><div class="rpa-note" id="rpaBatchStatus"></div></div></section>`);
       $('rpaBatchStatus').closest('section').insertAdjacentHTML('afterend', '<section class="panel"><div class="panel-head"><div class="panel-title">历史经营汇总</div><div class="panel-subtitle">本机已保存报表</div></div><div class="panel-body" id="rpaHistorySummary">读取中…</div></section>');
       renderedAccount = selected; currentDetail = null;
@@ -435,7 +444,7 @@
       $('rpaHistoryStart').addEventListener('change', () => { render(); loadSummary(); });
       $('rpaHistoryEnd').addEventListener('change', () => { render(); loadSummary(); });
     }
-    $('rpaAccountList').innerHTML = state.accounts.map(item => `<button class="rpa-account ${item.id === selected ? 'selected' : ''}" data-rpa-account="${esc(item.id)}"><strong>${esc(item.name || item.label)}</strong>${chip(item)}<small>${item.observedName ? '已现场核验' : '等待现场核验'}<br>最近同步 ${date(item.lastSync)}</small></button>`).join('');
+    $('rpaAccountList').innerHTML = state.accounts.map(item => `<div class="rpa-account-row"><button class="rpa-account ${item.id === selected ? 'selected' : ''}" data-rpa-account="${esc(item.id)}"><strong>${esc(item.name || item.label)}</strong>${chip(item)}<small>${item.observedName ? '已现场核验' : '等待现场核验'}<br>最近同步 ${date(item.lastSync)}</small></button><button type="button" class="btn small rpa-remove-account" data-rpa-remove="${esc(item.id)}" aria-label="移除 ${esc(item.name || item.label)}">移除</button></div>`).join('');
     const limitedUntil = retryAfter(a);
     const identityMatches = !!state.targetName && a.observedName === state.targetName && !!a.verifiedAt &&
       Date.now() >= Date.parse(a.verifiedAt) && Date.now() - Date.parse(a.verifiedAt) <= 5 * 60 * 1000;
@@ -623,6 +632,7 @@
     refreshEgo();
     refreshQianchuanStatus();
     refreshQianchuanAccount();
+    if (!credentials && !credentialsLoading) refreshCredentials();
     if (loading) return loading;
     loading = (async () => {
     try {
@@ -642,9 +652,37 @@
     qianchuanState = qianchuanLabels[result?.state] ? result.state : 'unknown';
     const label = qianchuanLabels[qianchuanState];
     const home = $('qianchuanHomeStatus');
-    if (home) home.textContent = `千川登录：${label} · 同场消耗按采样结果对账`;
-    const card = document.querySelector('.rpa-qianchuan-login .rpa-provider-state');
-    if (card) { card.textContent = label; card.className = `rpa-provider-state ${qianchuanState === 'logged_in' ? 'ready' : 'pending'}`; }
+    if (home) { home.textContent = label; home.className = `rpa-provider-state ${qianchuanState === 'logged_in' ? 'ready' : 'pending'}`; }
+    if (result?.lastSuccessAt) $('qianchuanLastCheck').textContent = date(result.lastSuccessAt);
+    const card = document.querySelector('#rpaProviders .qianchuan-mark')?.closest('.rpa-provider-card');
+    if (card && qianchuanAccount) renderQianchuanAccount(card);
+  }
+  function renderCredentials() {
+    const summary = document.querySelector('[data-qianchuan-credentials-summary]');
+    if (!summary) return;
+    summary.textContent = credentials?.saved ? `已保存账号（${credentials.maskedAccount}）${credentials.hasPassword ? ' · 密码已存入系统凭据库' : ''}` : '尚未保存账号';
+    document.querySelector('[data-qianchuan-credentials-clear]').hidden = !credentials?.saved;
+  }
+  function refreshCredentials() {
+    if (credentialsLoading) return credentialsLoading;
+    credentialsLoading = apiRequest('/api/rpa/providers/qianchuan/credentials')
+      .then(result => { credentials = result; renderCredentials(); })
+      .catch(error => { status(error.message, true); })
+      .finally(() => { credentialsLoading = null; });
+    return credentialsLoading;
+  }
+  async function saveCredentials(form, clear = false) {
+    const button = clear ? form.querySelector('[data-qianchuan-credentials-clear]') : form.querySelector('[type="submit"]');
+    button.disabled = true;
+    try {
+      credentials = await apiRequest('/api/rpa/providers/qianchuan/credentials', {
+        method:'POST', body:JSON.stringify(clear ? {clear:true} : {account:form.elements.account.value.trim(), password:form.elements.password.value}),
+      });
+      form.reset();
+      renderCredentials();
+      toast(clear ? '已清除系统凭据库中的账号。' : '账号已保存到系统凭据库，官网登录仍由你完成。');
+    } catch (error) { status(error.message, true); toast(error.message); }
+    finally { form.elements.password.value = ''; button.disabled = false; }
   }
   function refreshQianchuanStatus() {
     if (qianchuanLoading) return qianchuanLoading;
@@ -832,6 +870,30 @@
     };
     $('rpaAccountName').focus();
   }
+  function confirmRemoveAccount(id) {
+    const item = state?.accounts.find(account => account.id === id);
+    if (!item) return;
+    const names = [item.name, item.observedName, item.label];
+    const isCurrent = names.includes('雪梨老师阅读100篇') ||
+      (!!state.targetName && names.includes(state.targetName));
+    openModal('移除罗盘连接', `<p>确定移除「${esc(item.name || item.label)}」？此连接会从列表和自动同步中移除；本机历史记录与官网浏览器会话保留。</p>${isCurrent ? '<p class="rpa-remove-warning">这是当前直播号。移除后当前直播号将没有可用的罗盘连接，采集与关联会中断。</p>' : ''}`,
+      '<button type="button" class="btn" id="rpaRemoveCancel">取消</button><button type="button" class="btn primary" id="rpaRemoveConfirm">确认移除</button>');
+    $('rpaRemoveCancel').onclick = closeModal;
+    $('rpaRemoveConfirm').onclick = async () => {
+      const button = $('rpaRemoveConfirm');
+      button.disabled = true;
+      try {
+        await apiRequest(`/api/rpa/accounts/${encodeURIComponent(id)}/remove`, {method:'POST', body:'{}'});
+        if (selected === id) selected = '';
+        roomAccounts.delete(id);
+        renderedAccount = '';
+        closeModal();
+        if (loading) await loading;
+        await refresh();
+        toast('罗盘连接已移除；本机历史记录和官网会话已保留。');
+      } catch (error) { toast(error.message); button.disabled = false; }
+    };
+  }
   async function exportData() {
     if (!room) return;
     try {
@@ -858,12 +920,18 @@
   $('view-business').addEventListener('submit', event => {
     const targetForm = event.target.closest('[data-rpa-target-form]');
     if (targetForm) { event.preventDefault(); saveTarget(targetForm); return; }
+    const credentialsForm = event.target.closest('[data-qianchuan-credentials-form]');
+    if (credentialsForm) { event.preventDefault(); saveCredentials(credentialsForm); return; }
     const form = event.target.closest('[data-qianchuan-account-form]');
     if (!form) return;
     event.preventDefault();
     saveQianchuanAccount(form);
   });
   $('view-business').addEventListener('click', event => {
+    const clearCredentials = event.target.closest('[data-qianchuan-credentials-clear]');
+    if (clearCredentials) { saveCredentials(clearCredentials.closest('form'), true); return; }
+    const removeAccount = event.target.closest('[data-rpa-remove]');
+    if (removeAccount) { confirmRemoveAccount(removeAccount.dataset.rpaRemove); return; }
     const hourlyRefresh = event.target.closest('[data-rpa-hourly-refresh]');
     if (hourlyRefresh && selected && room) {
       hourlyRefresh.disabled = true;
@@ -962,6 +1030,7 @@
   window.LiveRpa = { refresh };
   if (!['accounts','rooms','settings'].includes(workspaceView)) workspaceView = 'accounts';
   setRangePreset('30');
+  refreshCredentials();
   setInterval(() => { if (currentView === 'business' && !document.hidden) refresh(); }, 5000);
   if (location.hash === '#business') switchView('business');
 })();

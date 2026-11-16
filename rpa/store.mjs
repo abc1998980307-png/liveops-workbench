@@ -21,14 +21,34 @@ export class Store {
       CREATE INDEX IF NOT EXISTS hourly_room ON hourly_metrics(account,room,hour_start,source,metric);
       CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, account TEXT, time TEXT NOT NULL, message TEXT NOT NULL);`);
   }
-  accounts() { return this.db.prepare('SELECT json FROM accounts').all().map(r => JSON.parse(r.json)); }
+  accounts() { return this.db.prepare('SELECT json FROM accounts').all().map(r => JSON.parse(r.json)).filter(account => !account.archivedAt); }
   targetName() { return this.db.prepare("SELECT value FROM settings WHERE key='targetName'").get()?.value || ''; }
+  qianchuanLastSuccessAt() { return this.db.prepare("SELECT value FROM settings WHERE key='qianchuanLastSuccessAt'").get()?.value || null; }
+  saveQianchuanLastSuccessAt(value) {
+    this.db.prepare("INSERT INTO settings(key,value) VALUES ('qianchuanLastSuccessAt',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(value);
+  }
   setTargetName(name) {
     this.db.prepare("INSERT INTO settings(key,value) VALUES ('targetName',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(name);
     return name;
   }
-  account(id) { const row = this.db.prepare('SELECT json FROM accounts WHERE id=?').get(id); if (!row) throw new Error('账号不存在'); return JSON.parse(row.json); }
-  save(account) { this.db.prepare('INSERT INTO accounts VALUES (?,?) ON CONFLICT(id) DO UPDATE SET json=excluded.json').run(account.id, JSON.stringify(account)); return account; }
+  account(id) {
+    const row = this.db.prepare('SELECT json FROM accounts WHERE id=?').get(id);
+    const account = row && JSON.parse(row.json);
+    if (!account || account.archivedAt) throw new Error('账号不存在');
+    return account;
+  }
+  save(account) {
+    const existing = this.db.prepare('SELECT json FROM accounts WHERE id=?').get(account.id);
+    if (existing && JSON.parse(existing.json).archivedAt) throw new Error('账号已移除');
+    this.db.prepare('INSERT INTO accounts VALUES (?,?) ON CONFLICT(id) DO UPDATE SET json=excluded.json').run(account.id, JSON.stringify(account));
+    return account;
+  }
+  archive(id) {
+    const account = this.account(id);
+    const archived = { ...account, enabled: false, state: 'paused', archivedAt: new Date().toISOString() };
+    this.db.prepare('UPDATE accounts SET json=? WHERE id=?').run(JSON.stringify(archived), id);
+    return archived;
+  }
   create(label) {
     if (this.accounts().length >= 10) throw new Error('最多连接 10 个账号');
     return this.save({ id: crypto.randomUUID(), label: label.trim().slice(0, 60) || '我的罗盘账号', uid: null, name: null, observedName: null, verifiedAt: null, observedUidMatchesStored: false, enabled: false, interval: 60, state: 'needs_login', error: null, lastCheck: null, lastSync: null, createdAt: new Date().toISOString() });

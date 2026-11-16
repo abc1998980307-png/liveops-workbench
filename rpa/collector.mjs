@@ -80,12 +80,45 @@ export class Collector {
     return { ready: true, targetName: this.store.targetName(), accounts: this.store.accounts().map(a => ({ ...a, busy: this.busy.has(a.id), historyBusy: this.historyBusy.has(a.id), history: this.store.historyProgress(a.id), historyBatch: this.store.historyBatch(a.id), nextSync: a.enabled ? new Date(this.next.get(a.id) || Date.now()).toISOString() : null, rooms: this.store.rooms(a.id) })), events: this.store.events(), retentionDays: 30, historyBounds: historyBounds() };
   }
   pause(id, message = '已暂停自动同步') {
-    const a = this.store.account(id);
+    const a = this.store.accounts().find(account => account.id === id);
+    if (!a) return;
     this.generation.set(id, (this.generation.get(id) || 0) + 1);
     this.store.save({ ...a, enabled: false, state: 'paused', error: null });
     const batch = this.store.historyBatch(id);
     if (batch?.status === 'running') this.store.saveHistoryBatch(id, { ...batch, status: 'paused', updatedAt: new Date().toISOString() });
     this.store.event(id, message);
+  }
+  remove(id) {
+    this.store.account(id);
+    if (this.feishu.busy) throw new Error('飞书同步正在进行，请完成后重试移除');
+    const previousConfig = this.feishu.config;
+    this.store.db.exec('BEGIN');
+    try {
+      const batch = this.store.historyBatch(id);
+      if (batch?.status === 'running') this.store.saveHistoryBatch(id, {
+        ...batch, status: 'paused', updatedAt: new Date().toISOString(),
+      });
+      this.store.archive(id);
+      if (previousConfig.accountIds?.includes(id)) {
+        const accountIds = previousConfig.accountIds.filter(accountId => accountId !== id);
+        this.feishu.config = {
+          ...previousConfig, accountIds,
+          enabled: accountIds.length > 0 && previousConfig.enabled === true,
+          historyEnabled: accountIds.length > 0 && previousConfig.historyEnabled === true,
+        };
+        this.feishu.persist();
+      }
+      this.store.db.exec('COMMIT');
+    } catch (error) {
+      this.store.db.exec('ROLLBACK');
+      this.feishu.config = previousConfig;
+      throw error;
+    }
+    this.generation.set(id, (this.generation.get(id) || 0) + 1);
+    this.next.delete(id);
+    for (const key of this.nextHourly.keys()) if (key.startsWith(`${id}:`)) this.nextHourly.delete(key);
+    if (previousConfig !== this.feishu.config) this.feishu.pauseVersion++;
+    return { removed: true };
   }
   rateLimitUntil(id) {
     const account = this.store.account(id);
@@ -797,13 +830,18 @@ export class Collector {
       }
       case 'hourly.refresh': return this.refreshHourly(String(args.account || ''), String(args.room || ''));
       case 'create': return { account: this.store.create(String(args.label || '')) };
+      case 'remove': return this.remove(String(args.id || ''));
       case 'login': return this.login(String(args.id));
       case 'verify': return this.verifyIdentity(String(args.id));
       case 'target.set': return this.setTarget(args.name);
       case 'target.confirm': return this.confirmTarget(String(args.id));
       case 'provider.qianchuan.login': return this.engine.openProviderLogin('qianchuan');
-      case 'provider.qianchuan.status': return this.engine.qianchuanStatus();
-      case 'provider.qianchuan.check': return this.engine.checkQianchuanLogin();
+      case 'provider.qianchuan.status':
+      case 'provider.qianchuan.check': {
+        const result = method.endsWith('check') ? await this.engine.checkQianchuanLogin() : await this.engine.qianchuanStatus();
+        if (result.state === 'logged_in') this.store.saveQianchuanLastSuccessAt(result.lastSuccessAt || new Date().toISOString());
+        return { ...result, lastSuccessAt: result.lastSuccessAt || this.store.qianchuanLastSuccessAt() };
+      }
       case 'provider.qianchuan.enter': return this.engine.enterQianchuanAccount(args.accountId);
       case 'sync': return this.start(String(args.id));
       case 'monitor': {

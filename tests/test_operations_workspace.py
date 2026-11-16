@@ -46,6 +46,39 @@ class OperationsWorkspaceTests(unittest.TestCase):
         self.assertFalse(updated["active"])
         self.assertEqual(len(self.store.snapshot()["teamMembers"]), 1)
 
+    def test_delete_records_and_protect_related_entries(self):
+        member = self.store.save("teamMembers", {"name":"主播甲", "role":"主播", "active":True})
+        shift = self.store.save("shifts", {"date":"2026-11-11", "memberId":member["id"], "role":"主播"})
+        store = self.store.save("stores", {"name":"示例店铺", "platform":"douyin", "active":True})
+        product = self.store.save("products", {"storeId":store["id"], "name":"商品甲"})
+        mapping = self.store.save("accountMappings", {"name":"直播号甲", "sourceAlias":"来源甲",
+                                                       "memberId":member["id"], "storeId":store["id"], "active":True})
+        with self.assertRaisesRegex(WorkspaceError, "引用"):
+            self.store.delete("teamMembers", member["id"])
+        with self.assertRaisesRegex(WorkspaceError, "引用"):
+            self.store.delete("stores", store["id"])
+        self.store.delete("shifts", shift["id"])
+        self.store.delete("products", product["id"])
+        self.store.delete("accountMappings", mapping["id"])
+        self.store.delete("teamMembers", member["id"])
+        self.store.delete("stores", store["id"])
+        self.assertFalse(any(self.store.snapshot()[key] for key in ("teamMembers", "shifts", "stores", "products", "accountMappings")))
+
+    def test_delete_rejects_invalid_or_missing_id(self):
+        with self.assertRaisesRegex(WorkspaceError, "ID 无效"):
+            self.store.delete("goals", "not-an-id")
+        with self.assertRaisesRegex(WorkspaceError, "不存在"):
+            self.store.delete("goals", "00000000-0000-0000-0000-000000000000")
+
+    def test_delete_mapping_requires_source_confirmation_revoke(self):
+        mapping = self.store.save("accountMappings", {"name":"直播号甲", "sourceAlias":"来源甲", "active":True})
+        confirmation = self.store.confirm_source("a" * 64, "来源甲", mapping["id"], "确认人甲",
+                                                 [{"sourceRef":"a" * 64, "sourceAlias":"来源甲"}])
+        with self.assertRaisesRegex(WorkspaceError, "撤销确认"):
+            self.store.delete("accountMappings", mapping["id"])
+        self.store.revoke_source(confirmation["id"], "确认人甲")
+        self.store.delete("accountMappings", mapping["id"])
+
     def test_rejects_invalid_dates_prices_enums_and_missing_relationships(self):
         invalid_records = [
             ("shifts", {"date":"20261111", "memberId":"missing", "role":"主播"}),
@@ -113,6 +146,19 @@ class OperationsWorkspaceHttpTests(unittest.TestCase):
         status, body = self.request("GET", "/api/operations-workspace")
         self.assertEqual(status, 200)
         self.assertEqual(len(json.loads(body)["teamMembers"]), 1)
+
+    def test_delete_requires_local_origin_and_removes_record(self):
+        origin = f"http://127.0.0.1:{self.port}"
+        status, body = self.request("POST", "/api/operations-workspace/teamMembers",
+                                    {"name":"主播甲", "role":"主播", "active":True}, origin)
+        self.assertEqual(status, 200)
+        record_id = json.loads(body)["record"]["id"]
+        path = f"/api/operations-workspace/teamMembers/{record_id}"
+        self.assertEqual(self.request("DELETE", path, origin="https://attacker.example")[0], 403)
+        self.assertEqual(self.request("DELETE", path, origin=origin)[0], 200)
+        status, body = self.request("GET", "/api/operations-workspace")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["teamMembers"], [])
 
     def test_static_page_serves_the_operations_module(self):
         status, body = self.request("GET", "/operations-ui.js")

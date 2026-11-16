@@ -35,6 +35,19 @@
 .rpa-provider-state { flex:0 0 auto; padding:4px 7px; border-radius:4px; font-size:10px; }
 .rpa-provider-state.ready { color:#16795d; background:#dff4e9; }
 .rpa-provider-state.pending { color:#8b5c2b; background:#fff0e4; }
+.rpa-provider-check { margin:12px 0; color:var(--muted); font-size:11px; line-height:1.5; }
+.rpa-provider-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.rpa-credentials { margin-top:14px; padding-top:12px; border-top:1px solid var(--line); font-size:12px; }
+.rpa-credentials summary { cursor:pointer; font-weight:650; }
+.rpa-credentials form { display:grid; gap:9px; margin-top:10px; }
+.rpa-credentials form > span, .rpa-credentials small { color:var(--muted); font-size:11px; line-height:1.5; overflow-wrap:anywhere; }
+.rpa-credentials label { display:grid; gap:4px; color:var(--muted); font-size:11px; }
+.rpa-credentials input { box-sizing:border-box; width:100%; min-width:0; padding:7px 8px; border:1px solid var(--line); border-radius:4px; background:var(--surface); color:var(--ink); font-size:12px; }
+.rpa-remove-warning { color:var(--red); font-weight:650; }
+.rpa-account-row { display:flex; align-items:center; border-bottom:1px solid var(--line); }
+.rpa-account-row .rpa-account { flex:1; min-width:0; border-bottom:0; }
+.rpa-remove-account { flex:none; margin-right:10px; }
+.rpa-empty-state { padding:24px 0; color:var(--muted); font-size:12px; }
 .rpa-qianchuan-login { display:flex; align-items:center; gap:8px; margin:0 0 12px; font-size:11px; }
 .rpa-provider-card [data-qianchuan-check] { margin-left:8px; }
 .rpa-qianchuan-account { margin-top:14px; padding-top:13px; border-top:1px solid var(--line); }

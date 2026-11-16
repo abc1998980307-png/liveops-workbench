@@ -1,13 +1,13 @@
 (() => {
   const $ = id => document.getElementById(id);
   const collections = {
-    accountMappings: {form:"opsMappingForm", status:"opsMappingStatus", rows:"opsMappingRows", tab:"overview"},
-    teamMembers: {form:"opsMemberForm", status:"opsMemberStatus", rows:"opsMemberRows", tab:"team"},
-    shifts: {form:"opsShiftForm", status:"opsShiftStatus", rows:"opsShiftRows", tab:"team"},
-    stores: {form:"opsStoreForm", status:"opsStoreStatus", rows:"opsStoreRows", tab:"stores"},
-    products: {form:"opsProductForm", status:"opsProductStatus", rows:"opsProductRows", tab:"stores"},
-    brands: {form:"opsBrandForm", status:"opsBrandStatus", rows:"opsBrandRows", tab:"brands"},
-    goals: {form:"opsGoalForm", status:"opsGoalStatus", rows:"opsCalendarRows", tab:"calendar"},
+    accountMappings: {form:"opsMappingForm", status:"opsMappingStatus", rows:"opsMappingRows", tab:"overview", label:"直播号对应关系"},
+    teamMembers: {form:"opsMemberForm", status:"opsMemberStatus", rows:"opsMemberRows", tab:"team", label:"团队成员"},
+    shifts: {form:"opsShiftForm", status:"opsShiftStatus", rows:"opsShiftRows", tab:"team", label:"排班"},
+    stores: {form:"opsStoreForm", status:"opsStoreStatus", rows:"opsStoreRows", tab:"stores", label:"店铺"},
+    products: {form:"opsProductForm", status:"opsProductStatus", rows:"opsProductRows", tab:"stores", label:"商品"},
+    brands: {form:"opsBrandForm", status:"opsBrandStatus", rows:"opsBrandRows", tab:"brands", label:"品牌"},
+    goals: {form:"opsGoalForm", status:"opsGoalStatus", rows:"opsCalendarRows", tab:"calendar", label:"直播目标"},
   };
   const labels = {
     role: {planned:"计划", live:"上播", completed:"已完成", invalid:"无效排班",
@@ -33,7 +33,7 @@
     return result;
   }
   function listMarkup(collection, record, title, detail, badge = "") {
-    return `<article class="ops-record"><div><strong>${esc(title)}</strong><small>${esc(detail)}</small></div><div class="ops-record-actions">${badge ? `<span class="ops-state">${esc(badge)}</span>` : ""}<button class="btn small" type="button" data-ops-edit="${collection}" data-id="${esc(record.id)}" aria-label="编辑 ${esc(title)}">编辑</button></div></article>`;
+    return `<article class="ops-record"><div><strong>${esc(title)}</strong><small>${esc(detail)}</small></div><div class="ops-record-actions">${badge ? `<span class="ops-state">${esc(badge)}</span>` : ""}<button class="btn small" type="button" data-ops-edit="${collection}" data-id="${esc(record.id)}" aria-label="编辑 ${esc(title)}">编辑</button><button class="btn small" type="button" data-ops-delete="${collection}" data-id="${esc(record.id)}" aria-label="删除 ${esc(title)}">删除</button></div></article>`;
   }
   function emptyMarkup(message) { return `<div class="ops-empty">${esc(message)}</div>`; }
   function memberName(id) { return data.teamMembers.find(item => item.id === id)?.name || "成员已移除"; }
@@ -120,6 +120,26 @@
     form.scrollIntoView({behavior:"smooth", block:"center"});
     form.querySelector("input:not([type=hidden]), select, textarea")?.focus({preventScroll:true});
   }
+  async function deleteRecord(collection, id, button) {
+    const config = collections[collection];
+    const record = data[collection]?.find(item => item.id === id);
+    if (!config || !record) return;
+    const name = record.name || [record.date, record.account || memberName(record.memberId)].filter(Boolean).join(" · ");
+    if (!window.confirm(`确定删除${config.label}“${name}”吗？此操作不能撤销。关联记录需要先解除关联。`)) return;
+    button.disabled = true;
+    setStatus(config.status, "正在删除本机记录…");
+    try {
+      await request(`/api/operations-workspace/${collection}/${encodeURIComponent(id)}`, {method:"DELETE"});
+      const form = $(config.form);
+      if (form.elements.namedItem("id").value === id) form.reset();
+      const refreshed = await refresh();
+      if (refreshed) window.LiveTeamOverview?.refresh();
+      setStatus(config.status, refreshed ? "已删除本机记录" : "已删除；列表刷新失败，请稍后重试", !refreshed);
+    } catch (error) {
+      setStatus(config.status, `删除失败：${error.message}`, true);
+      button.disabled = false;
+    }
+  }
   function formRecord(form) {
     const record = Object.fromEntries(new FormData(form).entries());
     form.querySelectorAll('input[type="checkbox"]').forEach(field => { record[field.name] = field.checked; });
@@ -162,8 +182,10 @@
     selectTab(tabs[next].dataset.opsTab);
   });
   document.querySelectorAll(".ops-record-list").forEach(list => list.addEventListener("click", event => {
-    const button = event.target.closest("button[data-ops-edit]");
-    if (button) beginEdit(button.dataset.opsEdit, button.dataset.id);
+    const edit = event.target.closest("button[data-ops-edit]");
+    if (edit) beginEdit(edit.dataset.opsEdit, edit.dataset.id);
+    const remove = event.target.closest("button[data-ops-delete]");
+    if (remove) deleteRecord(remove.dataset.opsDelete, remove.dataset.id, remove);
   }));
   for (const [collection, config] of Object.entries(collections)) bindForm(collection, config);
   window.LiveOperations = {refresh};

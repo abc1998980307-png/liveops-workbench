@@ -129,6 +129,36 @@ class OperationsWorkspace:
         with self.lock:
             return self._read()
 
+    def delete(self, collection, record_id):
+        if collection not in COLLECTION_FIELDS:
+            raise WorkspaceError("未知的经营配置类别")
+        try:
+            if not isinstance(record_id, str) or str(uuid.UUID(record_id)) != record_id:
+                raise ValueError
+        except ValueError as error:
+            raise WorkspaceError("记录 ID 无效") from error
+        with self.lock:
+            data = self._read()
+            records = data[collection]
+            record = next((item for item in records if item.get("id") == record_id), None)
+            if not record:
+                raise WorkspaceError("记录不存在")
+            references = {
+                "teamMembers": (("shifts", "memberId"), ("accountMappings", "memberId")),
+                "stores": (("products", "storeId"), ("brands", "storeId"), ("accountMappings", "storeId")),
+            }
+            for related_collection, field in references.get(collection, ()):
+                if any(item.get(field) == record_id for item in data[related_collection]):
+                    raise WorkspaceError("该记录仍被其他经营登记引用，请先移除关联记录或修改关联")
+            if collection == "accountMappings" and any(
+                item.get("mappingId") == record_id and not item.get("revokedAt")
+                for item in data["sourceConfirmations"]
+            ):
+                raise WorkspaceError("该对应关系仍有有效来源确认，请先撤销确认")
+            records.remove(record)
+            self._persist(data)
+            return record
+
     def save(self, collection, payload):
         if collection not in COLLECTION_FIELDS:
             raise WorkspaceError("未知的经营配置类别")

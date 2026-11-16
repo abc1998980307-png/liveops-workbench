@@ -58,6 +58,7 @@ test('Qianchuan login status requires observed official page signals', async () 
   assert.equal(qianchuanLoginState([{ ...selection, hasSelectAccount:false }]), 'logged_in');
   assert.equal(qianchuanLoginState([login]), 'needs_login');
   assert.equal(qianchuanLoginState([business, login]), 'logged_in');
+  assert.equal(qianchuanLoginState([{ ...business, hasAccountControl:false }, login]), 'unknown');
   assert.equal(qianchuanLoginState([{ ...login, origin:'https://business.oceanengine.com' }]), 'needs_login');
   assert.equal(qianchuanLoginState([{ ...business, hasAccountControl:false }]), 'unknown');
   assert.equal(qianchuanLoginState([{ ...login, hasLoginInput:false }]), 'unknown');
@@ -77,6 +78,7 @@ test('Qianchuan login status requires observed official page signals', async () 
   };
   engine.sessions.set('provider-qianchuan', { page, context:{ pages: () => [page] } });
   assert.equal((await engine.qianchuanStatus()).state, 'logged_in');
+  assert.ok((await engine.qianchuanStatus()).lastSuccessAt);
   assert.equal((await engine.checkQianchuanLogin()).state, 'logged_in');
   await engine.openProviderLogin('qianchuan');
   assert.equal(navigations, 0);
@@ -93,7 +95,17 @@ test('Qianchuan login status requires observed official page signals', async () 
   assert.equal((await engine.checkQianchuanLogin()).state, 'needs_login');
   assert.equal(navigations, 1);
   engine.sessions.clear();
-  assert.deepEqual(await engine.qianchuanStatus(), { state:'unknown' });
+  assert.equal((await engine.qianchuanStatus()).state, 'unknown');
+  assert.ok((await engine.qianchuanStatus()).lastSuccessAt);
+});
+test('Qianchuan status check never navigates an uncertain official workspace', async () => {
+  const engine = new BrowserEngine('/unused', () => {});
+  const page = { isClosed: () => false,
+    url: () => 'https://qianchuan.jinritemai.com/unknown-workspace',
+    evaluate: async () => ({}),
+    goto: async () => { throw new Error('an official workspace must not be navigated'); } };
+  engine.sessions.set('provider-qianchuan', { page, context: { pages: () => [page] } });
+  assert.equal((await engine.checkQianchuanLogin()).state, 'unknown');
 });
 test('Qianchuan login check honors a verified account tab beside an older login tab', async () => {
   const engine = new BrowserEngine('/unused', () => {});

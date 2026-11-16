@@ -38,6 +38,7 @@ from team_overview import build_team_overview, duplicate_sources
 from hot_insights import HotInsights, HotInsightsError
 from hot_feishu_sync import HotFeishuSync, HotFeishuError
 from qianchuan_account import QianchuanAccountStore
+from qianchuan_credentials import CredentialStoreError, QianchuanCredentialStore
 
 
 ROOT = Path(__file__).resolve().parent
@@ -96,6 +97,7 @@ SESSION_REVIEWS = SessionReviews(DATA_ROOT, RECORDING_SESSIONS, RECORDING_ARCHIV
 SESSION_TIMELINE = SessionTimeline(RECORDING_SESSIONS, RECORDING_ARCHIVES, SESSION_LINKS)
 OPERATIONS_WORKSPACE = OperationsWorkspace(DATA_ROOT)
 QIANCHUAN_ACCOUNT = QianchuanAccountStore(DATA_ROOT)
+QIANCHUAN_CREDENTIALS = QianchuanCredentialStore()
 
 
 def read_accounts():
@@ -1010,6 +1012,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.rpa_call("provider.qianchuan.status")
             elif path == "/api/rpa/providers/qianchuan/account":
                 self.send_json(QIANCHUAN_ACCOUNT.state())
+            elif path == "/api/rpa/providers/qianchuan/credentials":
+                try:
+                    self.send_json(QIANCHUAN_CREDENTIALS.state())
+                except (CredentialStoreError, OSError, subprocess.TimeoutExpired):
+                    self.send_json({"error": "无法读取系统安全存储"}, 503)
             elif path in ("/api/rpa/feishu", "/api/rpa/feishu/state"):
                 self.rpa_call("feishu.state")
             elif path == "/api/rpa/session":
@@ -1622,6 +1629,17 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     self.send_json({"error": "保存当前户失败"}, 500)
                 return
+            if path == "/api/rpa/providers/qianchuan/credentials":
+                try:
+                    if payload == {"clear": True}:
+                        self.send_json(QIANCHUAN_CREDENTIALS.clear())
+                    else:
+                        self.send_json(QIANCHUAN_CREDENTIALS.save(payload))
+                except ValueError:
+                    self.send_json({"error": "登录保持字段无效"}, 400)
+                except (CredentialStoreError, OSError, subprocess.TimeoutExpired):
+                    self.send_json({"error": "系统安全存储不可用"}, 503)
+                return
             if path == "/api/rpa/hourly/refresh":
                 self.rpa_call("hourly.refresh", {"account": str(payload.get("account", "")),
                                                  "room": str(payload.get("room", ""))}, timeout=45)
@@ -1631,7 +1649,7 @@ class Handler(BaseHTTPRequestHandler):
                 action = {"settings": "config", "check": "test", "history-monitor": "history.monitor"}.get(feishu_match[1], feishu_match[1])
                 self.rpa_call("feishu." + action, payload)
                 return
-            match = re.fullmatch(r"/api/rpa/accounts/([a-f0-9-]{36})/(login|verify|sync|monitor|settings|history|history-report|history-batch-start|history-batch-resume|history-batch-pause)", path)
+            match = re.fullmatch(r"/api/rpa/accounts/([a-f0-9-]{36})/(login|verify|sync|monitor|settings|history|history-report|history-batch-start|history-batch-resume|history-batch-pause|remove)", path)
             if match:
                 action = {"history": "history.page", "history-report": "history.report",
                           "history-batch-start": "history.batch.start", "history-batch-resume": "history.batch.resume",
@@ -1900,6 +1918,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "跨站请求已拒绝"}, 403)
             return
         path = urllib.parse.urlsplit(self.path).path
+        workspace_match = re.fullmatch(r"/api/operations-workspace/([A-Za-z]+)/([0-9a-f-]+)", path)
+        if workspace_match:
+            if not self.rpa_request_allowed():
+                self.send_json({"error": "仅允许从本机工作台删除经营配置"}, 403)
+                return
+            try:
+                OPERATIONS_WORKSPACE.delete(workspace_match[1], workspace_match[2])
+                self.send_json({"deleted": True})
+            except WorkspaceError as error:
+                self.send_json({"error": str(error)}, 400)
+            except OSError as error:
+                self.send_json({"error": "无法删除本机经营配置：" + str(error)}, 500)
+            return
         parts = path.strip("/").split("/")
         if len(parts) != 3 or parts[:2] != ["api", "accounts"]:
             self.send_json({"error": "not found"}, 404)

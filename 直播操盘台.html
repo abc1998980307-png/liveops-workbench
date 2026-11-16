@@ -296,7 +296,7 @@
     .ops-record:last-child { border-bottom: 0; }
     .ops-record strong { display: block; font-size: 12px; overflow-wrap: anywhere; }
     .ops-record small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
-    .ops-record-actions { display: flex; gap: 6px; }
+    .ops-record-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
     #ops-team .panel-body > label { display: grid; gap: 5px; max-width: 240px; margin-bottom: 10px; color: var(--muted); font-size: 11px; font-weight: 600; }
     #opsSourceActor, #opsSourceRows select { min-height: 36px; border: 1px solid var(--line); border-radius: 4px; background: #fff; padding: 7px 9px; color: var(--ink); font-size: 12px; }
     #opsSourceRows select { max-width: 150px; }
@@ -530,7 +530,22 @@
             <button id="businessReviewTab" type="button" role="tab" aria-selected="false" aria-controls="view-sessions" tabindex="-1" data-business-view="sessions">场次复盘</button>
           </div>
           <div id="businessDataPane" class="business-pane" role="tabpanel" aria-labelledby="businessDataTab">
-            <div class="business-connect-row"><span class="settings-status" id="qianchuanHomeStatus">千川登录：待确认 · 消耗字段待官网核验，未开始对账</span><div class="business-connect-actions"><button class="btn" type="button" data-qianchuan-login>登录千川</button><button class="btn" type="button" data-qianchuan-check>检查登录</button><button class="btn primary" id="rpaConnect">＋ 连接罗盘账号</button></div></div>
+            <section class="rpa-provider-section" id="rpaProviders" aria-label="数据源登录">
+              <div class="rpa-provider-heading"><h2>数据源登录</h2></div>
+              <div class="rpa-provider-grid">
+                <article class="rpa-provider-card">
+                  <div class="rpa-provider-card-head"><span class="rpa-provider-mark compass-mark">罗</span><div><strong>电商罗盘</strong><small>直播场次与经营数据</small></div><span class="rpa-provider-state pending" id="rpaCompassStatus">待连接</span></div>
+                  <div class="rpa-provider-check">上次成功检查：<span id="rpaCompassLastCheck">尚无记录</span></div>
+                  <div class="rpa-provider-actions"><button type="button" class="btn small" data-rpa-action="login">打开罗盘官网</button><button type="button" class="btn small" data-rpa-action="verify">完成登录后检查</button><button type="button" class="btn small" id="rpaConnect">添加账号</button></div>
+                </article>
+                <article class="rpa-provider-card">
+                  <div class="rpa-provider-card-head"><span class="rpa-provider-mark qianchuan-mark">川</span><div><strong>巨量千川</strong><small>广告账户与消耗报表</small></div><span class="rpa-provider-state pending" id="qianchuanHomeStatus">待确认</span></div>
+                  <div class="rpa-provider-check">上次成功检查：<span id="qianchuanLastCheck">尚无记录</span></div>
+                  <div class="rpa-provider-actions"><button type="button" class="btn small" data-qianchuan-login>打开千川官网</button><button type="button" class="btn small" data-qianchuan-check>完成登录后检查</button></div>
+                  <details class="rpa-credentials"><summary>登录保持</summary><form data-qianchuan-credentials-form autocomplete="off"><span data-qianchuan-credentials-summary>尚未保存账号</span><label>官网账号<input name="account" autocomplete="off" maxlength="200"></label><label>官网密码<input name="password" type="password" autocomplete="new-password" maxlength="500"></label><div class="rpa-provider-actions"><button type="submit" class="btn small">保存到系统凭据库</button><button type="button" class="btn small" data-qianchuan-credentials-clear hidden>清除已保存账号</button></div><small>仅保存在本机系统凭据库；不会自动填入或提交，扫码与二次验证仍在官网完成。</small></form></details>
+                </article>
+              </div>
+            </section>
             <section class="rpa-identity" id="rpaIdentity" aria-label="罗盘账号校正"></section>
             <div id="rpaStatus" class="rpa-status" role="status" aria-live="polite">正在连接本机采集服务…</div>
             <div id="rpaWorkspace"></div>
