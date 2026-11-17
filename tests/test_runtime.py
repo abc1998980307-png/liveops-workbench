@@ -17,9 +17,14 @@ class RuntimeDiscoveryTests(unittest.TestCase):
         self.addCleanup(self.stack.close)
         self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory())).resolve()
         self.runtime = self.root / "runtime"
+        node_name = "node.exe" if sys.platform == "win32" else "node"
+        self.path_node = f"path/{node_name}"
+        self.custom_node = f"custom/{node_name}"
+        self.managed_node = f"managed/{node_name}" if sys.platform == "win32" else "managed/bin/node"
+        self.runtime_node = f"runtime/{node_name}" if sys.platform == "win32" else "runtime/bin/node"
         self.stack.enter_context(mock.patch.object(bridge, "ROOT", self.root))
         self.stack.enter_context(mock.patch.object(bridge, "RUNTIME", self.runtime))
-        self.stack.enter_context(mock.patch.object(bridge, "MANAGED_NODE", self.root / "managed/bin/node"))
+        self.stack.enter_context(mock.patch.object(bridge, "MANAGED_NODE", self.root / self.managed_node))
         self.stack.enter_context(mock.patch.object(bridge, "MANAGED_PLAYWRIGHT", self.root / "managed/index.mjs"))
         self.stack.enter_context(mock.patch.dict(bridge.os.environ, {}, clear=True))
         self.which = self.stack.enter_context(mock.patch.object(bridge.shutil, "which", return_value=None))
@@ -35,9 +40,9 @@ class RuntimeDiscoveryTests(unittest.TestCase):
         return path
 
     def test_explicit_node_wins_and_invalid_override_does_not_fall_back(self):
-        explicit = self.file("custom/node", True)
-        self.which.return_value = str(self.file("path/node", True))
-        self.file("runtime/bin/node", True)
+        explicit = self.file(self.custom_node, True)
+        self.which.return_value = str(self.file(self.path_node, True))
+        self.file(self.runtime_node, True)
         with mock.patch.dict(bridge.os.environ, {"LIVEOPS_NODE": str(explicit)}):
             self.assertEqual(bridge.discover_node(), str(explicit))
             self.which.assert_not_called()
@@ -46,15 +51,15 @@ class RuntimeDiscoveryTests(unittest.TestCase):
                 bridge.discover_node()
 
     def test_compatible_path_node_precedes_bundled_fallback(self):
-        path_node = self.file("path/node", True)
+        path_node = self.file(self.path_node, True)
         self.which.return_value = str(path_node)
-        self.file("runtime/bin/node", True)
+        self.file(self.runtime_node, True)
         self.assertEqual(bridge.discover_node(), str(path_node))
         self.assertEqual(self.run.call_args.args[0], [str(path_node), "--version"])
 
     def test_old_or_broken_path_node_uses_compatible_fallback(self):
-        path_node = self.file("path/node", True)
-        fallback = self.file("runtime/bin/node", True)
+        path_node = self.file(self.path_node, True)
+        fallback = self.file(self.runtime_node, True)
         self.which.return_value = str(path_node)
         for first in (subprocess.CompletedProcess([], 0, stdout="v22.9.0", stderr=""),
                       subprocess.TimeoutExpired("node", 5)):
@@ -62,18 +67,30 @@ class RuntimeDiscoveryTests(unittest.TestCase):
             self.assertEqual(bridge.discover_node(), str(fallback))
 
     def test_managed_install_precedes_codex_fallback(self):
-        managed = self.file("managed/bin/node", True)
-        self.file("runtime/bin/node", True)
+        managed = self.file(self.managed_node, True)
+        self.file(self.runtime_node, True)
         self.assertEqual(bridge.discover_node(), str(managed))
         self.file("runtime/node_modules/playwright-core/index.mjs")
         module = self.file("managed/index.mjs")
         self.assertEqual(bridge.discover_playwright(), str(module))
 
     def test_node_missing_and_nonexecutable_fail_without_launch(self):
+        with self.assertRaisesRegex(RuntimeError, "Node.js 24"):
+            bridge.discover_node()
         self.which.return_value = str(self.file("path/node"))
         with self.assertRaisesRegex(RuntimeError, "Node.js 24"):
             bridge.discover_node()
         self.run.assert_not_called()
+
+    def test_windows_rejects_plain_file_before_version_probe(self):
+        with mock.patch.object(bridge.sys, "platform", "win32"):
+            self.which.return_value = str(self.file("path/node"))
+            with self.assertRaisesRegex(RuntimeError, "Node.js 24"):
+                bridge.discover_node()
+            self.run.assert_not_called()
+            node = self.file("path/node.exe", True)
+            self.which.return_value = str(node)
+            self.assertEqual(bridge.discover_node(), str(node))
 
     def test_local_playwright_precedes_runtime_and_explicit_path_is_authoritative(self):
         fallback = self.file("runtime/node_modules/playwright-core/index.mjs")

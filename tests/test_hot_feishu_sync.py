@@ -1,6 +1,7 @@
 import tempfile
 import io
 import json
+import sqlite3
 import unittest
 from pathlib import Path
 import sys
@@ -22,7 +23,7 @@ class HotFeishuSyncTests(unittest.TestCase):
                 raise RuntimeError("fake delivery failed")
             self.sent.append(payload)
         self.sync = HotFeishuSync(self.temp.name, sender=sender, now=lambda: self.clock)
-        self.addCleanup(self.sync.db.close)
+        self.addCleanup(self.sync.close)
         self.insight = {"latest": {"sampledAt": "2026-11-12T10:00:00Z",
                                    "sourceUpdatedAt": "2026-11-12T09:58:00Z",
                                    "items": [{"title": "合成热点", "hot": 42, "rank": 1}]},
@@ -43,8 +44,9 @@ class HotFeishuSyncTests(unittest.TestCase):
         self.sync.enqueue(self.insight)
         self.assertEqual(self.sync.state()["pending"], 1)
         reopened = HotFeishuSync(self.temp.name, sender=lambda config, payload: self.sent.append(payload), now=lambda: self.clock)
+        self.addCleanup(reopened.close)
         self.assertEqual(reopened.state()["pending"], 1)
-        reopened.db.close()
+        reopened.close()
         self.fail = True
         self.assertFalse(self.sync.tick())
         self.assertEqual(self.sync.state()["retry"], 1)
@@ -68,6 +70,13 @@ class HotFeishuSyncTests(unittest.TestCase):
         self.sync.configure(enabled=False)
         self.assertFalse(self.sync.tick())
         self.assertEqual(self.sent, [])
+
+    def test_close_releases_promoted_disk_connection(self):
+        self.configure()
+        disk = self.sync.db
+        self.sync.close()
+        with self.assertRaises(sqlite3.ProgrammingError):
+            disk.execute("SELECT 1")
 
     def test_fake_feishu_reconciles_by_key_and_checks_write_response(self):
         calls = []

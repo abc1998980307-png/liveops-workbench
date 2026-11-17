@@ -7,6 +7,7 @@ import queue
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import uuid
 from runtime_config import DATA_ROOT, MANAGED_NODE, MANAGED_PLAYWRIGHT
@@ -88,12 +89,14 @@ def _node_major(executable):
 
 def discover_node():
     explicit = os.environ.get("LIVEOPS_NODE")
-    candidates = [explicit] if explicit else [shutil.which("node"), MANAGED_NODE, RUNTIME / "bin/node"]
+    runtime_node = RUNTIME / ("node.exe" if sys.platform == "win32" else "bin/node")
+    candidates = [explicit] if explicit else [shutil.which("node"), MANAGED_NODE, runtime_node]
     for candidate in candidates:
         if not candidate:
             continue
         executable = Path(candidate).expanduser().resolve()
-        if executable.is_file() and os.access(executable, os.X_OK):
+        if (executable.is_file() and os.access(executable, os.X_OK) and
+                (sys.platform != "win32" or executable.suffix.lower() in {".exe", ".com", ".cmd", ".bat"})):
             major = _node_major(executable)
             if major is not None and major >= 24:
                 return str(executable)

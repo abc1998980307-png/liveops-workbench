@@ -67,10 +67,18 @@ class HotFeishuSync:
             return
         self.db_file.parent.mkdir(parents=True, exist_ok=True)
         disk = sqlite3.connect(self.db_file, check_same_thread=False)
-        self.db.backup(disk)
+        try:
+            self.db.backup(disk)
+        except Exception:
+            disk.close()
+            raise
         self.db.close()
         self.db = disk
         self.persistent = True
+
+    def close(self):
+        with self.lock:
+            self.db.close()
 
     def _config(self):
         try:

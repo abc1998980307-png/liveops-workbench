@@ -36,7 +36,7 @@ class HotFeishuHttpTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         sync = HotFeishuSync(temp.name, sender=lambda config, payload: None)
-        self.addCleanup(sync.db.close)
+        self.addCleanup(sync.close)
         for name, value in (("HOT_FEISHU", sync), ("HOT_INSIGHTS", HotInsights(temp.name))):
             patcher = mock.patch.object(server, name, value)
             patcher.start()
