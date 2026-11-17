@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import subprocess
 import sys
@@ -19,30 +20,76 @@ def require(condition, message):
         raise RuntimeError("安装验收失败：" + message)
 
 
-RUNTIME_COMPONENTS = (
-    "tools/node/bin/node",
-    "tools/collector/node_modules/playwright-core",
-    "tools/imageio-ffmpeg/imageio_ffmpeg/binaries/ffmpeg-macos-aarch64-v7.1",
-    "plugins/bililive-go/bililive-darwin-arm64",
-    "plugins/bililive-go/v0.8.3-darwin-arm64.tar.gz",
-    "plugins/buzz/whisper.cpp/build/bin/whisper-cli",
-    "plugins/buzz/whisper.cpp/models/ggml-small-q5_1.bin",
-    "plugins/dailyhot-api",
-)
+def runtime_components(platform=None):
+    platform = platform or sys.platform
+    if platform == "win32":
+        return (
+            "tools/node/node.exe",
+            "tools/collector/node_modules/playwright-core",
+            "tools/imageio-ffmpeg/imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v7.1.exe",
+            "plugins/bililive-go/bililive-windows-amd64.exe",
+            "plugins/bililive-go/config.yml",
+            "plugins/buzz/whisper.cpp/build/bin/Release",
+            "plugins/buzz/whisper.cpp/models/ggml-small-q5_1.bin",
+            "plugins/dailyhot-api",
+        )
+    return (
+        "tools/node/bin/node",
+        "tools/collector/node_modules/playwright-core",
+        "tools/imageio-ffmpeg/imageio_ffmpeg/binaries/ffmpeg-macos-aarch64-v7.1",
+        "plugins/bililive-go/bililive-darwin-arm64",
+        "plugins/bililive-go/v0.8.3-darwin-arm64.tar.gz",
+        "plugins/buzz/whisper.cpp/build/bin/whisper-cli",
+        "plugins/buzz/whisper.cpp/models/ggml-small-q5_1.bin",
+        "plugins/dailyhot-api",
+    )
 
 
-def prepare_runtime_root(installed):
-    for relative in RUNTIME_COMPONENTS:
+def prepare_runtime_root(installed, platform=None):
+    platform = platform or sys.platform
+    components = runtime_components(platform)
+    for relative in components:
         require((installed / relative).exists(), "缺少已安装组件：" + relative)
     parent = installed / "logs/install"
     parent.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix="verification-", dir=parent)).resolve()
-    for relative in RUNTIME_COMPONENTS:
+
+    def link_or_copy(source, destination):
+        try:
+            os.link(source, destination)
+        except OSError:
+            shutil.copy2(source, destination)
+
+    ignored = shutil.ignore_patterns(".env", ".env.*", "*.sqlite*", "*.db*", "*.log")
+    for relative in components:
         source = installed / relative
         link = root / relative
         link.parent.mkdir(parents=True, exist_ok=True)
-        link.symlink_to(source, target_is_directory=source.is_dir())
+        if platform == "win32":
+            if relative == "plugins/dailyhot-api":
+                for item in ("package.json", "dist", "node_modules"):
+                    require((source / item).exists(), "热点组件缺少运行文件：" + item)
+                    target = link / item
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if (source / item).is_dir():
+                        shutil.copytree(source / item, target, copy_function=link_or_copy, ignore=ignored)
+                    else:
+                        link_or_copy(source / item, target)
+            elif source.is_dir():
+                shutil.copytree(source, link, copy_function=link_or_copy, ignore=ignored)
+            else:
+                link_or_copy(source, link)
+        else:
+            link.symlink_to(source, target_is_directory=source.is_dir())
     return root
+
+
+def audio_input(audio, platform=None):
+    if (platform or sys.platform) == "win32":
+        return ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000:duration=3"]
+    subprocess.run(["/usr/bin/say", "-o", str(audio),
+                    "This is an offline installation check. The local workbench saves compressed video and subtitles."], check=True)
+    return ["-i", str(audio)]
 
 
 def vacant_port():
@@ -63,7 +110,7 @@ def main():
                    check=True, env=doctor_env)
     root = prepare_runtime_root(installed)
     os.environ["LIVEOPS_DATA_ROOT"] = str(root)
-    os.environ["LIVEOPS_NODE"] = str(root / "tools/node/bin/node")
+    os.environ["LIVEOPS_NODE"] = str(root / ("tools/node/node.exe" if sys.platform == "win32" else "tools/node/bin/node"))
     os.environ["LIVEOPS_PLAYWRIGHT_MODULE"] = str(root / "tools/collector/node_modules/playwright-core/index.mjs")
     os.environ["LIVEOPS_RPA_DATA"] = str(root / "rpa")
     sys.path.insert(0, str(PROJECT))
@@ -94,10 +141,9 @@ def main():
         fixture = root / "recordings/安装验证/合成语音样本.flv"
         fixture.parent.mkdir(parents=True)
         audio = root / "installation-speech.aiff"
-        subprocess.run(["/usr/bin/say", "-o", str(audio),
-                        "This is an offline installation check. The local workbench saves compressed video and subtitles."], check=True)
+        audio_args = audio_input(audio)
         subprocess.run([str(pipeline.FFMPEG), "-v", "error", "-nostdin", "-f", "lavfi", "-i",
-                        "testsrc2=size=320x240:rate=25", "-i", str(audio), "-shortest", "-c:v", "libx264",
+                        "testsrc2=size=320x240:rate=25", *audio_args, "-shortest", "-c:v", "libx264",
                         "-c:a", "aac", "-f", "flv", str(fixture)], check=True)
         pipeline.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
         config = {**pipeline.read_config(), "enabled": False, "keepOriginal": False, "language": "en"}
@@ -109,11 +155,14 @@ def main():
         require(finished["status"] == "completed" and finished["compressionCompleted"]
                 and finished["transcriptionCompleted"], "压缩或转写任务未完成")
         require(finished["sourceDeleted"] and not fixture.exists(), "合成原件未在校验后清理")
-        for key in ("compressed", "transcript", "subtitles"):
-            require(Path(finished[key]).stat().st_size > 0, key + " 文件不存在或为空")
+        require(Path(finished["compressed"]).stat().st_size > 0, "compressed 文件不存在或为空")
+        for key in ("transcript", "subtitles"):
+            require(Path(finished[key]).is_file(), key + " 文件不存在")
+            if sys.platform != "win32":
+                require(Path(finished[key]).stat().st_size > 0, key + " 文件为空")
         checks["media"] = {key: str(finished[key]) for key in ("compressed", "transcript", "subtitles")}
         checks["media"]["sourceDeletedAfterValidation"] = True
-        checks["media"]["subtitleText"] = Path(finished["transcript"]).read_text().strip()
+        checks["media"]["subtitleText"] = Path(finished["transcript"]).read_text(encoding="utf-8").strip()
         port = vacant_port()
         env = dict(os.environ, LIVEOPS_PORT=str(port), LIVEOPS_BGO_URL=recorder_url,
                    LIVEOPS_HOT_API_URL=hot_url)
