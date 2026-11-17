@@ -26,6 +26,15 @@ export class FeishuError extends Error {
   constructor(message, code = 0) { super(message); this.code = code; }
 }
 
+function feishuOperation(route, method) {
+  if (route === 'token') return '获取访问令牌';
+  if (/\/fields(?:\?|$)/.test(route)) return method === 'POST' ? '创建字段' : '列出字段';
+  if (/\/tables(?:\?.*)?$/.test(route)) return method === 'POST' ? '创建数据表' : '列出数据表';
+  if (route.includes('/records/search')) return '查询记录';
+  if (route.includes('/records')) return method === 'POST' ? '新增记录' : '更新记录';
+  return '请求飞书接口';
+}
+
 export class FeishuClient {
   constructor(config, fetcher = globalThis.fetch) { this.config = config; this.fetcher = fetcher; this.token = null; this.expires = 0; }
   async transport(route, { method = 'GET', body, token } = {}) {
@@ -44,10 +53,11 @@ export class FeishuClient {
       if ([20002, 20048, 20069].includes(code)) hint = ({ 20002: '应用密钥错误，请重新填写 App Secret', 20048: '应用不存在，请检查 App ID', 20069: '应用未发布或未启用，请在开放平台发布并启用应用' })[code];
       else if (response.status === 429 || [99991400, 1254290, 1254291, 1254607].includes(code)) hint = '请求频率受限，稍后自动重试';
       else if ([99991661, 99991663, 99991664, 99991665, 99991668].includes(code)) hint = '应用凭据或访问令牌无效，请检查 App ID 与 App Secret';
-      else if (response.status === 403 || [99991672, 99991679, 91403, 1254302, 1254304].includes(code)) hint = '权限不足，请发布应用权限，并在多维表格的“添加文档应用”中授权；启用高级权限时需可管理权限';
       else if ([1254004, 1254040, 1254041, 1254042].includes(code)) hint = '数据表或记录不存在，请检查链接和表格权限';
+      else if ([99991672, 99991679, 91403, 1254302, 1254304].includes(code)) hint = '权限不足，请发布应用权限，并在多维表格的“添加文档应用”中授权；启用高级权限时需可管理权限';
+      else if (response.status === 403) hint = '访问被拒绝，请核对应用、租户和目标表格的配置及实际权限';
       // Never surface arbitrary remote messages: they can echo credentials or request bodies.
-      throw new FeishuError(`飞书返回错误 ${Number.isFinite(code) ? code : '响应格式异常'}（HTTP ${response.status}）：${hint}`, code);
+      throw new FeishuError(`${feishuOperation(route, method)}时飞书返回错误 ${Number.isFinite(code) ? code : '响应格式异常'}（HTTP ${response.status}）：${hint}`, code);
     }
     return result;
   }

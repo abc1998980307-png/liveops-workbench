@@ -83,6 +83,27 @@ test('Feishu links accept only HTTPS Feishu base tables and strip unrelated para
   for (const url of ['http://demo.feishu.cn/base/a?table=tblA', 'https://feishu.cn.evil.test/base/a?table=tblA', 'https://evilfeishu.cn/base/a?table=tblA', 'https://user:pass@demo.feishu.cn/base/a?table=tblA', 'https://demo.feishu.cn:444/base/a?table=tblA', 'https://demo.feishu.cn/wiki/a?table=tblA', 'https://demo.feishu.cn/base/a', 'https://demo.feishu.cn/base/a?table=tblA%2F..']) assert.throws(() => parseBitableUrl(url));
 });
 
+test('Feishu errors classify explicit codes before HTTP status and identify the operation', async () => {
+  const secretEcho = 'synthetic-response-should-not-appear';
+  const cases = [
+    { code: 1254040, status: 403, route: '/bitable/v1/apps/synthetic/tables/synthetic/fields?page_size=100', method: 'GET', operation: '列出字段', hint: /不存在/ },
+    { code: 1254302, status: 403, route: '/bitable/v1/apps/synthetic/tables', method: 'POST', operation: '创建数据表', hint: /权限不足/ },
+    { code: 987654, status: 403, route: '/bitable/v1/apps/synthetic/tables/synthetic/records/search', method: 'POST', operation: '查询记录', hint: /访问被拒绝/ },
+  ];
+  for (const { code, status, route, method, operation, hint } of cases) {
+    const client = new FeishuClient({}, async () => ({ ok: false, status,
+      json: async () => ({ code, msg: secretEcho }) }));
+    await assert.rejects(client.transport(route, { method }), error => {
+      assert.equal(error.code, code);
+      assert.match(error.message, new RegExp(`^${operation}时飞书返回错误 ${code}（HTTP ${status}）`));
+      assert.match(error.message, hint);
+      assert.ok(!error.message.includes(secretEcho));
+      if (code === 1254040 || code === 987654) assert.ok(!error.message.includes('权限不足'));
+      return true;
+    });
+  }
+});
+
 test('export preserves long IDs, zero, missing values and original units', () => {
   const fields = snapshotFields(account, room, { ...snapshot(), time: '2026-11-06T10:00:00.000Z' });
   assert.ok(SPEND_FIELDS.every(name => Object.hasOwn(fields, name)));
@@ -251,6 +272,21 @@ test('read-only connection check paginates fields and refreshes expired tenant t
     assert.equal(t.api.tokenCount(), 2);
     assert.ok(t.api.calls.filter(c => c.url.includes('/open-apis/')).every(c => c.method === 'GET'));
     assert.equal(t.api.records.size, 0);
+  } finally { await t.cleanup(); }
+});
+
+test('connection check keeps a not-found response distinct from insufficient permission in UI state', async () => {
+  const fetcher = async url => url === 'https://accounts.feishu.cn/oauth/v3/token'
+    ? { ok: true, status: 200, json: async () => ({ code: 0, access_token: 'synthetic-token', expires_in: 7200 }) }
+    : { ok: false, status: 403, json: async () => ({ code: 1254040, msg: 'synthetic-secret-echo' }) };
+  const t = fixture({ fetcher });
+  try {
+    t.sync.test(); await t.sync.busy;
+    const state = t.sync.state();
+    assert.equal(state.verified, false);
+    assert.match(state.error, /^列出字段时飞书返回错误 1254040（HTTP 403）：数据表或记录不存在/);
+    assert.ok(!state.error.includes('权限不足'));
+    assert.ok(!state.error.includes('synthetic-secret-echo'));
   } finally { await t.cleanup(); }
 });
 
