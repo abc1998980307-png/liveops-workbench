@@ -41,6 +41,7 @@
 !/session_reviews.py
 !/session_links.py
 !/session_timeline.py
+!/comment_monitor.py
 !/mp4_metadata.py
 !/recording-sessions-ui.js
 !/session-timeline-ui.js
