@@ -158,14 +158,17 @@ class InstallerTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("安装验收失败：synthetic failure", result.stderr)
 
-    @unittest.skipIf(sys.platform == 'win32', 'macOS verifier uses symbolic links')
     def test_install_verifier_creates_fresh_business_root_for_each_attempt(self):
         installed = self.root / "installed"
-        for relative in verify_install.RUNTIME_COMPONENTS:
+        for relative in verify_install.runtime_components():
             path = installed / relative
             path.parent.mkdir(parents=True, exist_ok=True)
-            if relative.endswith(("playwright-core", "dailyhot-api")):
+            if relative.endswith(("playwright-core", "Release")):
                 path.mkdir()
+            elif relative == "plugins/dailyhot-api":
+                (path / "dist").mkdir(parents=True)
+                (path / "node_modules").mkdir()
+                (path / "package.json").write_text("{}", encoding="utf-8")
             else:
                 path.write_text("pinned tool fixture")
         first = verify_install.prepare_runtime_root(installed)
@@ -174,7 +177,43 @@ class InstallerTests(unittest.TestCase):
         second = verify_install.prepare_runtime_root(installed)
         self.assertNotEqual(first, second)
         self.assertFalse((second / "recordings").exists())
-        for relative in verify_install.RUNTIME_COMPONENTS:
-            self.assertTrue((second / relative).is_symlink())
-            self.assertEqual((second / relative).resolve(), (installed / relative).resolve())
+        for relative in verify_install.runtime_components():
+            if sys.platform == "win32":
+                self.assertTrue((second / relative).exists())
+                self.assertFalse((second / relative).is_symlink())
+            else:
+                self.assertTrue((second / relative).is_symlink())
+                self.assertEqual((second / relative).resolve(), (installed / relative).resolve())
         self.assertEqual((first / "recordings" / "synthetic.flv").read_text(), "first attempt")
+
+    def test_windows_verifier_uses_windows_paths_without_copying_configuration(self):
+        installed = self.root / "installed"
+        for relative in verify_install.runtime_components("win32"):
+            path = installed / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if relative.endswith(("playwright-core", "Release")):
+                path.mkdir()
+            elif relative == "plugins/dailyhot-api":
+                (path / "dist").mkdir(parents=True)
+                (path / "node_modules").mkdir()
+                (path / "package.json").write_text("{}", encoding="utf-8")
+                (path / ".env").write_text("SYNTHETIC_SECRET=do-not-copy", encoding="utf-8")
+                (path / "dist/.env.local").write_text("SYNTHETIC_SECRET=do-not-copy", encoding="utf-8")
+            else:
+                path.write_text("synthetic tool", encoding="utf-8")
+        root = verify_install.prepare_runtime_root(installed, "win32")
+        self.assertTrue((root / "tools/node/node.exe").is_file())
+        self.assertTrue((root / "plugins/buzz/whisper.cpp/build/bin/Release").is_dir())
+        self.assertFalse((root / "plugins/dailyhot-api/.env").exists())
+        self.assertFalse((root / "plugins/dailyhot-api/dist/.env.local").exists())
+        self.assertFalse((root / "tools/node/node.exe").is_symlink())
+        with mock.patch.object(verify_install.os, "link", side_effect=OSError("hard links unavailable")):
+            copied = verify_install.prepare_runtime_root(installed, "win32")
+        self.assertEqual((copied / "tools/node/node.exe").read_text(encoding="utf-8"), "synthetic tool")
+
+    def test_windows_verifier_uses_synthetic_tone_without_macos_speech(self):
+        with mock.patch.object(verify_install.subprocess, "run") as run:
+            args = verify_install.audio_input(self.root / "unused.aiff", "win32")
+        self.assertEqual(args[:3], ["-f", "lavfi", "-i"])
+        self.assertIn("sine=", args[3])
+        run.assert_not_called()
