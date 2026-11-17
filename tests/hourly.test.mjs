@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Store } from '../rpa/store.mjs';
 import { Collector } from '../rpa/collector.mjs';
-import { boundaryWindow, compassHourlyRows, qianchuanHourlyFailure, qianchuanHourlyRequest, qianchuanHourlyRows } from '../rpa/hourly.mjs';
+import { boundaryWindow, compassHourlyRows, qianchuanHourCoverage, qianchuanHourlyFailure, qianchuanHourlyRequest, qianchuanHourlyRows } from '../rpa/hourly.mjs';
 import { FEISHU_FIELDS, FeishuClient, FeishuSync } from '../rpa/feishu.mjs';
 import { REVIEW_FIELDS, REVIEW_METRICS, reviewRows } from '../rpa/hourly-review.mjs';
 
@@ -120,6 +120,41 @@ test('Qianchuan hourly report keeps official buckets, current room and live/post
   assert.throws(() => qianchuanHourlyRows({ ...body, data: { StatsData: { Rows: [item('2026-11-15 08:00:00', 'other')] } } }, account, room, sampledAt), /其他直播间/);
   assert.throws(() => qianchuanHourlyRows({ ...body, data: { StatsData: { Rows: [item('2026-11-15 08:00:00'), item('2026-11-15 08:00:00')] } } }, account, room, sampledAt), /重复/);
   assert.throws(() => qianchuanHourlyRows({ ...body, data: { StatsData: { Rows: Array(1000).fill(null) } } }, account, room, sampledAt), /分页完整性未核实/);
+  assert.throws(() => qianchuanHourlyRows({ ...body, data: { StatsData: { Rows: [item('2026-11-15 07:00:00')] } } }, account, room, sampledAt), /超出目标场次/);
+  assert.throws(() => qianchuanHourlyRows({ ...body, data: { StatsData: { Rows: [item('2026-11-15 10:00:00')] } } }, account, room, sampledAt), /超出目标场次/);
+  assert.throws(() => qianchuanHourlyRows({ ...body, data: { StatsData: { Rows: body.data.StatsData.Rows, HasMore: true } } }, account, room, sampledAt), /仍有后页/);
+  assert.throws(() => qianchuanHourlyRows({ ...body, data: { StatsData: { Rows: body.data.StatsData.Rows, Total: 2 } } }, account, room, sampledAt), /总数与单页不符/);
+  assert.equal(qianchuanHourlyRows({ ...body, data: { StatsData: { Rows: body.data.StatsData.Rows, Total: 1, HasMore: false } } }, account, room, sampledAt)[0].hourCoverage, '已覆盖');
+});
+
+test('official hour coverage identifies gaps without synthesizing zero rows', () => {
+  const row = hourStart => ({ hourStart });
+  const live = { ...room, startedAt: '2026-11-15 08:12:00' };
+  const complete = qianchuanHourCoverage([row('2026-11-15 08:00:00'), row('2026-11-15 09:00:00')],
+    live, '2026-11-15T02:01:00Z');
+  assert.deepEqual(complete, { status: '已覆盖', expected: 2, observed: 2, missing: [] });
+  const partial = qianchuanHourCoverage([row('2026-11-15 08:00:00')], live, '2026-11-15T02:01:00Z');
+  assert.deepEqual(partial.missing, ['2026-11-15 09:00:00']);
+  assert.equal(partial.status, '有缺口');
+  const report = { status_code: 0, data: { StatsData: { Rows: [{
+    Dimensions: { room_id: { Value: room.id }, stat_time_hour: { ValueStr: '2026-11-15 08:00:00' } },
+    Metrics: { stat_cost: { Value: 0, ValueStr: '0' } },
+  }] } } };
+  const parsed = qianchuanHourlyRows(report, account, live, '2026-11-15T02:01:00Z');
+  assert.equal(parsed[0].value, 0);
+  assert.equal(parsed[0].paginationVerified, true);
+  assert.equal(parsed[0].hourCoverage, '有缺口');
+  assert.deepEqual(parsed[0].missingHours, ['2026-11-15 09:00:00']);
+  assert.equal(parsed.length, 1);
+  assert.equal(qianchuanHourCoverage([], live, '2026-11-15T02:01:00Z').status, '有缺口');
+  assert.equal(qianchuanHourCoverage([row('2026-11-15 08:00:00')],
+    { ...live, state: 'ended' }, '2026-11-15T04:01:00Z').status, '待确认');
+  const ended = qianchuanHourCoverage([row('2026-11-15 08:00:00')],
+    { ...live, state: 'ended', endedAt: '2026-11-15 08:35:00' }, '2026-11-15T04:01:00Z');
+  assert.equal(ended.status, '已覆盖');
+  assert.equal(ended.expected, 1);
+  assert.equal(qianchuanHourCoverage([row('2026-11-15 08:00:00')],
+    { ...live, startedAt: '2026-11-15' }, '2026-11-15T02:01:00Z').status, '待确认');
 });
 
 test('hourly store retains separate source and report versions', () => {

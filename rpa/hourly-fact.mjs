@@ -20,6 +20,8 @@ export const FACT_FIELDS = [
   '版本', '来源', '粒度', '采集状态', '同步状态', '采样时间',
   ...Object.values(FACT_METRICS).map(([name]) => name), '指标可信性',
 ];
+export const FACT_NUMBER_FIELDS = Object.freeze(Object.values(FACT_METRICS).map(([name]) => name));
+export const FACT_DATE_FIELDS = Object.freeze(['小时开始（北京时间）', '小时结束（北京时间）', '采样时间']);
 const ID = /^[A-Za-z0-9_-]+$/;
 const HOUR = /^\d{4}-\d{2}-\d{2} \d{2}:00:00$/;
 
@@ -53,6 +55,7 @@ export function factFields({ accountUid, platform, sessionKey, hourStart, hourEn
     同步状态: '待同步', 采样时间: sampledAt,
   };
   const trust = {};
+  for (const [name] of Object.values(FACT_METRICS)) fields[name] = '';
   for (const [key, item] of Object.entries(metrics)) {
     const spec = FACT_METRICS[key];
     if (!spec || spec[1] !== source || spec[2] !== grain) throw new Error('指标来源或粒度未核验');
@@ -61,10 +64,45 @@ export function factFields({ accountUid, platform, sessionKey, hourStart, hourEn
       throw new Error('官方小时消耗单位未核验');
     if (item.status === '已读取' && !Number.isFinite(item.value)) throw new Error('可信指标缺少数值');
     fields[spec[0]] = item.status === '已读取' ? String(item.value) : '';
-    trust[key] = { status: item.status, source, grain, unit: String(item.unit || '') };
+    trust[key] = { ...(item.evidence || {}), status: item.status, source, grain,
+      unit: String(item.unit || '') };
   }
   fields['指标可信性'] = JSON.stringify(trust);
   return fields;
+}
+
+export function factSchemaTypes(fields) {
+  const types = {};
+  for (const name of FACT_FIELDS) {
+    const found = fields.filter(field => field.field_name === name);
+    const allowed = FACT_NUMBER_FIELDS.includes(name) ? [1, 2] : FACT_DATE_FIELDS.includes(name) ? [1, 5] : [1];
+    if (found.length !== 1 || !allowed.includes(found[0].type))
+      throw new FeishuError('小时事实表字段缺失、重复或类型不适配，已停止写入');
+    types[name] = found[0].type;
+  }
+  return types;
+}
+
+export function encodeFactFields(fields, types) {
+  const encoded = {};
+  for (const name of FACT_FIELDS) {
+    if (!(name in fields)) continue;
+    const value = fields[name];
+    if (types[name] === 2) {
+      if (value === '' || value == null) encoded[name] = null;
+      else {
+        const number = Number(value);
+        if (!Number.isFinite(number)) throw new Error('小时事实数值无效');
+        encoded[name] = number;
+      }
+    } else if (types[name] === 5) {
+      const time = name === '采样时间' ? Date.parse(value) : Date.parse(String(value).replace(' ', 'T') + '+08:00');
+      if (!Number.isFinite(time)) throw new Error('小时事实日期无效');
+      encoded[name] = time;
+    } else if (types[name] === 1) encoded[name] = String(value ?? '');
+    else throw new Error('小时事实字段类型未经核验');
+  }
+  return encoded;
 }
 
 export async function listTables(client) {

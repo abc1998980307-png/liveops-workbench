@@ -97,22 +97,78 @@ export function qianchuanHourlyRequest(accountId, room, now = new Date()) {
   return request;
 }
 
+function assertSinglePage(body, rows) {
+  if (rows.length >= 1000) throw new Error('千川分时报表达到单页上限，分页完整性未核实');
+  const stats = body.data.StatsData;
+  for (const container of [stats, body.data]) {
+    for (const key of ['HasMore', 'has_more']) {
+      if (container[key] === true) throw new Error('千川分时报表仍有后页，分页完整性未核实');
+      if (container[key] !== undefined && typeof container[key] !== 'boolean')
+        throw new Error('千川分时报表分页标记无效');
+    }
+    for (const key of ['Total', 'TotalCount', 'total', 'total_count']) {
+      if (container[key] === undefined) continue;
+      const total = container[key];
+      if (!Number.isSafeInteger(total) || total < 0 || total !== rows.length)
+        throw new Error('千川分时报表总数与单页不符，分页完整性未核实');
+    }
+  }
+}
+
+function localInstant(value) {
+  const raw = String(value || '').replaceAll('/', '-');
+  const local = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(raw);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return NaN;
+  return Date.parse(local ? `${local[1]}T${local[2]}:${local[3]}:${local[4] || '00'}+08:00` : raw);
+}
+
+export function qianchuanHourCoverage(rows, room, sampledAt) {
+  const start = localInstant(room.startedAt);
+  const end = room.state === 'ended' ? localInstant(room.endedAt) : Date.parse(sampledAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start ||
+      !['live', 'ended'].includes(room.state))
+    return { status: '待确认', expected: null, observed: rows.length, missing: [] };
+  const first = Date.parse(`${shanghaiHour(start).replace(' ', 'T')}+08:00`);
+  const boundary = Date.parse(`${shanghaiHour(end).replace(' ', 'T')}+08:00`);
+  const exclusive = room.state === 'ended' && end > boundary ? boundary + 3600000 : boundary;
+  const expected = (exclusive - first) / 3600000;
+  if (!Number.isSafeInteger(expected) || expected <= 0 || expected > 1000)
+    return { status: '待确认', expected: null, observed: rows.length, missing: [] };
+  const seen = new Set(rows.map(row => row.hourStart));
+  const missing = [];
+  for (let time = first; time < exclusive; time += 3600000) {
+    const hour = shanghaiHour(time);
+    if (!seen.has(hour)) missing.push(hour);
+  }
+  return { status: missing.length ? '有缺口' : '已覆盖', expected,
+    observed: rows.length, missing };
+}
+
 export function qianchuanHourlyRows(body, account, room, sampledAt) {
   if (String(body?.status_code) !== '0') throw new Error('千川分时报表未返回成功状态');
   const rows = body?.data?.StatsData?.Rows;
   if (!Array.isArray(rows)) throw new Error('千川分时报表缺少 Rows');
-  if (rows.length >= 1000) throw new Error('千川分时报表达到单页上限，分页完整性未核实');
+  assertSinglePage(body, rows);
   const started = String(room.startedAt || '').match(/^(\d{4})[-/](\d{2})[-/](\d{2})/);
   if (!started) throw new Error('千川分时报表场次开播日期无效');
   const startDay = `${started[1]}-${started[2]}-${started[3]}`;
   const endDay = shanghaiHour(sampledAt).slice(0, 10);
   const statisticalWindow = `${startDay} 00:00:00 至 ${endDay} 23:59:59；当前户、目标直播间、全域直播间报表`;
+  const startInstant = localInstant(room.startedAt);
+  const sampledInstant = Date.parse(sampledAt);
+  const endedInstant = room.endedAt ? localInstant(room.endedAt) : NaN;
+  if (!Number.isFinite(sampledInstant)) throw new Error('千川分时报表采样时间无效');
   const parsed = []; const seen = new Set();
   for (const row of rows) {
     if (String(row?.Dimensions?.room_id?.Value ?? row?.Dimensions?.room_id?.ValueStr ?? '') !== room.id)
       throw new Error('千川分时报表混入其他直播间');
     const rawHour = row?.Dimensions?.stat_time_hour?.ValueStr ?? row?.Dimensions?.stat_time_hour?.Value;
     const window = hourWindow(rawHour);
+    const bucket = Date.parse(`${window.hourStart.replace(' ', 'T')}+08:00`);
+    if (Number.isFinite(startInstant) && bucket < Date.parse(`${shanghaiHour(startInstant).replace(' ', 'T')}+08:00`) ||
+        bucket > Date.parse(`${shanghaiHour(sampledInstant).replace(' ', 'T')}+08:00`) ||
+        Number.isFinite(endedInstant) && bucket > Date.parse(`${shanghaiHour(endedInstant).replace(' ', 'T')}+08:00`))
+      throw new Error('千川分时报表小时桶超出目标场次或采样范围');
     if (seen.has(window.hourStart)) throw new Error('千川分时报表小时桶重复');
     seen.add(window.hourStart);
     const metric = row?.Metrics?.stat_cost;
@@ -128,7 +184,9 @@ export function qianchuanHourlyRows(body, account, room, sampledAt) {
       valueKind: '官方值', status: '已读取', reason: '', ...window,
       version: `${versionState(room.state)}:${shanghaiHour(sampledAt)}` });
   }
-  return parsed;
+  const coverage = qianchuanHourCoverage(parsed, room, sampledAt);
+  return parsed.map(row => ({ ...row, paginationVerified: true, hourCoverage: coverage.status,
+    missingHours: coverage.missing }));
 }
 
 export function qianchuanHourlyFailure(account, room, sampledAt, reason) {
