@@ -119,6 +119,7 @@ test('Qianchuan hourly report keeps official buckets, current room and live/post
   assert.equal(failure.reason, '无权读取');
   assert.throws(() => qianchuanHourlyRows({ ...body, data: { StatsData: { Rows: [item('2026-11-15 08:00:00', 'other')] } } }, account, room, sampledAt), /其他直播间/);
   assert.throws(() => qianchuanHourlyRows({ ...body, data: { StatsData: { Rows: [item('2026-11-15 08:00:00'), item('2026-11-15 08:00:00')] } } }, account, room, sampledAt), /重复/);
+  assert.throws(() => qianchuanHourlyRows({ ...body, data: { StatsData: { Rows: Array(1000).fill(null) } } }, account, room, sampledAt), /分页完整性未核实/);
 });
 
 test('hourly store retains separate source and report versions', () => {
@@ -251,9 +252,9 @@ test('review rows keep separate hours, versions, provenance and previous-hour co
   assert.notEqual(reviews[0].key, reviews[1].key);
   assert.notEqual(reviews[1].key, reviews[2].key);
   const live = reviews.find(row => row.hourStart.endsWith('09:00:00') && row.version === 'live');
-  assert.equal(live.fields['投放消耗·本小时'], '3 元');
+  assert.equal(live.fields['投放消耗·本小时'], '99 元');
   assert.equal(live.fields['投放消耗·上一小时'], '2 元');
-  assert.equal(live.fields['投放消耗·变化'], '1 元');
+  assert.equal(live.fields['投放消耗·变化'], '97 元');
   assert.equal(live.fields['CPM·性质'], '未采集');
   assert.equal(reviews.find(row => row.version === 'post-live').fields['投放消耗·上一小时'], '');
 });
@@ -305,17 +306,18 @@ test('official total spend never fills unverified direct, video or traffic-sourc
     assert.equal(fields[`千川${type}·CPM·性质`], '未采集');
   }
   assert.equal(fields['流量千川·进房人数·性质'], '未采集');
-  assert.equal(fields['GPM·性质'], '边界快照');
+  assert.equal(fields['GPM·性质'], '未采集');
   assert.equal(fields['人均观看时长·性质'], '边界快照');
-  assert.equal(fields['点击支付率·本小时'], '10%');
-  assert.equal(fields['观看支付转化率·本小时'], '2%');
+  assert.equal(fields['点击支付率·本小时'], '');
+  assert.equal(fields['观看支付转化率·本小时'], '');
 });
 
-test('frozen remote review rows are found but never updated', async () => {
+test('matching frozen remote review rows are acknowledged without mutation', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'liveops-hourly-freeze-'));
   const store = new Store(root);
   store.save(account); store.setTargetName(account.name); store.saveRoom(account.id, room);
   store.saveHourly(compassHourlyRows(account, room, { state: 'live', metrics: [] }, sampledAt));
+  const remoteFields = reviewRows(store.hourly(account.id, room.id))[0].fields;
   const calls = [];
   const reply = data => ({ ok: true, status: 200, json: async () => ({ code: 0, data }) });
   const fetcher = async (url, request) => {
@@ -326,7 +328,7 @@ test('frozen remote review rows are found but never updated', async () => {
     if (parsed.pathname.endsWith('/tables')) return reply({ items: [{ name: '小时复盘', table_id: 'tblReview' }], has_more: false });
     if (parsed.pathname.endsWith('/fields')) return reply({ items: REVIEW_FIELDS.map((field_name, i) =>
       ({ field_name, field_id: `fld${i}`, type: 1 })), has_more: false });
-    if (parsed.pathname.endsWith('/records/search')) return reply({ items: [{ record_id: 'recExisting' }], has_more: false });
+    if (parsed.pathname.endsWith('/records/search')) return reply({ items: [{ record_id: 'recExisting', fields: remoteFields }], has_more: false });
     throw new Error('frozen row attempted a remote mutation');
   };
   const sync = new FeishuSync(store, { clientFactory: config => new FeishuClient(config, fetcher) });
@@ -337,5 +339,69 @@ test('frozen remote review rows are found but never updated', async () => {
     assert.equal(sync.state().hourlySynced, 1);
     assert.ok(!calls.some(call => call.method === 'PUT' ||
       call.path.endsWith('/records') && call.method === 'POST'));
+  } finally { await sync.close(); store.close(); fs.rmSync(root, { recursive: true }); }
+});
+
+test('late official corrections update one delivered hour and remote edits remain pending', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'liveops-hourly-correction-'));
+  const store = new Store(root);
+  store.save(account); store.setTargetName(account.name); store.saveRoom(account.id, room);
+  const report = amount => ({ status_code: 0, data: { StatsData: { Rows: [{
+    Dimensions: { room_id: { Value: room.id }, stat_time_hour: { ValueStr: '2026-11-15 08:00:00' } },
+    Metrics: { stat_cost: { Value: amount, ValueStr: amount.toFixed(2) } },
+  }] } } });
+  const save = (amount, time) => store.saveHourly(qianchuanHourlyRows(report(amount), account, room, time));
+  save(1.25, '2026-11-15T01:01:00Z');
+  const remote = new Map(), writes = [];
+  let losePutResponse = false;
+  const reply = data => ({ ok: true, status: 200, json: async () => ({ code: 0, data }) });
+  const fetcher = async (url, request) => {
+    const parsed = new URL(url), body = request.body ? JSON.parse(request.body) : null;
+    if (parsed.hostname === 'accounts.feishu.cn') return { ok: true, status: 200,
+      json: async () => ({ code: 0, access_token: 'synthetic-token', expires_in: 7200 }) };
+    if (parsed.pathname.endsWith('/tables')) return reply({ items: [{ name: '小时复盘', table_id: 'tblReview' }], has_more: false });
+    if (parsed.pathname.endsWith('/fields')) return reply({ items: REVIEW_FIELDS.map((field_name, i) =>
+      ({ field_name, field_id: `fld${i}`, type: 1 })), has_more: false });
+    if (parsed.pathname.endsWith('/records/search')) return reply({ items: [...remote.values()].filter(item =>
+      item.fields['同步键'] === body.filter.conditions[0].value[0]), has_more: false });
+    if (parsed.pathname.endsWith('/records') && request.method === 'POST') {
+      const record = { record_id: 'recSynthetic', fields: body.fields };
+      remote.set(record.record_id, record); writes.push('POST'); return reply({ record });
+    }
+    if (parsed.pathname.endsWith('/records/recSynthetic') && request.method === 'PUT') {
+      const record = { record_id: 'recSynthetic', fields: body.fields };
+      remote.set(record.record_id, record); writes.push('PUT');
+      if (losePutResponse) { losePutResponse = false; throw new Error('synthetic lost response'); }
+      return reply({ record });
+    }
+    throw new Error('unexpected synthetic endpoint');
+  };
+  const sync = new FeishuSync(store, { clientFactory: config => new FeishuClient(config, fetcher),
+    now: () => Date.parse('2026-11-15T03:00:00Z') });
+  try {
+    sync.configure({ url: 'https://demo.feishu.cn/base/appDemo?table=tblSession',
+      appId: 'cli_synthetic', appSecret: 'synthetic-secret', accountIds: [account.id] });
+    sync.syncReviewOnly(); await sync.busy;
+    assert.deepEqual(writes, ['POST']);
+    assert.equal(sync.pendingHourly().length, 0);
+
+    save(2.50, '2026-11-15T01:02:00Z');
+    assert.equal(sync.pendingHourly().length, 1);
+    losePutResponse = true;
+    sync.syncReviewOnly(); await sync.busy;
+    assert.deepEqual(writes, ['POST', 'PUT']);
+    assert.equal(remote.size, 1);
+    assert.equal(remote.get('recSynthetic').fields['投放消耗·本小时'], '2.50 元');
+    assert.equal(sync.pendingHourly().length, 1);
+    sync.syncReviewOnly(); await sync.busy;
+    assert.deepEqual(writes, ['POST', 'PUT']);
+    assert.equal(sync.pendingHourly().length, 0);
+
+    remote.get('recSynthetic').fields['投放消耗·本小时'] = '人工调整';
+    save(3.75, '2026-11-15T01:03:00Z');
+    sync.syncReviewOnly(); await sync.busy;
+    assert.deepEqual(writes, ['POST', 'PUT']);
+    assert.equal(sync.pendingHourly().length, 1);
+    assert.match(sync.state().error, /小时记录与上次交付内容不一致/);
   } finally { await sync.close(); store.close(); fs.rmSync(root, { recursive: true }); }
 });

@@ -101,6 +101,7 @@ export function qianchuanHourlyRows(body, account, room, sampledAt) {
   if (String(body?.status_code) !== '0') throw new Error('千川分时报表未返回成功状态');
   const rows = body?.data?.StatsData?.Rows;
   if (!Array.isArray(rows)) throw new Error('千川分时报表缺少 Rows');
+  if (rows.length >= 1000) throw new Error('千川分时报表达到单页上限，分页完整性未核实');
   const started = String(room.startedAt || '').match(/^(\d{4})[-/](\d{2})[-/](\d{2})/);
   if (!started) throw new Error('千川分时报表场次开播日期无效');
   const startDay = `${started[1]}-${started[2]}-${started[3]}`;

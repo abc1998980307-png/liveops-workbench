@@ -103,7 +103,7 @@ export class FeishuClient {
     }
     return missing;
   }
-  async upsert(key, fields, clientToken, active = () => true, updateExisting = true) {
+  async upsert(key, fields, clientToken, active = () => true, updateExisting = true, previousFields) {
     // Reconcile by a stable business key on every attempt, including after a lost response.
     const data = await this.request(`${this.base}/records/search?page_size=2`, { method: 'POST', body: { filter: { conjunction: 'and', conditions: [{ field_name: '同步键', operator: 'is', value: [key] }] }, automatic_fields: false } });
     if (!Array.isArray(data.items)) throw new FeishuError('飞书记录查询格式异常');
@@ -111,6 +111,14 @@ export class FeishuClient {
     const recordId = data.items[0]?.record_id;
     if (data.items.length && !recordId) throw new FeishuError('飞书查询结果缺少记录 ID，已停止写入以避免重复记录');
     if (recordId && !ID.test(recordId)) throw new FeishuError('飞书记录 ID 格式异常');
+    if (recordId && previousFields !== undefined) {
+      const remote = data.items[0].fields;
+      const matches = expected => remote && Object.entries(expected).every(([name, value]) =>
+        (remote[name] ?? '') === value);
+      if (matches(fields)) return recordId;
+      if (!previousFields || !matches(previousFields))
+        throw new FeishuError('小时记录与上次交付内容不一致，已保留待同步数据；请核对飞书记录后重试');
+    }
     if (recordId && !updateExisting) return recordId;
     if (!active()) return null;
     const result = await this.request(`${this.base}/records${recordId ? '/' + recordId : '?client_token=' + clientToken}`, { method: recordId ? 'PUT' : 'POST', body: { fields } });
@@ -196,6 +204,8 @@ export class FeishuSync {
       CREATE TABLE IF NOT EXISTS feishu_hourly_attempt (destination TEXT NOT NULL, key TEXT NOT NULL, sampled_at TEXT NOT NULL, token TEXT NOT NULL, fields TEXT NOT NULL, PRIMARY KEY(destination,key));
       CREATE TABLE IF NOT EXISTS feishu_review_delivery (destination TEXT NOT NULL, key TEXT NOT NULL, sampled_at TEXT NOT NULL, record TEXT NOT NULL, time TEXT NOT NULL, PRIMARY KEY(destination,key));
       CREATE TABLE IF NOT EXISTS feishu_review_attempt (destination TEXT NOT NULL, key TEXT NOT NULL, sampled_at TEXT NOT NULL, token TEXT NOT NULL, fields TEXT NOT NULL, PRIMARY KEY(destination,key));`);
+    if (!this.db.prepare('PRAGMA table_info(feishu_review_delivery)').all().some(column => column.name === 'fields'))
+      this.db.exec('ALTER TABLE feishu_review_delivery ADD COLUMN fields TEXT');
     this.config = JSON.parse(this.db.prepare('SELECT json FROM feishu_config WHERE id=1').get()?.json || '{}');
   }
   persist() { this.db.prepare('INSERT INTO feishu_config VALUES(1,?) ON CONFLICT(id) DO UPDATE SET json=excluded.json').run(JSON.stringify(this.config)); }
@@ -228,11 +238,10 @@ export class FeishuSync {
     const saved = this.db.prepare(`SELECT h.json FROM hourly_metrics h
       WHERE h.account IN (SELECT value FROM json_each(?)) ORDER BY h.hour_start,h.key`)
       .all(JSON.stringify(selected)).map(row => JSON.parse(row.json));
-    const delivered = new Map(this.db.prepare('SELECT key,sampled_at FROM feishu_review_delivery WHERE destination=?')
-      .all(this.destination()).map(row => [row.key, row.sampled_at]));
+    const delivered = new Map(this.db.prepare('SELECT key,fields FROM feishu_review_delivery WHERE destination=?')
+      .all(this.destination()).map(row => [row.key, row.fields]));
     return reviewRows(saved, this.now()).filter(row => {
-      const prior = delivered.get(row.key);
-      return !prior || !row.frozen && prior < row.sampledAt;
+      return !delivered.has(row.key) || delivered.get(row.key) !== JSON.stringify(row.fields);
     }).slice(0, limit);
   }
   state() {
@@ -414,14 +423,16 @@ export class FeishuSync {
         this.db.prepare('INSERT INTO feishu_review_attempt VALUES (?,?,?,?,?)').run(this.destination(), row.key, attempt.sampled_at, attempt.token, attempt.fields);
       }
       const fields = JSON.parse(attempt.fields);
-      const mutable = !row.frozen && Date.parse(row.hourEnd.replace(' ', 'T') + '+08:00') > this.now();
-      const record = await hourly.upsert(row.key, fields, attempt.token, active, mutable);
+      const delivered = this.db.prepare('SELECT fields FROM feishu_review_delivery WHERE destination=? AND key=?')
+        .get(this.destination(), row.key);
+      const previousFields = delivered?.fields ? JSON.parse(delivered.fields) : null;
+      const record = await hourly.upsert(row.key, fields, attempt.token, active, true, previousFields);
       if (!record) break;
       const time = new Date(this.now()).toISOString();
       this.db.exec('BEGIN');
       try {
-        this.db.prepare(`INSERT INTO feishu_review_delivery VALUES (?,?,?,?,?) ON CONFLICT(destination,key)
-          DO UPDATE SET sampled_at=excluded.sampled_at,record=excluded.record,time=excluded.time`).run(this.destination(), row.key, attempt.sampled_at, record, time);
+        this.db.prepare(`INSERT INTO feishu_review_delivery (destination,key,sampled_at,record,time,fields) VALUES (?,?,?,?,?,?) ON CONFLICT(destination,key)
+          DO UPDATE SET sampled_at=excluded.sampled_at,record=excluded.record,time=excluded.time,fields=excluded.fields`).run(this.destination(), row.key, attempt.sampled_at, record, time, attempt.fields);
         this.db.prepare('DELETE FROM feishu_review_attempt WHERE destination=? AND key=?').run(this.destination(), row.key);
         this.db.exec('COMMIT');
       } catch (error) { this.db.exec('ROLLBACK'); throw error; }

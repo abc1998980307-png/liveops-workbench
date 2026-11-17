@@ -45,6 +45,10 @@ const versionOf = row => String(row.version || '').split(':')[0];
 const groupKey = row => [row.sessionKey, row.hourStart, row.hourEnd, versionOf(row)].join('|');
 const metricId = row => row.source === '电商罗盘' && row.metricKey === 'stat_cost'
   ? 'compass_stat_cost' : row.metricKey;
+const metricSource = id => id === 'stat_cost' ? '巨量千川' : '电商罗盘';
+const DERIVED_METRICS = new Set(['cpm', 'gpm', 'customer_unit_price',
+  'product_click_pay_ucnt_ratio', 'watch_pay_ucnt_ratio', 'live_show_watch_cnt_ratio',
+  'product_click_ucnt_ratio', 'watch_interact_ucnt_ratio']);
 const quality = row => row?.status === '已读取' && Number.isFinite(row.value)
   ? row.grain === '官方小时' ? '官方小时值' : row.grain === '本机计算' ? '本机计算值'
     : row.grain === '边界快照' ? '边界快照' : '独立对照'
@@ -55,13 +59,12 @@ const display = row => {
   return row.unit && !text.trim().endsWith(row.unit) ? `${text} ${row.unit}` : text;
 };
 
-function choose(rows, frozen) {
+function choose(rows) {
   const sorted = rows.filter(row => Number.isFinite(Date.parse(row.sampledAt)))
     .sort((a, b) => Date.parse(a.sampledAt) - Date.parse(b.sampledAt));
-  const usable = sorted.filter(row => quality(row) !== '未采集');
-  const official = usable.filter(row => row.grain === '官方小时');
-  if (official.length) return frozen ? official[0] : official.at(-1);
-  return (frozen ? usable[0] || sorted[0] : usable.at(-1) || sorted.at(-1)) || null;
+  const official = sorted.filter(row => row.grain === '官方小时');
+  if (official.length) return official.at(-1);
+  return sorted.at(-1) || null;
 }
 
 function delta(current, previous) {
@@ -86,11 +89,15 @@ function delta(current, previous) {
 function calculated(metricKey, numerator, denominator, multiplier = 1000) {
   if (quality(numerator) !== '官方小时值' || quality(denominator) !== '官方小时值' ||
       numerator.source !== denominator.source ||
+      numerator.account !== denominator.account || numerator.room !== denominator.room ||
+      numerator.sessionKey !== denominator.sessionKey ||
+      numerator.hourStart !== denominator.hourStart || numerator.hourEnd !== denominator.hourEnd ||
+      versionOf(numerator) !== versionOf(denominator) ||
       denominator.value <= 0 || numerator.unit !== '元' ||
       !['人', '次', ''].includes(denominator.unit)) return null;
   const value = numerator.value * multiplier / denominator.value;
   if (!Number.isFinite(value)) return null;
-  return { metricKey, value, display: value.toFixed(2), unit: '元',
+  return { metricKey, source: numerator.source, value, display: value.toFixed(2), unit: '元',
     grain: '本机计算', status: '已读取' };
 }
 
@@ -108,26 +115,24 @@ export function reviewRows(rows, now = Date.now()) {
     const frozen = hourMillis(group.hourEnd) <= now;
     const metrics = new Map();
     for (const [, id] of REVIEW_METRICS) {
-      if (!id) continue;
-      const picked = choose(group.rows.filter(row => metricId(row) === id), frozen);
+      if (!id || DERIVED_METRICS.has(id)) continue;
+      const picked = choose(group.rows.filter(row => metricId(row) === id &&
+        row.source === metricSource(id)));
       if (picked) metrics.set(id, picked);
     }
-    const official = id => choose(group.rows.filter(row => row.metricKey === id &&
-      row.grain === '官方小时'), frozen);
-    if (quality(metrics.get('gpm')) !== '官方小时值') {
-      const gpm = calculated('gpm', official('pay_amt'), official('watch_ucnt'));
-      if (gpm) metrics.set('gpm', gpm);
-    }
-    if (quality(metrics.get('cpm')) !== '官方小时值') {
-      const cost = official('stat_cost'), exposure = official('live_show_cnt');
-      const cpm = cost?.source === exposure?.source ? calculated('cpm', cost, exposure) : null;
-      if (cpm) metrics.set('cpm', cpm);
-    }
-    const customerPrice = calculated('customer_unit_price', official('pay_amt'), official('pay_ucnt'), 1);
+    const official = (id, source) => choose(group.rows.filter(row => row.metricKey === id &&
+      row.source === source && row.grain === '官方小时'));
+    const gpm = calculated('gpm', official('pay_amt', '电商罗盘'), official('watch_ucnt', '电商罗盘'));
+    if (gpm) metrics.set('gpm', gpm);
+    const cpm = calculated('cpm', official('stat_cost', '巨量千川'),
+      official('live_show_cnt', '巨量千川'));
+    if (cpm) metrics.set('cpm', cpm);
+    const customerPrice = calculated('customer_unit_price', official('pay_amt', '电商罗盘'),
+      official('pay_ucnt', '电商罗盘'), 1);
     if (customerPrice) metrics.set('customer_unit_price', customerPrice);
     return { ...group, frozen, metrics,
       key: [group.sessionKey, group.hourStart, group.hourEnd, group.version].join(':'),
-      sampledAt: group.rows.map(row => row.sampledAt).sort().at(frozen ? 0 : -1) || '',
+      sampledAt: group.rows.map(row => row.sampledAt).sort().at(-1) || '',
     };
   });
   const byKey = new Map(mapped.map(row => [groupKey(row), row]));
