@@ -9,6 +9,9 @@ const start = script.indexOf('  function renderIdentity() {');
 const end = script.indexOf('  function renderLegacy() {', start);
 assert.ok(start >= 0 && end > start, 'identity renderer exists');
 const renderer = script.slice(start, end);
+const uncertainStart = script.indexOf('  const uncertain = a =>');
+const uncertainEnd = script.indexOf('  const sessionStatus =', uncertainStart);
+assert.ok(uncertainStart >= 0 && uncertainEnd > uncertainStart, 'session uncertainty helper exists');
 
 function renderIdentity(targetName, account, qianchuanAccount = null) {
   const nodes = new Map();
@@ -25,7 +28,7 @@ function renderIdentity(targetName, account, qianchuanAccount = null) {
     actionBusy:false, document: { activeElement:null }, Date,
   };
   function $(id) { assert.equal(id, 'rpaIdentity'); return host; }
-  vm.runInNewContext(`${renderer}\nrenderIdentity();`, context);
+  vm.runInNewContext(`${script.slice(uncertainStart, uncertainEnd)}\n${renderer}\nrenderIdentity();`, context);
   return { host, node };
 }
 
@@ -66,4 +69,43 @@ test('a similar live name remains a mismatch, and an unverified old name is not 
   });
   assert.equal(stale.node('[data-rpa-observed-name]').textContent, '尚未现场核验');
   assert.equal(stale.node('[data-rpa-identity-status]').textContent, '等待校正');
+  const uncertain = renderIdentity('演示直播号甲', {
+    observedName:'演示直播号甲', verifiedAt:new Date().toISOString(), state:'network', enabled:true,
+  });
+  assert.equal(uncertain.node('[data-rpa-identity-status]').textContent, '上次身份一致，会话待确认');
+});
+
+test('provider shows verified login separately from the paused sync switch', () => {
+  const helperStart = script.indexOf('  const verified = a =>');
+  const helperEnd = script.indexOf('  const chip =', helperStart);
+  const renderStart = script.indexOf('  function renderProviderStatus() {');
+  const renderEnd = script.indexOf('  function renderIdentity() {', renderStart);
+  assert.ok(helperStart > 0 && helperEnd > helperStart && renderEnd > renderStart);
+  const nodes = new Map();
+  const $ = id => {
+    if (!nodes.has(id)) nodes.set(id, { textContent:'', className:'', hidden:false });
+    return nodes.get(id);
+  };
+  const a = { observedName:'合成达人', verifiedAt:new Date().toISOString(),
+    observedUidMatchesStored:true, enabled:false, state:'paused' };
+  const context = { $, account: () => a, labels:{ paused:'同步已暂停' },
+    actionBusy:false, date: () => 'recent', document:{ querySelectorAll: () => [] } };
+  vm.runInNewContext(`${script.slice(helperStart, helperEnd)}\n${script.slice(renderStart, renderEnd)}\nrenderProviderStatus();`, context);
+  assert.equal($('rpaCompassStatus').textContent, '已登录、同步已暂停');
+  assert.equal($('rpaCompassSession').textContent, '已登录');
+  assert.equal($('rpaCompassIdentity').textContent, '已核验');
+  assert.equal($('rpaCompassSync').textContent, '已暂停');
+  assert.equal($('rpaSwitchImpact').hidden, true);
+  a.state = 'network';
+  vm.runInNewContext('renderProviderStatus();', context);
+  assert.equal($('rpaCompassSession').textContent, '暂无法确认');
+  assert.equal($('rpaCompassIdentity').textContent, '上次已核验');
+  assert.equal($('rpaCompassSync').textContent, '已暂停');
+  a.state = 'needs_login'; a.verifiedAt = null; a.observedName = null;
+  vm.runInNewContext('renderProviderStatus();', context);
+  assert.equal($('rpaCompassStatus').textContent, '需要登录');
+  assert.equal($('rpaCompassSession').textContent, '需要登录');
+  a.state = 'ready'; a.enabled = true;
+  vm.runInNewContext('renderProviderStatus();', context);
+  assert.equal($('rpaSwitchImpact').hidden, false);
 });

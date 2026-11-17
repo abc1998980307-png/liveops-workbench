@@ -27,10 +27,21 @@
     ['refund_cnt', '退款笔数', '笔'], ['real_refund_amt', '退款金额', '元'],
   ];
   const $ = id => document.getElementById(id);
-  const labels = { ready:'同步正常', needs_login:'等待登录', paused:'已暂停', partial:'部分数据失败', error:'同步失败', rate_limited:'等待重试', account_changed:'账号已切换' };
+  const labels = { ready:'同步正常', needs_login:'需要登录', paused:'同步已暂停', partial:'部分数据失败', error:'同步失败', rate_limited:'等待重试', account_changed:'身份不一致', loading:'页面加载中', network:'网络待重试', non_json:'数据待重试', forbidden:'无数据权限', identity_unknown:'身份待确认' };
   const qianchuanLabels = { logged_in:'已登录', needs_login:'需要登录', unknown:'待确认' };
   const date = value => value ? new Date(value).toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}) : '尚未同步';
-  const chip = account => `<span class="rpa-chip ${esc(account.state)}">${esc(account.busy || account.historyBusy ? '正在同步…' : labels[account.state] || '等待同步')}</span>`;
+  const verified = a => !!a?.observedName && !!a?.verifiedAt && a.observedUidMatchesStored !== false &&
+    !['needs_login', 'account_changed'].includes(a.state);
+  const uncertain = a => ['loading', 'network', 'non_json', 'forbidden', 'identity_unknown'].includes(a?.state);
+  const sessionStatus = a => a?.state === 'needs_login' ? '需要登录' : uncertain(a) ? '暂无法确认' : verified(a) ? '已登录' : '待确认';
+  const identityStatus = a => a?.state === 'account_changed' ? '身份不一致' : verified(a) ? uncertain(a) ? '上次已核验' : '已核验' : '尚未核验';
+  const compassSummary = a => a?.state === 'needs_login' ? '需要登录' :
+    a?.state === 'account_changed' ? '身份不一致，同步已暂停' :
+    uncertain(a) ? `会话待确认、同步已${a.enabled ? '开启' : '暂停'}` :
+    verified(a) && !a.enabled ? '已登录、同步已暂停' :
+    verified(a) && a.enabled ? '已登录、同步已开启' :
+    a ? labels[a.state] || '登录状态待确认' : '待连接';
+  const chip = account => `<span class="rpa-chip ${esc(account.state)}">${esc(account.busy || account.historyBusy ? '正在同步…' : compassSummary(account))}</span>`;
   const value = item => item ? `${esc(item.display)}${item.unit ? ' ' + esc(item.unit) : ''}` : '—';
   const account = () => state?.accounts.find(a => a.id === selected);
   const retryAfter = a => {
@@ -398,10 +409,14 @@
   function renderProviderStatus() {
     const a = account();
     const compass = $('rpaCompassStatus');
-    compass.textContent = a ? labels[a.state] || '等待检查' : '待连接';
-    compass.className = `rpa-provider-state ${a?.state === 'ready' ? 'ready' : 'pending'}`;
+    compass.textContent = compassSummary(a);
+    compass.className = `rpa-provider-state ${verified(a) && a.enabled ? 'ready' : 'pending'}`;
+    $('rpaCompassSession').textContent = sessionStatus(a);
+    $('rpaCompassIdentity').textContent = identityStatus(a);
+    $('rpaCompassSync').textContent = a?.enabled ? '已开启' : '已暂停';
     $('rpaCompassLastCheck').textContent = a?.verifiedAt ? date(a.verifiedAt) : '尚无记录';
-    document.querySelectorAll('#rpaProviders [data-rpa-action="login"], #rpaProviders [data-rpa-action="verify"]')
+    $('rpaSwitchImpact').hidden = !a?.enabled;
+    document.querySelectorAll('#rpaProviders [data-rpa-action="open"], #rpaProviders [data-rpa-action="login"], #rpaProviders [data-rpa-action="verify"]')
       .forEach(button => { button.disabled = !a || actionBusy; });
   }
   function renderIdentity() {
@@ -411,15 +426,15 @@
     const a = account(), target = state.targetName || '';
     const recentlyVerified = !!a?.verifiedAt && Date.now() >= Date.parse(a.verifiedAt) && Date.now() - Date.parse(a.verifiedAt) <= 5 * 60 * 1000;
     const observed = recentlyVerified ? a.observedName || '' : '';
-    const match = !!target && !!observed && target === observed;
+    const match = !!target && !!observed && target === observed && a.observedUidMatchesStored !== false && a.state !== 'account_changed';
     const mismatch = !!target && !!observed && !match;
     host.classList.toggle('mismatch', mismatch);
     host.querySelector('[data-rpa-target-name]').textContent = target || '尚未指定';
     host.querySelector('[data-rpa-qianchuan-name]').textContent = qianchuanAccount?.name || '尚未指定';
     host.querySelector('[data-rpa-observed-name]').textContent = observed || '尚未现场核验';
-    host.querySelector('[data-rpa-identity-status]').textContent = match ? '身份一致' : mismatch ? '身份不一致，自动同步禁止' : '等待校正';
+    host.querySelector('[data-rpa-identity-status]').textContent = match ? uncertain(a) ? '上次身份一致，会话待确认' : (a.enabled ? '身份一致，同步已开启' : '身份一致，同步已暂停') : mismatch ? '身份不一致，自动同步禁止' : '等待校正';
     const oldName = (a?.observedName || a?.name) && !observed ? `上次保存的达人名称是「${a.observedName || a.name}」，不能代替现场核验。` : '';
-    host.querySelector('[data-rpa-identity-message]').textContent = mismatch ? `罗盘登录的是「${observed}」，但当前直播号是「${target}」。请在罗盘窗口切换达人后重新核验。` : match ? `已核验「${observed}」与当前直播号一致。${qianchuanAccount?.name ? `请确认千川户「${qianchuanAccount.name}」属于同一条线。` : '千川当前户尚未指定，请先核对。'}` : !target ? `请先指定当前直播号。${oldName}` : `请打开罗盘窗口并核验当前登录达人。${oldName}`;
+    host.querySelector('[data-rpa-identity-message]').textContent = mismatch ? a.observedUidMatchesStored === false ? '罗盘窗口已切换达人，请新建连接并重新核验。' : `罗盘登录的是「${observed}」，但当前直播号是「${target}」。请在罗盘窗口切换达人后重新核验。` : match ? `${uncertain(a) ? '上次核验' : '已核验'}「${observed}」与当前直播号一致。${a.enabled ? '自动同步已开启。' : '自动同步已暂停，可通过开启同步恢复。'}${qianchuanAccount?.name ? `请确认千川户「${qianchuanAccount.name}」属于同一条线。` : '千川当前户尚未指定，请先核对。'}` : !target ? `请先指定当前直播号。${oldName}` : `请打开罗盘窗口并核验当前登录达人。${oldName}`;
     const field = host.querySelector('[data-rpa-target-form] input');
     if (document.activeElement !== field) field.value = target;
     host.querySelector('[data-rpa-confirm-target]').hidden = !observed || match;
@@ -446,7 +461,7 @@
     }
     $('rpaAccountList').innerHTML = state.accounts.map(item => `<div class="rpa-account-row"><button class="rpa-account ${item.id === selected ? 'selected' : ''}" data-rpa-account="${esc(item.id)}"><strong>${esc(item.name || item.label)}</strong>${chip(item)}<small>${item.observedName ? '已现场核验' : '等待现场核验'}<br>最近同步 ${date(item.lastSync)}</small></button><button type="button" class="btn small rpa-remove-account" data-rpa-remove="${esc(item.id)}" aria-label="移除 ${esc(item.name || item.label)}">移除</button></div>`).join('');
     const limitedUntil = retryAfter(a);
-    const identityMatches = !!state.targetName && a.observedName === state.targetName && !!a.verifiedAt &&
+    const identityMatches = !!state.targetName && a.observedName === state.targetName && a.observedUidMatchesStored !== false && a.state !== 'account_changed' && !!a.verifiedAt &&
       Date.now() >= Date.parse(a.verifiedAt) && Date.now() - Date.parse(a.verifiedAt) <= 5 * 60 * 1000;
     $('rpaSync').disabled = !identityMatches || a.busy || a.historyBusy || actionBusy || !!limitedUntil;
     $('rpaSync').textContent = a.busy ? '正在同步…' : '立即同步';
@@ -454,7 +469,7 @@
     $('rpaToggle').disabled = !a.enabled && !identityMatches || actionBusy;
     if (document.activeElement !== $('rpaInterval')) $('rpaInterval').value = String(a.interval);
     $('rpaAccountError').innerHTML = a.error ? `<div class="rpa-account-error">${esc(a.error)}</div>` : '';
-    $('rpaMeta').innerHTML = `<span>最近检查 ${date(a.lastCheck)}</span><span>最近成功同步 ${date(a.lastSync)}</span><span>${a.enabled ? '自动同步已开启' : '自动同步已暂停'}</span>${limitedUntil ? `<span>请求受限，可重试时间 ${date(limitedUntil)}</span>` : ''}`;
+    $('rpaMeta').innerHTML = `<span>官网会话 ${sessionStatus(a)}</span><span>身份核验 ${identityStatus(a)}</span><span>${a.enabled ? '自动同步已开启' : '自动同步已暂停'}</span><span>最近检查 ${date(a.lastCheck)}</span><span>最近成功同步 ${date(a.lastSync)}</span>${limitedUntil ? `<span>请求受限，可重试时间 ${date(limitedUntil)}</span>` : ''}`;
     const history = a.history;
     const selectedStart = $('rpaHistoryStart').value, selectedEnd = $('rpaHistoryEnd').value;
     const rangeChanged = !history?.uid || history.uid !== a.uid ||
@@ -492,7 +507,7 @@
     $('rpaEvents').innerHTML = events.map(e => `<div class="rpa-event"><time>${date(e.time)}</time><span>${esc(e.message)}</span></div>`).join('') || '<div class="rpa-login-hint">完成连接后，同步结果会记录在这里。</div>';
     if (!room) {
       const title = a.uid ? '今日暂无可展示的直播场次' : '完成罗盘登录，即可开始采集';
-      $('rpaDetail').innerHTML = `<div class="rpa-login-hint"><strong>${title}</strong>${a.uid ? '采集器会按设定间隔检查新场次。账号需要拥有对应直播数据的查看权限。' : '点击“打开罗盘 / 登录”，在弹出的浏览器窗口选择官网密码或扫码登录。登录成功后，本页面会自动更新。'}<br>采集期间请保留罗盘窗口；关闭窗口会暂停自动同步。</div>`;
+      $('rpaDetail').innerHTML = `<div class="rpa-login-hint"><strong>${title}</strong>${uncertain(a) ? `${esc(a.error || '罗盘状态暂无法确认，请稍后重试。')}自动同步${a.enabled ? '仍已开启' : '已暂停'}。` : verified(a) && !a.enabled ? '已登录、同步已暂停。需要继续采集时点击“开启同步”。' : a.state === 'needs_login' ? '罗盘会话需要登录。请打开官网窗口，登录后检查当前达人。' : a.uid ? '采集器会按设定间隔检查新场次。账号需要拥有对应直播数据的查看权限。' : '点击“打开罗盘官网”，在弹出的浏览器窗口完成登录，再检查当前达人。'}<br>采集期间请保留罗盘窗口；关闭窗口会暂停自动同步。</div>`;
       $('rpaExport').disabled = true;
     }
   }
@@ -750,7 +765,7 @@
   async function act(action, payload = {}) {
     if (actionBusy || !account()) return;
     actionBusy = true; const a = account();
-    status(action === 'login' ? '正在打开独立的罗盘登录窗口…' : '正在提交操作…');
+    status(action === 'open' ? '正在打开罗盘窗口…' : action === 'login' ? '正在准备切换或重新登录…' : '正在提交操作…');
     try {
       if (action === 'monitor') payload = { enabled: !a.enabled };
       if (action === 'history') {
@@ -766,7 +781,7 @@
       if (action === 'confirm-target') payload = { verifiedAccount:a.id };
       const result = await apiRequest(endpoint, {method:'POST', body:JSON.stringify(payload)});
       if (result?.cancelled) throw new Error('账号已暂停，本次历史读取已取消');
-      toast(result?.warning || (action === 'login' ? '请在罗盘窗口切换或登录达人，随后点击“核验当前达人”' : action === 'verify' ? '已读取罗盘窗口当前达人，请核对与直播号是否一致' : action === 'confirm-target' ? '已将刚核验的达人设为当前直播号' : action === 'sync' ? '已开始同步，结果会自动显示' : action === 'history' ? '历史场次目录已更新' : action === 'history-report' ? '历史报表已保存到本机' : '设置已保存'));
+      toast(result?.warning || (action === 'open' ? '已打开罗盘窗口' : action === 'login' ? '自动同步已暂停，请在罗盘窗口切换或登录后检查当前达人' : action === 'verify' ? '已读取罗盘窗口当前达人，请核对与直播号是否一致' : action === 'confirm-target' ? '已将刚核验的达人设为当前直播号' : action === 'sync' ? '已开始同步，结果会自动显示' : action === 'history' ? '历史场次目录已更新' : action === 'history-report' ? '历史报表已保存到本机' : '设置已保存'));
       await refresh();
     } catch (e) { status(e.message, true); toast(e.message); }
     finally { actionBusy = false; if (state) render(); }
@@ -865,7 +880,7 @@
       try {
         const result = await apiRequest('/api/rpa/accounts', {method:'POST', body:JSON.stringify({ label:$('rpaAccountName').value || '我的罗盘账号' })});
         if (loading) await loading;
-        selected = result.account.id; closeModal(); await refresh(); await act('login');
+        selected = result.account.id; closeModal(); await refresh(); await act('open');
       } catch (e) { toast(e.message); button.disabled = false; button.textContent = '打开罗盘并连接'; }
     };
     $('rpaAccountName').focus();

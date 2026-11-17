@@ -56,16 +56,21 @@ export class CollectError extends Error {
 }
 
 export function validateResponse(response) {
-  if ([401, 403].includes(response.status)) throw new CollectError('登录已失效或账号无权查看，请在罗盘窗口重新登录。', 'needs_login');
+  if (response.status === 401) throw new CollectError('罗盘会话已失效，请重新登录。', 'needs_login');
+  if (response.status === 403) throw new CollectError('罗盘当前账号无权查看数据。', 'forbidden');
   if (response.status === 429) throw new CollectError('罗盘请求频率受限，稍后会降低频率重试。', 'rate_limited');
-  if (response.status !== 200) throw new CollectError(`罗盘接口返回 HTTP ${response.status}`);
-  if (!response.body || typeof response.body !== 'object') throw new CollectError('罗盘返回了网页而非数据，请检查登录状态。', 'needs_login');
+  if (response.status !== 200) throw new CollectError('罗盘接口暂时不可用。', 'network');
+  if (!response.body || typeof response.body !== 'object' || Array.isArray(response.body))
+    throw new CollectError('罗盘接口暂未返回有效数据。', 'non_json');
   const body = response.body;
   const code = body.st ?? body.code ?? body.status_code;
   if (code != null && String(code) !== '0') {
-    const msg = String(body.msg || body.message || body.status_msg || '').slice(0, 150);
+    const msg = String(body.msg || body.message || body.status_msg || '');
     const login = /登录|登陆|login|unauthoriz|not.?logged/i.test(msg);
-    throw new CollectError(login ? '罗盘登录已失效，请重新登录。' : `罗盘业务错误 ${code}${msg ? '：' + msg : ''}`, login ? 'needs_login' : 'error');
+    const forbidden = /无权限|没有权限|权限不足|forbidden|permission|access denied/i.test(msg);
+    throw new CollectError(login ? '罗盘会话已失效，请重新登录。' :
+      forbidden ? '罗盘当前账号无权查看数据。' : '罗盘接口暂时无法完成请求。',
+    login ? 'needs_login' : forbidden ? 'forbidden' : 'error');
   }
   return body;
 }

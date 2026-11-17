@@ -311,7 +311,13 @@ export class BrowserEngine {
   }
   async request(id, task, room) {
     const session = await this.open(id);
-    if (new URL(session.page.url()).origin !== ORIGIN) throw new CollectError('请在弹出的浏览器中完成罗盘登录。', 'needs_login');
+    const current = new URL(session.page.url());
+    const officialLoginHost = /(^|\.)(?:jinritemai|douyin)\.com$/i.test(current.hostname);
+    if (officialLoginHost && /\/(?:login|signin|scan|qrcode)(?:\/|$)/i.test(current.pathname))
+      throw new CollectError('罗盘窗口正在等待登录或扫码。', 'scan');
+    if (current.origin !== ORIGIN) {
+      throw new CollectError('罗盘页面仍在加载，稍后重试。', 'loading');
+    }
     const response = await session.page.evaluate(async url => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 15000);
@@ -324,7 +330,7 @@ export class BrowserEngine {
       } catch (error) { return { status: 0, message: error.name === 'AbortError' ? '请求超时，请检查网络后重试。' : '网页请求失败，请检查浏览器和网络。' }; }
       finally { clearTimeout(timer); }
     }, taskUrl(task, room));
-    if (!response.status) throw new CollectError(response.message);
+    if (!response.status) throw new CollectError(response.message, 'network');
     return validateResponse(response);
   }
   async lookupProfile(secUserId) {

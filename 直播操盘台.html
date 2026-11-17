@@ -535,8 +535,9 @@
               <div class="rpa-provider-grid">
                 <article class="rpa-provider-card">
                   <div class="rpa-provider-card-head"><span class="rpa-provider-mark compass-mark">罗</span><div><strong>电商罗盘</strong><small>直播场次与经营数据</small></div><span class="rpa-provider-state pending" id="rpaCompassStatus">待连接</span></div>
-                  <div class="rpa-provider-check">上次成功检查：<span id="rpaCompassLastCheck">尚无记录</span></div>
-                  <div class="rpa-provider-actions"><button type="button" class="btn small" data-rpa-action="login">打开罗盘官网</button><button type="button" class="btn small" data-rpa-action="verify">完成登录后检查</button><button type="button" class="btn small" id="rpaConnect">添加账号</button></div>
+                  <div class="rpa-provider-check">官网会话：<span id="rpaCompassSession">待确认</span> · 身份核验：<span id="rpaCompassIdentity">尚未核验</span> · 自动同步：<span id="rpaCompassSync">已暂停</span><br>上次成功检查：<span id="rpaCompassLastCheck">尚无记录</span></div>
+                  <div class="rpa-provider-actions"><button type="button" class="btn small" data-rpa-action="open">打开罗盘官网</button><button type="button" class="btn small" data-rpa-action="verify">检查当前达人</button><button type="button" class="btn small" data-rpa-action="login">切换或重新登录</button><button type="button" class="btn small" id="rpaConnect">添加账号</button></div>
+                  <div class="rpa-provider-check" id="rpaSwitchImpact" hidden>切换或重新登录会暂停自动同步，并要求重新核验。</div>
                 </article>
                 <article class="rpa-provider-card">
                   <div class="rpa-provider-card-head"><span class="rpa-provider-mark qianchuan-mark">川</span><div><strong>巨量千川</strong><small>广告账户与消耗报表</small></div><span class="rpa-provider-state pending" id="qianchuanHomeStatus">待确认</span></div>

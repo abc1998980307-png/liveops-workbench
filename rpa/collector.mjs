@@ -32,6 +32,20 @@ const HISTORY_SUMMARY_FIELDS = [
   { key: 'real_refund_amt', label: '历史售后实际退款金额', source: 'historyCore', rawUnit: 'price', unit: '元' },
 ];
 
+function compassFailureReason(error) {
+  const reasons = {
+    needs_login: '罗盘会话已失效，请在窗口登录后核验',
+    scan: '罗盘窗口等待登录或扫码，请完成后核验',
+    loading: '罗盘页面仍在加载，稍后重试',
+    network: '网络暂时不可用，稍后重试',
+    non_json: '罗盘接口暂未返回有效数据，稍后重试',
+    forbidden: '当前账号无权查看罗盘数据',
+    rate_limited: '罗盘请求受限，稍后重试',
+    identity_unknown: '暂无法确认罗盘达人身份，稍后重试',
+  };
+  return reasons[error.kind] || '罗盘身份暂时无法核验，稍后重试';
+}
+
 export function acquireCollectorGuard(root) {
   const guard = new DatabaseSync(path.join(root, 'collector-instance.sqlite'));
   try {
@@ -142,14 +156,29 @@ export class Collector {
     const retryAfter = this.rateLimitUntil(id);
     if (retryAfter) throw new CollectError(`罗盘请求受限，请在 ${retryAfter} 后重试。`, 'rate_limited');
   }
+  async open(id) {
+    this.store.account(id);
+    await this.engine.open(id, true);
+    this.store.event(id, '已打开罗盘窗口');
+    return { ok: true };
+  }
   async login(id) {
     const a = this.store.account(id);
-    if (a.enabled) this.pause(id, '打开罗盘窗口后需重新核验身份，自动同步已暂停');
+    if (a.enabled) this.pause(id, '切换或重新登录账号，自动同步已暂停');
     this.store.save({ ...this.store.account(id), observedName: null, verifiedAt: null, observedUidMatchesStored: false,
       enabled: false, state: 'needs_login', error: null });
     await this.engine.open(id, true);
-    this.store.event(id, '已打开罗盘窗口，请完成登录并核验达人后再开启同步');
+    this.store.event(id, '已打开罗盘窗口，等待重新核验');
     return { ok: true };
+  }
+  identityFailure(id, error, checkedAt) {
+    const confirmed = ['needs_login', 'scan'].includes(error.kind);
+    if (confirmed && this.store.account(id).enabled) this.pause(id,
+      error.kind === 'scan' ? '罗盘窗口等待登录或扫码，自动同步已暂停' : '罗盘会话已失效，自动同步已暂停');
+    this.store.save({ ...this.store.account(id),
+      ...(confirmed ? { observedName: null, verifiedAt: null, observedUidMatchesStored: false } : {}),
+      lastCheck: checkedAt, state: confirmed ? 'needs_login' : error.kind || 'error',
+      error: compassFailureReason(error) });
   }
   setTarget(name) {
     if (typeof name !== 'string' || !name.trim() || name.trim().length > 80 || /[\u0000-\u001f\u007f]/.test(name))
@@ -176,31 +205,30 @@ export class Collector {
     try {
       const identity = await this.engine.request(id, 'identity');
       uid = identity?.data?.author_id;
-      if (!uid) throw new CollectError('请在罗盘窗口登录拥有直播数据权限的达人账号。', 'needs_login');
-      if (typeof uid === 'number' && !Number.isSafeInteger(uid)) throw new CollectError('账号标识精度无法确认，已停止核验。');
+      if (!uid) throw new CollectError('暂无法确认罗盘达人身份。', 'identity_unknown');
+      if (typeof uid === 'number' && !Number.isSafeInteger(uid)) throw new CollectError('账号标识精度无法确认。', 'identity_unknown');
       const info = await this.engine.request(id, 'account');
       name = info?.data?.account_name;
-      if (typeof name !== 'string' || !name.trim()) throw new CollectError('罗盘未返回当前达人名称，无法开启同步。');
+      if (typeof name !== 'string' || !name.trim()) throw new CollectError('暂无法确认罗盘达人名称。', 'identity_unknown');
       name = name.trim();
     } catch (error) {
-      if (account.enabled) this.pause(id, '罗盘身份无法核验，自动同步已暂停');
-      this.store.save({ ...this.store.account(id), observedName: null, verifiedAt: null,
-        observedUidMatchesStored: false, lastCheck: checkedAt, state: error.kind || 'error',
-        error: error.kind === 'needs_login' ? '请在罗盘窗口完成登录后重新核验' : '罗盘身份核验失败，请检查窗口后重试' });
+      this.identityFailure(id, error, checkedAt);
+      error.identityFailure = true;
       throw error;
     }
     const compatible = !account.uid || account.uid === String(uid);
     const targetName = this.store.targetName();
     const matchesTarget = name === targetName && !!targetName;
+    const latest = this.store.account(id);
     this.store.save({ ...this.store.account(id), uid: compatible ? String(uid) : account.uid,
       name: compatible ? name : account.name, observedName: name, verifiedAt: checkedAt,
       observedUidMatchesStored: compatible, lastCheck: checkedAt,
-      ...(!account.enabled && compatible && matchesTarget ? { state: 'paused', error: null } : {}) });
+      ...(compatible && matchesTarget ? { state: latest.enabled ? 'ready' : 'paused', error: null } : {}) });
     if (!compatible || !matchesTarget) {
-      if (account.enabled) this.pause(id, '罗盘达人与当前直播号不一致，自动同步已暂停');
+      if (latest.enabled) this.pause(id, '罗盘达人与当前直播号不一致，自动同步已暂停');
       this.store.save({ ...this.store.account(id), state: 'account_changed',
         error: !compatible ? '当前罗盘窗口已切换达人，请新建连接以免混入原连接的历史数据' :
-          targetName ? `罗盘登录的是「${name}」，当前直播号是「${targetName}」` : '请先指定当前直播号' });
+          targetName ? '当前罗盘达人与直播号不一致，请先校正' : '请先指定当前直播号' });
     }
     return { observedName: name, verifiedAt: checkedAt, targetName, matchesTarget, compatible };
   }
@@ -234,7 +262,7 @@ export class Collector {
       if (!this.store.targetName()) throw new CollectError('请先指定当前直播号并核验罗盘达人。', 'account_changed');
       const verified = await this.verifyIdentity(id);
       if (!verified.compatible) throw new CollectError('当前浏览器登录了另一个达人，请新建连接。', 'account_changed');
-      if (!verified.matchesTarget) throw new CollectError(`罗盘登录的是「${verified.observedName}」，当前直播号是「${verified.targetName}」，自动同步已暂停。`, 'account_changed');
+      if (!verified.matchesTarget) throw new CollectError('当前罗盘达人与直播号不一致，自动同步已暂停。', 'account_changed');
       if (!current()) return;
       a = this.store.account(id);
       const today = await this.engine.request(id, 'rooms');
@@ -255,7 +283,7 @@ export class Collector {
           if (!current()) return;
           try { results[task] = { ok: true, body: await this.engine.request(id, task, room.id) }; successes++; }
           catch (error) {
-            if (['needs_login', 'rate_limited'].includes(error.kind)) throw error;
+            if (['needs_login', 'scan', 'rate_limited'].includes(error.kind)) throw error;
             failed++; results[task] = { ok: false, error: String(error.message).slice(0, 200) }; errors.push(`${task}：${results[task].error}`);
           }
         }
@@ -306,20 +334,24 @@ export class Collector {
     } catch (error) {
       if (!current()) return;
       const state = error.kind || 'error';
-      const message = String(error.message || '采集失败').replace(/https?:\/\/\S+/g, '罗盘页面').slice(0, 250);
+      const transient = ['loading', 'network', 'non_json', 'identity_unknown', 'forbidden'].includes(state);
+      const confirmed = ['needs_login', 'scan'].includes(state);
+      const message = transient || confirmed ? compassFailureReason(error) : error.identityFailure ? this.store.account(id).error :
+        String(error.message || '采集失败').replace(/https?:\/\/\S+/g, '罗盘页面').slice(0, 250);
       if (state === 'account_changed') this.pause(id, message);
+      if (confirmed) this.identityFailure(id, error, checkedAt);
       if (state === 'rate_limited') this.recordRateLimit(id, error);
-      else this.store.save({ ...this.store.account(id), state, error: message, lastCheck: checkedAt });
+      else if (!confirmed) this.store.save({ ...this.store.account(id), state, error: message, lastCheck: checkedAt });
       this.store.event(id, message);
       if (Array.isArray(error.shape)) for (const line of error.shape) this.store.event(id, `今日场次形态：${line}`);
-      if (state !== 'rate_limited') this.next.set(id, Date.now() + (state === 'needs_login' ? 30 : 60) * 1000);
+      if (state !== 'rate_limited') this.next.set(id, Date.now() + (confirmed ? 30 : 60) * 1000);
     }
   }
   async verifyHistoryIdentity(id, uid) {
     const identity = await this.engine.request(id, 'identity');
     const currentUid = identity?.data?.author_id;
     if (typeof currentUid === 'number' && !Number.isSafeInteger(currentUid)) throw new CollectError('账号标识精度无法确认，已停止历史读取。');
-    if (!currentUid) throw new CollectError('罗盘登录已失效，请重新登录。', 'needs_login');
+    if (!currentUid) throw new CollectError('暂无法确认罗盘达人身份。', 'identity_unknown');
     if (String(currentUid) !== uid || this.store.account(id).uid !== uid)
       throw new CollectError('罗盘账号身份已变化，已停止历史读取。', 'account_changed');
   }
@@ -408,7 +440,7 @@ export class Collector {
         const read = async name => {
           try { return { ok: true, body: validateHistoryEndpoint(name, await this.engine.request(id, name, roomId)), retrievedAt: new Date().toISOString() }; }
           catch (error) {
-            if (['needs_login', 'rate_limited', 'account_changed'].includes(error.kind)) throw error;
+            if (['needs_login', 'scan', 'rate_limited', 'account_changed'].includes(error.kind)) throw error;
             return { ok: false, error: String(error.message || '读取失败').slice(0, 200), retrievedAt: new Date().toISOString() };
           }
         };
@@ -753,7 +785,7 @@ export class Collector {
         if (!current()) return;
         progress = this.store.historyBatch(id);
         const message = String(error.message || '读取失败').replace(/https?:\/\/\S+/g, '罗盘页面').slice(0, 200);
-        if (['needs_login', 'rate_limited', 'account_changed'].includes(error.kind)) {
+        if (['needs_login', 'scan', 'rate_limited', 'account_changed'].includes(error.kind)) {
           const limited = error.kind === 'rate_limited';
           const retryAfter = limited ? this.recordRateLimit(id, error) : null;
           this.store.saveHistoryBatch(id, { ...progress, status: limited ? 'rate_limited' : 'error',
@@ -831,6 +863,7 @@ export class Collector {
       case 'hourly.refresh': return this.refreshHourly(String(args.account || ''), String(args.room || ''));
       case 'create': return { account: this.store.create(String(args.label || '')) };
       case 'remove': return this.remove(String(args.id || ''));
+      case 'open': return this.open(String(args.id));
       case 'login': return this.login(String(args.id));
       case 'verify': return this.verifyIdentity(String(args.id));
       case 'target.set': return this.setTarget(args.name);

@@ -303,8 +303,30 @@ test('collector process guard blocks another process until exit', async () => {
   }
 });
 test('auth, throttling, malformed and business errors never become empty successful data', () => {
-  for (const response of [{ status: 401 }, { status: 403 }, { status: 429 }, { status: 200, body: null }, { status: 200, body: { st: 7, msg: 'error' } }]) assert.throws(() => validateResponse(response), CollectError);
+  for (const [response, kind] of [
+    [{ status: 401 }, 'needs_login'], [{ status: 403 }, 'forbidden'], [{ status: 429 }, 'rate_limited'],
+    [{ status: 200, body: null }, 'non_json'], [{ status: 200, body: { st: 7, msg: 'error' } }, 'error'],
+    [{ status: 200, body: { st: 7, msg: '未登录' } }, 'needs_login'],
+    [{ status: 200, body: { st: 7, msg: '无权限' } }, 'forbidden'],
+  ]) assert.throws(() => validateResponse(response), error => error instanceof CollectError && error.kind === kind);
+  assert.throws(() => validateResponse({ status: 200, body: { st: 7, msg: 'secret-example' } }),
+    error => error instanceof CollectError && !error.message.includes('secret-example'));
   assert.deepEqual(validateResponse({ status: 200, body: { st: 0, data: {} } }), { st: 0, data: {} });
+});
+test('browser request distinguishes a login page from loading and network failures', async () => {
+  const engine = new BrowserEngine('/unused', () => {});
+  let url = 'about:blank';
+  let response = { status: 0, message: '网页请求失败，请检查浏览器和网络。' };
+  engine.open = async () => ({ page: { url: () => url, evaluate: async () => response } });
+  await assert.rejects(engine.request('synthetic', 'identity'), error => error.kind === 'loading');
+  url = 'https://passport.jinritemai.com/scan';
+  await assert.rejects(engine.request('synthetic', 'identity'), error => error.kind === 'scan');
+  url = 'https://example.test/scan';
+  await assert.rejects(engine.request('synthetic', 'identity'), error => error.kind === 'loading');
+  url = 'https://compass.jinritemai.com/talent';
+  await assert.rejects(engine.request('synthetic', 'identity'), error => error.kind === 'network');
+  response = { status: 200, body: null };
+  await assert.rejects(engine.request('synthetic', 'identity'), error => error.kind === 'non_json');
 });
 test('preserve units, zero values and explicit display strings without money/ratio guessing', () => {
   assert.deepEqual(measure({ value: 1200, value_str: '12.00', unit: '元' }), { value: 1200, display: '12.00', unit: '元' });
@@ -910,16 +932,138 @@ test('switching login identity cannot append another account’s data', async ()
     assert.equal(t.store.detail(t.id, roomId).history.length, 1);
   } finally { await t.cleanup(); }
 });
-test('opening the persistent login window pauses collection until a fresh verification', async () => {
+test('opening the persistent window preserves sync and verified identity', async () => {
   const t = setup();
   try {
     let opened = false;
     t.collector.engine.open = async (_id, visible) => { opened = visible; return {}; };
-    await t.collector.command('login', { id: t.id });
+    await t.collector.command('verify', { id: t.id });
+    const before = t.store.account(t.id);
+    await t.collector.command('open', { id: t.id });
     assert.equal(opened, true);
+    assert.equal(t.store.account(t.id).enabled, true);
+    assert.equal(t.store.account(t.id).verifiedAt, before.verifiedAt);
+    assert.equal(t.store.account(t.id).observedName, before.observedName);
+    assert.notEqual(t.store.account(t.id).state, 'needs_login');
+    assert.equal(t.store.events()[0].message, '已打开罗盘窗口');
+    assert.equal(t.collector.busy.size, 0);
+  } finally { await t.cleanup(); }
+});
+test('explicit account switching pauses sync and clears verification', async () => {
+  const t = setup();
+  try {
+    let opened = false;
+    t.collector.engine.open = async (_id, visible) => { opened = visible; return {}; };
+    await t.collector.command('verify', { id: t.id });
+    await t.collector.command('login', { id: t.id });
+    const a = t.store.account(t.id);
+    assert.equal(opened, true);
+    assert.equal(a.enabled, false);
+    assert.equal(a.verifiedAt, null);
+    assert.equal(a.observedName, null);
+    assert.equal(a.state, 'needs_login');
+  } finally { await t.cleanup(); }
+});
+test('successful verification while sync is paused leaves sync off and reports paused', async () => {
+  const t = setup();
+  try {
+    t.collector.pause(t.id);
+    await t.collector.command('verify', { id: t.id });
+    const a = t.store.account(t.id);
+    assert.equal(a.enabled, false);
+    assert.equal(a.state, 'paused');
+    assert.ok(a.verifiedAt);
+  } finally { await t.cleanup(); }
+});
+test('temporary identity failures preserve verification and automatic sync', async () => {
+  let failure = null;
+  const t = setup(task => {
+    if (task === 'identity' && failure) throw new CollectError('synthetic failure', failure);
+    return structuredClone(responses[task]);
+  });
+  try {
+    await t.collector.verifyIdentity(t.id);
+    const verifiedAt = t.store.account(t.id).verifiedAt;
+    for (failure of ['loading', 'network', 'non_json', 'identity_unknown', 'forbidden']) {
+      await assert.rejects(t.collector.verifyIdentity(t.id), CollectError);
+      const a = t.store.account(t.id);
+      assert.equal(a.enabled, true, failure);
+      assert.equal(a.verifiedAt, verifiedAt, failure);
+      assert.equal(a.observedName, responses.account.data.account_name, failure);
+      assert.notEqual(a.state, 'needs_login', failure);
+      assert.doesNotMatch(a.error, /synthetic failure/);
+      await t.collector.sync(t.id);
+      assert.equal(t.store.account(t.id).enabled, true, failure);
+    }
+  } finally { await t.cleanup(); }
+});
+test('confirmed expired session pauses sync and clears verification', async () => {
+  let expired = false;
+  const t = setup(task => {
+    if (task === 'identity' && expired) throw new CollectError('expired', 'needs_login');
+    return structuredClone(responses[task]);
+  });
+  try {
+    await t.collector.verifyIdentity(t.id);
+    expired = true;
+    await t.collector.sync(t.id);
+    const a = t.store.account(t.id);
+    assert.equal(a.enabled, false);
+    assert.equal(a.verifiedAt, null);
+    assert.equal(a.observedName, null);
+    assert.equal(a.state, 'needs_login');
+  } finally { await t.cleanup(); }
+});
+test('confirmed login or scan page pauses sync with a distinct reason', async () => {
+  let scanning = false;
+  const t = setup(task => {
+    if (task === 'identity' && scanning) throw new CollectError('scan page', 'scan');
+    return structuredClone(responses[task]);
+  });
+  try {
+    await t.collector.verifyIdentity(t.id);
+    scanning = true;
+    await t.collector.sync(t.id);
+    const a = t.store.account(t.id);
+    assert.equal(a.enabled, false);
+    assert.equal(a.state, 'needs_login');
+    assert.equal(a.verifiedAt, null);
+    assert.match(a.error, /登录或扫码/);
+    assert.doesNotMatch(a.error, /scan page/);
+  } finally { await t.cleanup(); }
+});
+test('room request errors preserve or invalidate identity according to their cause', async () => {
+  let failure = null;
+  const t = setup(task => {
+    if (task === 'rooms' && failure) throw new CollectError('synthetic failure', failure);
+    return structuredClone(responses[task]);
+  });
+  try {
+    await t.collector.verifyIdentity(t.id);
+    failure = 'non_json';
+    await t.collector.sync(t.id);
+    assert.equal(t.store.account(t.id).enabled, true);
+    assert.ok(t.store.account(t.id).verifiedAt);
+    assert.equal(t.store.account(t.id).observedName, responses.account.data.account_name);
+    assert.doesNotMatch(t.store.events()[0].message, /synthetic failure/);
+    failure = 'needs_login';
+    await t.collector.sync(t.id);
     assert.equal(t.store.account(t.id).enabled, false);
     assert.equal(t.store.account(t.id).verifiedAt, null);
-    assert.equal(t.collector.busy.size, 0);
+    assert.equal(t.store.account(t.id).state, 'needs_login');
+  } finally { await t.cleanup(); }
+});
+test('a scan redirect during room discovery stops collection before saving rooms', async () => {
+  const t = setup(task => {
+    if (task === 'rooms') throw new CollectError('scan page', 'scan');
+    return structuredClone(responses[task]);
+  });
+  try {
+    await t.collector.sync(t.id);
+    assert.equal(t.store.account(t.id).enabled, false);
+    assert.equal(t.store.account(t.id).state, 'needs_login');
+    assert.equal(t.store.rooms(t.id).length, 0);
+    assert.equal(t.store.db.prepare('SELECT COUNT(*) AS count FROM snapshots').get().count, 0);
   } finally { await t.cleanup(); }
 });
 test('a live verification replaces a stale saved name and never trusts a similar label', async () => {

@@ -1649,12 +1649,12 @@ class Handler(BaseHTTPRequestHandler):
                 action = {"settings": "config", "check": "test", "history-monitor": "history.monitor"}.get(feishu_match[1], feishu_match[1])
                 self.rpa_call("feishu." + action, payload)
                 return
-            match = re.fullmatch(r"/api/rpa/accounts/([a-f0-9-]{36})/(login|verify|sync|monitor|settings|history|history-report|history-batch-start|history-batch-resume|history-batch-pause|remove)", path)
+            match = re.fullmatch(r"/api/rpa/accounts/([a-f0-9-]{36})/(open|login|verify|sync|monitor|settings|history|history-report|history-batch-start|history-batch-resume|history-batch-pause|remove)", path)
             if match:
                 action = {"history": "history.page", "history-report": "history.report",
                           "history-batch-start": "history.batch.start", "history-batch-resume": "history.batch.resume",
                           "history-batch-pause": "history.batch.pause"}.get(match[2], match[2])
-                self.rpa_call(action, {**payload, "id": match[1]}, timeout=60 if match[2] in ("history", "history-report") else 45 if match[2] in ("login", "verify", "monitor") else 12)
+                self.rpa_call(action, {**payload, "id": match[1]}, timeout=60 if match[2] in ("history", "history-report") else 45 if match[2] in ("open", "login", "verify", "monitor") else 12)
             else:
                 self.send_json({"error": "not found"}, 404)
             return

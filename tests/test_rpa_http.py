@@ -121,6 +121,11 @@ class RpaHttpTests(unittest.TestCase):
         status, data = self.request("POST", f"/api/rpa/accounts/{account}/verify", b"{}", headers)
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(data)["method"], "verify")
+        for action in ("open", "login"):
+            status, data = self.request("POST", f"/api/rpa/accounts/{account}/{action}", b"{}", headers)
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(data)["method"], action)
+            self.assertEqual(json.loads(data)["args"], {"id": account})
         status, data = self.request("POST", "/api/rpa/target", json.dumps({"verifiedAccount": account}).encode(), headers)
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(data)["method"], "target.confirm")
