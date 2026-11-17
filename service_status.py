@@ -39,13 +39,10 @@ def compass_status(snapshot, now=None):
             counts["errors"] += 1
         else:
             checked, synced = _time(account.get("lastCheck")), _time(account.get("lastSync"))
-            try:
-                interval = max(30, min(600, float(account.get("interval", 60))))
-            except (ValueError, TypeError):
-                interval = 60
+            interval = 3600
             fresh = (state == "ready" and bool(account.get("uid")) and checked is not None
-                     and synced is not None and 0 <= now - checked <= max(180, interval * 3)
-                     and 0 <= now - synced <= max(180, interval * 3))
+                     and synced is not None and 0 <= now - checked <= interval * 3
+                     and 0 <= now - synced <= interval * 3)
             counts["fresh" if fresh else "stale"] += 1
     recent = [(_time(a.get("lastCheck")), a.get("lastCheck")) for a in accounts]
     recent = [(stamp, raw) for stamp, raw in recent if stamp is not None]

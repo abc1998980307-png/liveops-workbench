@@ -7,7 +7,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { taskUrl, validateResponse, measure, findMetric, roomList, historyBounds, historyWindow, historyRange, historyStartDate, historyRoomPage, validateHistoryEndpoint, normalizeHistoryReport, normalizeSnapshot, CollectError } from '../rpa/model.mjs';
 import { BrowserEngine, providerLoginUrl, qianchuanLoginState } from '../rpa/engine.mjs';
-import { Store } from '../rpa/store.mjs';
+import { Store, SAMPLE_INTERVAL_SECONDS } from '../rpa/store.mjs';
 import { Collector, acquireCollectorGuard } from '../rpa/collector.mjs';
 import { reconcileSpend } from '../rpa/spend-reconciliation.mjs';
 
@@ -248,6 +248,50 @@ function setup(handler = task => structuredClone(responses[task])) {
   const a = store.create('测试'); store.save({ ...a, enabled: true });
   return { root, store, collector, id: a.id, cleanup: async () => { await collector.close(); fs.rmSync(root, { recursive: true }); } };
 }
+test('new accounts use hourly sampling and saved shorter intervals migrate on startup', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'liveops-rpa-interval-test-'));
+  try {
+    const store = new Store(root);
+    const account = store.create('测试');
+    assert.equal(account.interval, SAMPLE_INTERVAL_SECONDS);
+    store.db.prepare("UPDATE accounts SET json=json_set(json, '$.interval', 60) WHERE id=?").run(account.id);
+    store.close();
+    const reopened = new Store(root);
+    try {
+      assert.equal(reopened.account(account.id).interval, SAMPLE_INTERVAL_SECONDS);
+      assert.equal(JSON.parse(reopened.db.prepare('SELECT json FROM accounts WHERE id=?').get(account.id).json).interval,
+        SAMPLE_INTERVAL_SECONDS);
+      assert.equal(reopened.save({ ...reopened.account(account.id), interval: 60 }).interval, SAMPLE_INTERVAL_SECONDS);
+    } finally { reopened.close(); }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('automatic sampling is hourly while manual sync remains available immediately', async () => {
+  const t = setup();
+  try {
+    for (const interval of [30, 60, 600, 3599, 3601]) {
+      await assert.rejects(t.collector.command('settings', { id: t.id, interval }), /1 小时/);
+    }
+    await t.collector.command('settings', { id: t.id, interval: SAMPLE_INTERVAL_SECONDS });
+    assert.equal(t.store.account(t.id).interval, SAMPLE_INTERVAL_SECONDS);
+    await t.collector.sync(t.id);
+    assert.ok(t.collector.next.get(t.id) - Date.now() > 3590_000);
+    assert.equal((await t.collector.command('sync', { id: t.id })).queued, true);
+    await t.collector.busy.get(t.id);
+  } finally { await t.cleanup(); }
+});
+
+test('failed automatic sampling waits an hour before retrying', async () => {
+  const t = setup(task => {
+    if (task === 'rooms') throw new CollectError('网络暂不可用', 'network');
+    return structuredClone(responses[task]);
+  });
+  try {
+    await t.collector.sync(t.id);
+    assert.ok(t.collector.next.get(t.id) - Date.now() > 3590_000);
+  } finally { await t.cleanup(); }
+});
+
 function savedHistoryRoom(t) {
   t.store.save({ ...t.store.account(t.id), uid: '99887766', enabled: false, state: 'paused' });
   t.store.saveRoom(t.id, { id: roomId, title: '测试历史直播', state: 'ended', source: 'compass_history' });

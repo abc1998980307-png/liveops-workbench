@@ -18,7 +18,7 @@ RECENT = '2026-11-09T15:34:00Z'
 
 class SourceStatusTests(unittest.TestCase):
     def account(self, **changes):
-        return {"uid": "synthetic-account", "enabled": True, "state": "ready", "interval": 60,
+        return {"uid": "synthetic-account", "enabled": True, "state": "ready", "interval": 3600,
                 "lastCheck": RECENT, "lastSync": RECENT, **changes}
 
     def status(self, *accounts):
@@ -49,10 +49,12 @@ class SourceStatusTests(unittest.TestCase):
         self.assertEqual(self.status(self.account())['state'],'ready')
         self.assertTrue(self.status(self.account())['connected'])
 
-    def test_long_configured_interval_has_bounded_freshness(self):
-        older='2026-11-09T15:20:00Z'
-        self.assertEqual(self.status(self.account(lastCheck=older,lastSync=older))['state'],'stale')
-        self.assertEqual(self.status(self.account(interval=600,lastCheck=older,lastSync=older))['state'],'ready')
+    def test_hourly_interval_uses_three_hour_freshness_window(self):
+        recent='2026-11-09T13:35:00Z'
+        stale='2026-11-09T12:30:00Z'
+        self.assertEqual(self.status(self.account(lastCheck=recent,lastSync=recent))['state'],'ready')
+        self.assertEqual(self.status(self.account(lastCheck=stale,lastSync=stale))['state'],'stale')
+        self.assertEqual(self.status(self.account(interval=60,lastCheck=recent,lastSync=recent))['state'],'ready')
 
     def test_mixed_accounts_partial_and_busy_are_explicit(self):
         paused=self.account(enabled=False,state='paused')

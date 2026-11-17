@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
+export const SAMPLE_INTERVAL_SECONDS = 3600;
+
 export class Store {
   constructor(root) {
     fs.mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -20,6 +22,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS hourly_metrics (key TEXT PRIMARY KEY, account TEXT NOT NULL, room TEXT NOT NULL, hour_start TEXT NOT NULL, metric TEXT NOT NULL, source TEXT NOT NULL, version TEXT NOT NULL, sampled_at TEXT NOT NULL, json TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS hourly_room ON hourly_metrics(account,room,hour_start,source,metric);
       CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, account TEXT, time TEXT NOT NULL, message TEXT NOT NULL);`);
+    this.db.prepare("UPDATE accounts SET json=json_set(json, '$.interval', ?) WHERE json_extract(json, '$.interval') IS NOT ?")
+      .run(SAMPLE_INTERVAL_SECONDS, SAMPLE_INTERVAL_SECONDS);
   }
   accounts() { return this.db.prepare('SELECT json FROM accounts').all().map(r => JSON.parse(r.json)).filter(account => !account.archivedAt); }
   targetName() { return this.db.prepare("SELECT value FROM settings WHERE key='targetName'").get()?.value || ''; }
@@ -40,8 +44,9 @@ export class Store {
   save(account) {
     const existing = this.db.prepare('SELECT json FROM accounts WHERE id=?').get(account.id);
     if (existing && JSON.parse(existing.json).archivedAt) throw new Error('账号已移除');
-    this.db.prepare('INSERT INTO accounts VALUES (?,?) ON CONFLICT(id) DO UPDATE SET json=excluded.json').run(account.id, JSON.stringify(account));
-    return account;
+    const saved = { ...account, interval: SAMPLE_INTERVAL_SECONDS };
+    this.db.prepare('INSERT INTO accounts VALUES (?,?) ON CONFLICT(id) DO UPDATE SET json=excluded.json').run(saved.id, JSON.stringify(saved));
+    return saved;
   }
   archive(id) {
     const account = this.account(id);
@@ -51,7 +56,7 @@ export class Store {
   }
   create(label) {
     if (this.accounts().length >= 10) throw new Error('最多连接 10 个账号');
-    return this.save({ id: crypto.randomUUID(), label: label.trim().slice(0, 60) || '我的罗盘账号', uid: null, name: null, observedName: null, verifiedAt: null, observedUidMatchesStored: false, enabled: false, interval: 60, state: 'needs_login', error: null, lastCheck: null, lastSync: null, createdAt: new Date().toISOString() });
+    return this.save({ id: crypto.randomUUID(), label: label.trim().slice(0, 60) || '我的罗盘账号', uid: null, name: null, observedName: null, verifiedAt: null, observedUidMatchesStored: false, enabled: false, interval: SAMPLE_INTERVAL_SECONDS, state: 'needs_login', error: null, lastCheck: null, lastSync: null, createdAt: new Date().toISOString() });
   }
   event(id, message) {
     this.db.prepare('INSERT INTO events(account,time,message) VALUES (?,?,?)').run(id, new Date().toISOString(), message.slice(0, 500));

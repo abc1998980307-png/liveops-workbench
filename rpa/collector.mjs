@@ -3,7 +3,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
-import { Store } from './store.mjs';
+import { Store, SAMPLE_INTERVAL_SECONDS } from './store.mjs';
 import { BrowserEngine } from './engine.mjs';
 import { roomList, historyBounds, historyWindow, historyRange, historyStartDate, historyRoomPage, validateHistoryEndpoint, normalizeHistoryReport, normalizeSnapshot, CollectError } from './model.mjs';
 import { FeishuSync } from './feishu.mjs';
@@ -149,7 +149,7 @@ export class Collector {
     this.store.save({ ...account, state: 'rate_limited', retryAfter: until,
       error: String(error.message || '罗盘请求受限').replace(/https?:\/\/\S+/g, '罗盘页面').slice(0, 250),
       lastCheck: new Date().toISOString() });
-    this.next.set(id, Date.parse(until));
+    this.next.set(id, Math.max(Date.parse(until), Date.now() + SAMPLE_INTERVAL_SECONDS * 1000));
     return until;
   }
   assertHistoryRequestAllowed(id) {
@@ -344,7 +344,7 @@ export class Collector {
       else if (!confirmed) this.store.save({ ...this.store.account(id), state, error: message, lastCheck: checkedAt });
       this.store.event(id, message);
       if (Array.isArray(error.shape)) for (const line of error.shape) this.store.event(id, `今日场次形态：${line}`);
-      if (state !== 'rate_limited') this.next.set(id, Date.now() + (confirmed ? 30 : 60) * 1000);
+      if (state !== 'rate_limited') this.next.set(id, Date.now() + SAMPLE_INTERVAL_SECONDS * 1000);
     }
   }
   async verifyHistoryIdentity(id, uid) {
@@ -886,7 +886,7 @@ export class Collector {
       }
       case 'settings': {
         const a = this.store.account(String(args.id)); const interval = Number(args.interval);
-        if (!Number.isInteger(interval) || interval < 30 || interval > 600) throw new Error('同步间隔需为 30–600 秒');
+        if (interval !== SAMPLE_INTERVAL_SECONDS) throw new Error('同步间隔只能为 1 小时（3600 秒）');
         this.store.save({ ...a, interval }); this.next.set(a.id, Date.now() + interval * 1000); return { ok: true };
       }
       case 'profile.lookup': return this.engine.lookupProfile(String(args.secUserId || ''));
